@@ -96,30 +96,30 @@ async def on_message(message):
     if msg_lower.startswith("e!r ") and message.mentions:
         target = message.mentions[0]; tid = str(target.id); c_dt = user_collections.get(tid, []); s_dt = shiny_hunts.get(tid, [])
         if not c_dt and not s_dt: return await message.channel.send(f"📁 **{target.name}** has no active lists.")
-        summary = f"📋 **Wishlist Profile for {target.name}:**\n\n"
-        summary += f"🔹 **Collection:** {', '.join(sorted(c_dt)) if c_dt else '*None*'}\n"
-        summary += f"✨ **Shiny Hunts:** {', '.join(sorted(s_dt)) if s_dt else '*None*'}\n"
+        summary = f"📋 **Wishlist Profile for {target.name}:**\n\n🔹 **Collection:** {', '.join(sorted(c_dt)) if c_dt else '*None*'}\n✨ **Shiny Hunts:** {', '.join(sorted(s_dt)) if s_dt else '*None*'}\n"
         return await message.channel.send(summary)
     if message.author.name == "Pokétwo" or message.author.id == 716390085896962058:
-        if message.embeds and message.embeds[0].image and message.embeds[0].image.url:
-            url = message.embeds[0].image.url; is_shiny = "shiny" in url.lower()
-            try:
-                res = requests.get(url); img = Image.open(BytesIO(res.content)); hsh = imagehash.phash(img, hash_size=8)
-                match, low_dist = None, 999
-                for p_id, d in pokemon_db.items():
-                    dist = hsh - imagehash.hex_to_hash(d["phash"])
-                    if dist < low_dist: low_dist = dist; match = d["name"]
-                if low_dist <= 12 and match:
-                    await message.channel.send(f"🚨 **Spawn Detected!** That looks like a {'✨ SHINY ' if is_shiny else 'wild '}**{match}**!")
-                    pings = []
-                    for uid, col in user_collections.items():
-                        if match in col: pings.append(f"<@{uid}> (Collection)")
-                    if is_shiny:
-                        for uid, sh in shiny_hunts.items():
-                            if match in sh: pings.append(f"<@{uid}> (✨ SHINY TARGET!)")
-                    if pings or (match in reserve_list):
-                        msg = "🔔 **Target Alert!** " + " ".join(pings)
-                        if match in reserve_list: msg += " ⚠️ **[Server Reserve Match Found!]**"
-                        await message.channel.send(msg)
-            except Exception as e: print(f"Scanner Error: {e}")
+        if message.embeds:
+            for emb in message.embeds:
+                if emb.image and emb.image.url:
+                    url = emb.image.url; is_shiny = "shiny" in url.lower()
+                    try:
+                        res = requests.get(url); img = Image.open(BytesIO(res.content)); hsh = imagehash.phash(img, hash_size=8)
+                        match, low_dist = None, 999
+                        for p_id, d in pokemon_db.items():
+                            dist = hsh - imagehash.hex_to_hash(d["phash"])
+                            if dist < low_dist: low_dist = dist; match = d["name"]
+                        if low_dist <= 12 and match:
+                            await message.channel.send(f"🚨 **Spawn Detected!** That looks like a {'✨ SHINY ' if is_shiny else 'wild '}**{match}**!")
+                            pings = []
+                            for uid, col in user_collections.items():
+                                if match in col: pings.append(f"<@{uid}> (Collection)")
+                            if is_shiny:
+                                for uid, sh in shiny_hunts.items():
+                                    if match in sh: pings.append(f"<@{uid}> (✨ SHINY TARGET!)")
+                            if pings or (match in reserve_list):
+                                msg = "🔔 **Target Alert!** " + " ".join(pings)
+                                if match in reserve_list: msg += " ⚠️ **[Server Reserve Match Found!]**"
+                                await message.channel.send(msg)
+                    except Exception as e: print(f"Scanner Error: {e}")
 client.run(os.environ.get("DISCORD_TOKEN"))
