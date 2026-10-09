@@ -4,31 +4,8 @@ import requests
 import imagehash
 from PIL import Image
 from io import BytesIO
-from flask import Flask
-from threading import Thread
 
-# 1. Create a dummy web server so Render doesn't shut the bot down
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Eevee Bot is Alive!"
-
-def run_web_server():
-    # Render tells apps what port to open using the PORT environment variable
-    # If it's missing, it defaults to port 10000
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_web_server)
-    t.daemon = True
-    t.start()
-
-# Start the background web thread immediately
-keep_alive()
-
-# 2. Main Discord Bot Code
+# Main Discord Bot Code
 intents = discord.Intents.default()
 intents.message_content = True  
 client = discord.Client(intents=intents)
@@ -79,5 +56,5 @@ async def on_message(message):
                 except Exception as e:
                     print(f"Scanning error: {e}")
 
-# Securely grab the token from Render's dashboard environment variables
+# Securely grab the token from Railway's environment variables
 client.run(os.environ.get("DISCORD_TOKEN"))
