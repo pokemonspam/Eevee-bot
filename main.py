@@ -14,67 +14,6 @@ bot = commands.Bot(command_prefix=["a!", "A!"], intents=intents, help_command=No
 ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
 COLLECTION_FILE = "collection.json"
-
-class GlobalDatabase:
-    user_collections = {}
-    shiny_hunts = {}
-    reserve_data = {}
-
-try:
-    if os.path.exists(COLLECTION_FILE):
-        with open(COLLECTION_FILE, "r", encoding="utf-8") as f:
-            db_data = json.load(f)
-            GlobalDatabase.user_collections = db_data.get("collection", {})
-            GlobalDatabase.shiny_hunts = db_data.get("shiny", {})
-            GlobalDatabase.reserve_data = db_data.get("reserve_data", {})
-except Exception as e:
-    print(f"[CRITICAL] Storage Initialization Error: {e}")
-def save_data():
-    try:
-        temp_file = COLLECTION_FILE + ".tmp"
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump({
-                "collection": GlobalDatabase.user_collections, 
-                "shiny": GlobalDatabase.shiny_hunts, 
-                "reserve_data": GlobalDatabase.reserve_data
-            }, f, indent=4)
-        os.replace(temp_file, COLLECTION_FILE)
-    except Exception as e: 
-        print(f"[ERROR] Failed to save database layer: {e}")
-
-class DynamicListPaginator(discord.ui.View):
-    def __init__(self, data_list, card_title, chunk_size=20):
-        super().__init__(timeout=180)
-        self.data_list = data_list
-        self.card_title = card_title
-        self.chunk_size = chunk_size
-        self.current_page = 0
-        self.total_pages = max(1, (len(data_list) - 1) // chunk_size + 1)
-
-    def get_page_embed(self):
-        start = self.current_page * self.chunk_size
-        end = start + self.chunk_size
-        chunk = self.data_list[start:end]
-        embed = discord.Embed(title=f"{self.card_title} ({len(self.data_list)} Total)", color=discord.Color.red())
-        embed.description = "\n".join(chunk)
-        embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
-        return embed
-
-    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.grey)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.current_page > 0:
-            self.current_page -= 1
-            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-        else: 
-            await interaction.response.defer()
-
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.grey)
-    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-        else: 
-            await interaction.response.defer()
 RAW_FORMS_SCHEMA = [
     "bulbasaur", "ivysaur", "venusaur", "charmander", "charmeleon", "charizard", "squirtle", "wartortle", "blastoise",
     "caterpie", "metapod", "butterfree", "weedle", "kakuna", "beedrill", "pidgey", "pidgeotto", "pidgeot", "rattata",
@@ -282,35 +221,34 @@ for entry in RAW_FORMS_SCHEMA:
         suffix_title = suffix_map[suffix]
         VALID_POKEMON_NAMES.append(f"{suffix_title} {base_title}")
         VALID_POKEMON_NAMES.append(f"{base_title} {suffix_title}")
+        VALID_POKEMON_NAMES.append(f"Normal {base_title}")
     else:
-        VALID_POKEMON_NAMES.append(" ".join([w.capitalize() for w in words]))
+        base_name = " ".join([w.capitalize() for w in words])
+        VALID_POKEMON_NAMES.append(base_name)
+        VALID_POKEMON_NAMES.append(f"Normal {base_name}")
 def strict_pokemon_check(input_name):
-    clean_search = " ".join(input_name.strip().lower().replace("-", " ").split())
+    # Poketwo Accent Fixer: Normalizes native naming accents flawlessly
+    clean_search = " ".join(input_name.strip().lower().replace("-", " ").replace("é", "e").replace("♀", " f").replace("♂", " m").split())
     for official_name in VALID_POKEMON_NAMES:
-        if official_name.lower() == clean_search: 
+        off_clean = official_name.lower().replace("é", "e").replace("♀", " f").replace("♂", " m")
+        if off_clean == clean_search: 
             return True, official_name
     words = clean_search.split()
     if len(words) > 1:
         flipped = f"{words[-1]} " + " ".join(words[:-1])
         for official_name in VALID_POKEMON_NAMES:
-            if official_name.lower() == flipped:
+            off_clean = official_name.lower().replace("é", "e")
+            if off_clean == flipped:
                 return True, official_name
-    for i in range(len(words), 0, -1):
-        sub_phrase = " ".join(words[:i])
-        for official_name in VALID_POKEMON_NAMES:
-            if official_name.lower() == sub_phrase:
-                if official_name.lower() not in ["deoxys", "rotom", "wormadam", "pumpkaboo", "gourgeist", "giratina"]:
-                    return True, official_name
     return False, None
 
 def get_all_variant_forms(base_pokemon_name):
-    # DYNAMIC REGISTRY SEARCH ARRAY ENGINE
-    # Scans the active naming matrix to aggregate cosmetic sub-forms on bulk requests
+    # BULK INDEX GENERATOR: Aggregates sub-forms on bulk lookup directives
     clean_base = base_pokemon_name.strip().lower()
     discovered_variants = []
     for official_name in VALID_POKEMON_NAMES:
         off_lower = official_name.lower()
-        if clean_base in off_lower:
+        if clean_base in off_lower or off_lower.endswith(f" {clean_base}"):
             if off_lower.startswith("mega ") or off_lower.endswith(" gmax") or " mega " in off_lower:
                 continue
             discovered_variants.append(official_name)
@@ -345,7 +283,7 @@ async def tags_command(ctx, *, search_name: str = None):
 @bot.command(name="cl", aliases=["A!cl"])
 async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
     if not subcommand:
-        embed = discord.Embed(title="📋 Collection List Commands", description="`a!cl add <names>` • Add Pokémon (Separate entries with commas)\n`a!cl remove <name>` • Remove a target\n`a!cl list` • View your wishlist embed (20 entries per page)\n`a!cl clear` • Wipe list clean", color=discord.Color.red())
+        embed = discord.Embed(title="📋 Collection List Commands", description="`a!cl add <names>` • Add Pokémon (Separate entries with commas)\n`a!cl remove <name>` • Remove a target\n`a!cl list` • View your list embed (20 entries per page)\n`a!cl clear` • Wipe list clean", color=discord.Color.red())
         return await ctx.send(embed=embed)
         
     sub_clean = subcommand.lower().strip()
@@ -354,20 +292,26 @@ async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
         uid = str(ctx.author.id)
         if uid not in GlobalDatabase.user_collections: GlobalDatabase.user_collections[uid] = []
         
-        # BULK ALL INTERCEPTOR LAYER ROUTER
+        # BULK EXPANSION LOOP INTERCEPTOR MATRIX
         if arguments.lower().startswith("all "):
             target_base = arguments[4:].strip()
             all_forms = get_all_variant_forms(target_base)
-            if not all_forms: return await ctx.send(f"❌ No catchable variants found matching **{target_base}** inside the engine.")
+            if not all_forms: return await ctx.send(f"❌ No catchable variants found matching **{target_base}** inside the database.")
             bulk_added = []
             for form in all_forms:
                 if form not in GlobalDatabase.user_collections[uid]: GlobalDatabase.user_collections[uid].append(form); bulk_added.append(form)
             if bulk_added: save_data()
-            return await ctx.send(f"✅ Bulk added **{len(bulk_added)}** catchable variants of **{target_base}** to your collection wishlist!")
+            return await ctx.send(f"✅ Added **{len(bulk_added)}** Pokémon to your collections for this server!")
 
         parts = [p.strip() for p in arguments.split(",") if p.strip()]
         added, duplicate, broken = [], [], []
         for raw in parts:
+            if raw.lower().startswith("all "):
+                target_base = raw[4:].strip()
+                all_forms = get_all_variant_forms(target_base)
+                for form in all_forms:
+                    if form not in GlobalDatabase.user_collections[uid]: GlobalDatabase.user_collections[uid].append(form); added.append(form)
+                continue
             is_valid, matched_name = strict_pokemon_check(raw)
             if is_valid:
                 chk_lower = matched_name.lower()
@@ -396,23 +340,26 @@ async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
         uid = str(ctx.author.id)
         if uid in GlobalDatabase.user_collections and GlobalDatabase.user_collections[uid]:
             formatted_wishlist = [f"• **{n}**" for n in sorted(GlobalDatabase.user_collections[uid])]
-            paginator = DynamicListPaginator(data_list=formatted_wishlist, card_title=f"📋 {ctx.author.name}'s Collection Wishlist")
+            paginator = DynamicListPaginator(data_list=formatted_wishlist, card_title=f"📋 {ctx.author.name}'s Collection List")
             await ctx.send(embed=paginator.get_page_embed(), view=paginator)
         else: await ctx.send("📁 Your collection list is empty.")
         
     elif sub_clean == "clear":
-        GlobalDatabase.user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection clean.")
+        GlobalDatabase.user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection list clean.")
 @bot.command(name="sh", aliases=["A!sh"])
 async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
     if not subcommand:
-        embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`a!sh add <name>` • Set active shiny target\n`a!sh remove <name>` • Drop shiny target\n`a!sh list` • View target\n`a!sh clear` • Wipe data", color=discord.Color.red())
+        embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`a!sh add <name>` • Set active shiny target\n`a!sh remove <name>` • Drop shiny target\n`a!sh list` • View hunt\n`a!sh clear` • Wipe data", color=discord.Color.red())
         return await ctx.send(embed=embed)
         
     sub_clean = subcommand.lower().strip()
     if sub_clean == "add" or (sub_clean not in ["remove", "del", "list", "view", "clear"]):
         target = name_arg if (sub_clean == "add" and name_arg) else subcommand
         uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(target)
-        if not is_valid: return await ctx.send(f"❌ **{target}** is not a real Pokémon or valid variant form variant!")
+        if not is_valid: return await ctx.send(f"❌ **{target}** is not a real Pokémon or valid form Variant!")
+        chk_lower = matched_name.lower()
+        if chk_lower.startswith("mega ") or chk_lower.endswith(" gmax") or " mega " in chk_lower:
+            return await ctx.send(f"❌ **{matched_name}** is uncatchable! You can't hunt this form.")
         GlobalDatabase.shiny_hunts[uid] = [matched_name]; save_data()
         await ctx.send(f"✨ **{matched_name}** has been registered as your active Shiny Hunt!")
         
@@ -460,22 +407,32 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         tid = str(mention_match.group(1)); raw_names = re.sub(r'<@!?\d+>', '', args).strip()
         if tid not in GlobalDatabase.reserve_data: GlobalDatabase.reserve_data[tid] = []
         
-        # BULK RESERVES EXTRACTION ENGINE
+        # BULK RESERVES BULK INTERCEPTOR MATRIX
         if raw_names.lower().startswith("all "):
             target_base = raw_names[4:].strip()
             all_forms = get_all_variant_forms(target_base)
-            if not all_forms: return await ctx.send(f"❌ No catchable variants found matching **{target_base}** inside the registry.")
+            if not all_forms: return await ctx.send(f"❌ No catchable variants found matching **{target_base}** inside the database.")
             bulk_added = []
             for form in all_forms:
                 if form not in GlobalDatabase.reserve_data[tid]: GlobalDatabase.reserve_data[tid].append(form); bulk_added.append(form)
             if bulk_added: save_data()
-            return await ctx.send(f"📦 Bulk added **{len(bulk_added)}** catchable variants of **{target_base}** to reserves for <@{tid}>!")
+            return await ctx.send(f"📦 Added **{len(bulk_added)}** Pokémon to reserves for <@{tid}>!")
 
         parts = [p.strip() for p in raw_names.split(",") if p.strip()]
         added, duplicate, broken = [], [], []
         for raw in parts:
+            if raw.lower().startswith("all "):
+                target_base = raw[4:].strip()
+                all_forms = get_all_variant_forms(target_base)
+                for form in all_forms:
+                    if form not in GlobalDatabase.reserve_data[tid]: GlobalDatabase.reserve_data[tid].append(form); added.append(form)
+                continue
             is_valid, matched = strict_pokemon_check(raw)
             if is_valid:
+                chk_lower = matched.lower()
+                if chk_lower.startswith("mega ") or chk_lower.endswith(" gmax") or " mega " in chk_lower:
+                    broken.append(f"{matched_name} (Uncatchable Form)")
+                    continue
                 if matched not in GlobalDatabase.reserve_data[tid]: GlobalDatabase.reserve_data[tid].append(matched); added.append(matched)
                 else: duplicate.append(matched)
             else: broken.append(raw)
@@ -573,18 +530,33 @@ async def poketwo_image_scanner(message):
                         if dist < low_dist: low_dist = dist; match = d["name"]
                     if low_dist <= 12 and match:
                         await message.channel.send(f"🚨 **Spawn Detected!** Pattern matches **{match}**!")
+                        
+                        # Matcher logic scans base patterns first
+                        matched_lower = match.lower()
                         reserve_pings = []
                         for uid, arr in GlobalDatabase.reserve_data.items():
-                            if match in arr: reserve_pings.append(f"<@{uid}>")
-                        if reserve_pings: await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
-                        else:
-                            normal_pings = []
-                            for uid, col in GlobalDatabase.user_collections.items():
-                                if match in col: normal_pings.append(f"<@{uid}>")
-                            if is_shiny:
-                                for uid, sh in GlobalDatabase.shiny_hunts.items():
-                                    if sh and match == sh: normal_pings.append(f"<@{uid}> (✨ SHINY!)")
-                            if normal_pings: await message.channel.send(f"🔔 **Wishlist Alert!** " + " ".join(list(set(normal_pings))))
+                            for reserved_name in arr:
+                                r_low = reserved_name.lower()
+                                if r_low == matched_lower or r_low == f"normal {matched_lower}":
+                                    reserve_pings.append(f"<@{uid}>")
+                        if reserve_pings: 
+                            await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
+                            return
+                            
+                        normal_pings = []
+                        for uid, col in GlobalDatabase.user_collections.items():
+                            for wish_name in col:
+                                w_low = wish_name.lower()
+                                if w_low == matched_lower or w_low == f"normal {matched_lower}":
+                                    normal_pings.append(f"<@{uid}>")
+                        if is_shiny:
+                            for uid, sh in GlobalDatabase.shiny_hunts.items():
+                                if sh:
+                                    s_low = sh[0].lower()
+                                    if s_low == matched_lower or s_low == f"normal {matched_lower}":
+                                        normal_pings.append(f"<@{uid}> (✨ SHINY!)")
+                        if normal_pings: 
+                            await message.channel.send(f"🔔 **List Alert!** " + " ".join(list(set(normal_pings))))
     except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
