@@ -45,7 +45,7 @@ VALID_POKEMON_NAMES = [
 VALID_POKEMON_NAMES += [
     "Marshtomp", "Swampert", "Poochyena", "Mightyena", "Zigzagoon", "Linoone", "Wurmple", "Silcoon", "Beautifly",
     "Cascoon", "Dustox", "Lotad", "Lombre", "Ludicolo", "Seedot", "Nuzleaf", "Shiftry", "Taillow", "Swellow", "Wingull",
-    "Pelipper", "Ralts", "Kirlia", "Gardevoir", "Gallade", "Surskit", "Masquerain", "Shroomish", "Breloom", "Slakoth",
+    "Pelipper", "Ralts", "Kirlia", "Gardevoir", "Gardevoir", "Gallade", "Surskit", "Masquerain", "Shroomish", "Breloom", "Slakoth",
     "Vigoroth", "Slaking", "Nincada", "Ninjask", "Shedinja", "Whismur", "Loudred", "Exploud", "Makuhita", "Hariyama",
     "Azurill", "Nosepass", "Skitty", "Delcatty", "Sableye", "Mawile", "Aron", "Lairon", "Aggron", "Meditite", "Medicham",
     "Electrike", "Manectric", "Plusle", "Minun", "Volbeat", "Illumise", "Roselia", "Roserade", "Gulpin", "Swalot",
@@ -222,7 +222,7 @@ async def tags_command(ctx):
 @bot.command(name="cl", aliases=["E!cl"])
 async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
     if not subcommand:
-        embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Add Pokémon\n`e!cl remove <name>` • Remove a target\n`e!cl list` • View wishlist (20 per page)\n`e!cl clear` • Wipe list clean", color=discord.Color.red())
+        embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Add Pokémon (Separate entries with commas)\n`e!cl remove <name>` • Remove a target\n`e!cl list` • View your wishlist embed (20 entries per page)\n`e!cl clear` • Wipe list clean", color=discord.Color.red())
         return await ctx.send(embed=embed)
         
     sub_clean = subcommand.lower().strip()
@@ -335,9 +335,10 @@ async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
         await ctx.send("✨🗑 Shiny hunt cleared.")
 @bot.command(name="r", aliases=["E!r"])
 async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
+    # LOOKUP ENGINE: If they type 'e!r @user' with no sub-argument, show that user's list
     if not subcommand:
         if ctx.message.mentions:
-            target_user = ctx.message.mentions[0]
+            target_user = ctx.message.mentions
             tid = str(target_user.id)
             u_list = GlobalDatabase.reserve_data.get(tid, [])
             if u_list:
@@ -347,11 +348,27 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
                 embed = discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red())
                 return await ctx.send(embed=embed)
                 
-        # FULL DESCRIPTION MENU RESTORED COMPLETELY
+        # RESTORED HELP INTERFACE
         embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`e!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`e!r remove @user` • Completely clear all active reserves for that user only\n`e!r @user` • View the reserved list for a specific person\n`e!r list` • View the entire server's reserve listings (20 entries per page)\n`e!r clear` • Wipe the absolute entire server reserve file data clean\n`e!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
         return await ctx.send(embed=embed)
         
     sub_clean = subcommand.lower().strip()
+    
+    # INTERCEPT SHORTCUT Lookups if user mentions someone directly as the subcommand string parameter
+    if re.search(r'<@!?(\d+)>', subcommand):
+        mention_match = re.search(r'<@!?(\d+)>', subcommand)
+        tid = str(mention_match.group(1))
+        try:
+            target_user = await bot.fetch_user(int(tid))
+            u_list = GlobalDatabase.reserve_data.get(tid, [])
+            if u_list:
+                embed = discord.Embed(title=f"📋 Reserves for {target_user.name} ({len(u_list)})", description="\n".join([f"• **{n}**" for n in sorted(u_list)]), color=discord.Color.red())
+                return await ctx.send(embed=embed)
+            else:
+                embed = discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red())
+                return await ctx.send(embed=embed)
+        except: return await ctx.send("❌ Could not resolve that user profile target lookup tag.")
+
     if sub_clean == "add":
         if not args: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
         mention_match = re.search(r'<@!?(\d+)>', args)
@@ -363,8 +380,8 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         for raw in parts:
             is_valid, matched = strict_pokemon_check(raw)
             if is_valid:
-                # MULTI-USER RESERVES: Users can hold identical targets, it only blocks if this specific user doubles up
-                if matched not in GlobalDatabase.reserve_data[tid]: 
+                # FIXED MULTI-USER SYNC: Allows different players to track the exact same target lines simultaneously
+                if matched not in GlobalDatabase.reserve_data[tid]:
                     GlobalDatabase.reserve_data[tid].append(matched)
                     added.append(matched)
                 else: duplicate.append(matched)
@@ -399,7 +416,6 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         await ctx.send(res)
         
     elif sub_clean in ["list", "view"]:
-        # MULTI-USER FLIPPED GROUPING: Pokemon - @user1, @user2
         pokemon_groups = {}
         for uid, arr in GlobalDatabase.reserve_data.items():
             for name in arr:
@@ -427,6 +443,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
             lines = replied_msg.content.split("\n")
             if mid not in GlobalDatabase.reserve_data or not GlobalDatabase.reserve_data[mid]: return await ctx.send(f"❌ <@{mid}> has no active Pokémon reserved to exchange.")
             
+            # FIXED CROSS-EXCHANGE LOGIC: Loops through line by line to add copies to multiple users simultaneously
             success_logs = []
             for line in lines:
                 if not line.strip() or "-" not in line: continue
@@ -445,7 +462,6 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
                     valid_transfers = []
                     for name in requested_names:
                         is_valid, matched_name = strict_pokemon_check(name)
-                        # CROSS-EXCHANGE FIXED: Allows trading down multiple copies seamlessly across different player parameters
                         if is_valid and matched_name in GlobalDatabase.reserve_data[mid]:
                             if target_uid not in GlobalDatabase.reserve_data: GlobalDatabase.reserve_data[target_uid] = []
                             if matched_name not in GlobalDatabase.reserve_data[target_uid]: GlobalDatabase.reserve_data[target_uid].append(matched_name)
@@ -460,34 +476,47 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
 @bot.event
 async def on_message(message):
     try:
-        if message.author == bot.user: return
+        if message.author == bot.user: 
+            return
+            
+        # Execute commands route path cleanly
         await bot.process_commands(message)
+        
         if (message.author.name == "Pokétwo" or message.author.id == 716390085896962058) and message.embeds:
             for emb in message.embeds:
                 if emb.image and emb.image.url:
-                    url = emb.image.url; is_shiny = "shiny" in url.lower()
-                    res = requests.get(url, timeout=10); img = Image.open(BytesIO(res.content)); hsh = imagehash.phash(img, hash_size=8)
+                    url = emb.image.url
+                    is_shiny = "shiny" in url.lower()
+                    res = requests.get(url, timeout=10)
+                    img = Image.open(BytesIO(res.content))
+                    hsh = imagehash.phash(img, hash_size=8)
                     match, low_dist = None, 999
                     for p_id, d in pokemon_db.items():
                         dist = hsh - imagehash.hex_to_hash(d["phash"])
-                        if dist < low_dist: low_dist = dist; match = d["name"]
+                        if dist < low_dist: 
+                            low_dist = dist
+                            match = d["name"]
                     if low_dist <= 12 and match:
                         await message.channel.send(f"🚨 **Spawn Detected!** Pattern matches **{match}**!")
                         reserve_pings = []
                         for uid, arr in GlobalDatabase.reserve_data.items():
-                            if match in arr: reserve_pings.append(f"<@{uid}>")
+                            if match in arr: 
+                                reserve_pings.append(f"<@{uid}>")
                         if reserve_pings: 
-                            # MULTI-PLAYER PINGS STABILIZED: Blasts out a single grouped notification to all matching players simultaneously
+                            # FIXED SCROLL ALERTS: Combines all users holding this target into a single ping block instantly
                             await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
                         else:
                             normal_pings = []
                             for uid, col in GlobalDatabase.user_collections.items():
-                                if match in col: normal_pings.append(f"<@{uid}>")
+                                if match in col: 
+                                    normal_pings.append(f"<@{uid}>")
                             if is_shiny:
                                 for uid, sh in GlobalDatabase.shiny_hunts.items():
-                                    if sh and match == sh: normal_pings.append(f"<@{uid}> (✨ SHINY!)")
-                            if normal_pings: await message.channel.send(f"🔔 **Wishlist Alert!** " + " ".join(list(set(normal_pings))))
-    except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
+                                    if sh and match == sh: 
+                                        normal_pings.append(f"<@{uid}> (✨ SHINY!)")
+                            if normal_pings: 
+                                await message.channel.send(f"🔔 **Wishlist Alert!** " + " ".join(list(set(normal_pings))))
+    except Exception as e: 
+        print(f"[SCANNER FAULT] Safely handled: {e}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
-
