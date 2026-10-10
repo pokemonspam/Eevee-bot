@@ -8,6 +8,7 @@ from PIL import Image
 from io import BytesIO
 from discord.ext import commands
 
+# 1. CORE INTENTS INTERFACE GATEWAY CONFIGURATION
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=["e!", "E!"], intents=intents, help_command=None)
 
@@ -15,6 +16,7 @@ ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
 COLLECTION_FILE = "collection.json"
 
+# 2. MASTER OFFICIAL POKÉMON DICTIONARY INDEX
 VALID_POKEMON_NAMES = [
     "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise",
     "Caterpie", "Metapod", "Butterfree", "Weedle", "Kakuna", "Beedrill", "Pidgey", "Pidgeotto", "Pidgeot", "Rattata",
@@ -165,7 +167,6 @@ class DynamicListPaginator(discord.ui.View):
         start = self.current_page * self.chunk_size
         end = start + self.chunk_size
         chunk = self.data_list[start:end]
-        
         embed = discord.Embed(title=f"{self.card_title} ({len(self.data_list)} Total)", color=discord.Color.red())
         embed.description = "\n".join(chunk)
         embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
@@ -253,16 +254,14 @@ async def cl_list(ctx):
 @cl_group.command(name="clear")
 async def cl_clear(ctx):
     user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection clean.")
-
 @bot.group(name="sh", invoke_without_command=True)
 async def sh_group(ctx, *, arg: str = None):
     if arg:
         arg_lower = arg.lower().strip()
         if arg_lower in ["list", "view"]: return await ctx.invoke(bot.get_command('sh list'))
         elif arg_lower == "clear": return await ctx.invoke(bot.get_command('sh clear'))
-        elif arg_lower.startswith("remove ") or arg_lower.startswith("del "): return await ctx.invoke(bot.get_command('sh remove'), name=arg.split(" ", 1))
-        else: return await ctx.invoke(bot.get_command('sh add'), name=arg.split(" ", 1) if arg_lower.startswith("add ") else arg)
-    await ctx.send(embed=discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh <name>` • Set active shiny target\n`e!sh remove <name>` • Drop shiny target\n`e!sh list` • View target\n`e!sh clear` • Wipe data", color=discord.Color.red()))
+    embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh <name>` • Set active shiny target\n`e!sh remove <name>` • Drop shiny target\n`e!sh list` • View target\n`e!sh clear` • Wipe data", color=discord.Color.red())
+    await ctx.send(embed=embed)
 
 @sh_group.command(name="add")
 async def sh_add(ctx, *, name: str = None):
@@ -280,7 +279,7 @@ async def sh_remove(ctx, *, name: str = None):
     if not name: return await ctx.send("⚠️ Please specify a target to remove!")
     uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(name)
     if is_valid and uid in shiny_hunts and matched_name in shiny_hunts[uid]: shiny_hunts[uid].remove(matched_name); save_data(); await ctx.send(f"❌ **{matched_name}** removed.")
-    else: await ctx.send(f"⚠️ Target was not active on your list.")
+    else: await ctx.send("⚠️ Target was not active on your list.")
 
 @sh_group.command(name="list", aliases=["view"])
 async def sh_list(ctx):
@@ -377,18 +376,27 @@ async def r_exchange(ctx, main_user: discord.Member = None):
             
         success_logs = []
         for line in lines:
-            if not line.strip(): continue
+            if not line.strip() or "-" not in line: continue
             
-            # FIXED ROBUST REGEX PARSER: Extracts the targeted user token out of any point on the text line
-            user_find = re.search(r'<@!?(\d+)>', line)
-            if user_find:
-                target_uid = str(user_find.group(1))
-                
-                # Wipe markers, user structures, and dashes to isolate the raw Pokemon name list block
-                clean_chunk = re.sub(r'<@!?\d+>', '', line).replace('•', '').replace('-', '').replace('*', '').strip()
-                
-                # Split entry cleanly by commas to parse multi-Pokemon transfers per single message line
-                requested_names = [p.strip() for p in clean_chunk.split(",") if p.strip()]
+            # UNIFIED MULTI-LINE SPLIT LOGIC ENGINE
+            left_part, right_part = line.split("-", 1)
+            target_uid = None
+            
+            # 1. Scan the line segment looking for direct system mention numbers
+            uid_match = re.search(r'(\d+)', left_part)
+            if uid_match:
+                target_uid = str(uid_match.group(1))
+            else:
+                # 2. String Match Fallback: Clear formatting characters to inspect the text tag string
+                clean_tag = left_part.replace('•', '').replace('*', '').strip().lower()
+                for member in ctx.guild.members:
+                    if clean_tag in member.name.lower() or (member.nick and clean_tag in member.nickname.lower()):
+                        target_uid = str(member.id)
+                        break
+                        
+            if target_uid:
+                clean_pokemon_block = right_part.replace('•', '').replace('*', '').strip()
+                requested_names = [p.strip() for p in clean_pokemon_block.split(",") if p.strip()]
                 
                 valid_transfers = []
                 for name in requested_names:
@@ -399,14 +407,13 @@ async def r_exchange(ctx, main_user: discord.Member = None):
                         if matched_name not in reserve_data[target_uid]: reserve_data[target_uid].append(matched_name)
                         valid_transfers.append(matched_name)
                         
-                if valid_transfers:
-                    success_logs.append(f"• **{', '.join(valid_transfers)}** transferred from <@{mid}> to <@{target_uid}>")
+                if valid_transfers: success_logs.append(f"• **{', '.join(valid_transfers)}** transferred from <@{mid}> to <@{target_uid}>")
                     
         if success_logs:
             save_data()
             await ctx.send(embed=discord.Embed(title="🔄 Reserve Exchange Ledger Summary", description="\n".join(success_logs), color=discord.Color.red()))
-        else: await ctx.send("❌ Exchange failed! Verify your formatting and confirm requested Pokémon are owned by the main user.")
-    except Exception as e: await ctx.send(f"❌ Error processing context data strings: {e}")
+        else: await ctx.send("❌ Exchange failed! Make sure the listed Pokémon are currently owned by the main user on their `e!r` list.")
+    except Exception as e: await ctx.send(f"❌ Error reading message context strings: {e}")
 
 @bot.event
 async def on_message(message):
@@ -431,7 +438,7 @@ async def on_message(message):
                             for uid, arr in reserve_data.items():
                                 if match in arr: reserve_pings.append(f"<@{uid}>")
                             if reserve_pings:
-                                await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - This target was specifically reserved for you!")
+                                await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
                             else:
                                 normal_pings = []
                                 for uid, col in user_collections.items():
