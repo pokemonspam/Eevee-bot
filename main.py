@@ -223,7 +223,7 @@ async def tags_command(ctx, *, search_name: str = None):
                 active_hunters.append(f"• <@{uid}>")
                 
         if not active_hunters:
-            return await ctx.send(f"📋 No active shiny hunters found tracking **{matched_name}** right now.")
+            return await ctx.send(f"📋 No active shiny hunters found **{matched_name}** right now.")
             
         embed = discord.Embed(title=f"📋 Shiny Hunters tracking {matched_name}", color=discord.Color.red())
         embed.description = "\n".join(active_hunters)
@@ -304,7 +304,7 @@ async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
         if not is_valid: 
             return await ctx.send(f"❌ **{full_name}** is not a real Pokémon!")
         if uid in GlobalDatabase.shiny_hunts and GlobalDatabase.shiny_hunts[uid] == [matched_name]: 
-            return await ctx.send(f"⚠️ Already tracking shiny **{matched_name}**.")
+            return await ctx.send(f"⚠️ Already shiny hunting this pokemon **{matched_name}**.")
         GlobalDatabase.shiny_hunts[uid] = [matched_name]
         save_data()
         return await ctx.send(f"✨ **{matched_name}** has been registered as your active Shiny Hunt!")
@@ -317,7 +317,7 @@ async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
         if not is_valid: 
             return await ctx.send(f"❌ **{name_arg}** is not a real Pokémon!")
         if uid in GlobalDatabase.shiny_hunts and GlobalDatabase.shiny_hunts[uid] == [matched_name]: 
-            return await ctx.send(f"⚠️ Already tracking shiny **{matched_name}**.")
+            return await ctx.send(f"⚠️ Already hunting this pokemon **{matched_name}**.")
         GlobalDatabase.shiny_hunts[uid] = [matched_name]
         save_data()
         await ctx.send(f"✨ **{matched_name}** has been registered as your active Shiny Hunt!")
@@ -339,9 +339,9 @@ async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
         if uid in GlobalDatabase.shiny_hunts and GlobalDatabase.shiny_hunts[uid]:
             # FIXED: Grabs clean names out of the tracking list structure without bracket layouts
             clean_names = ", ".join(GlobalDatabase.shiny_hunts[uid])
-            await ctx.send(embed=discord.Embed(title=f"📋 {ctx.author.name}'s Active Shiny Target", description=f"• **{clean_names}**", color=discord.Color.red()))
+            await ctx.send(embed=discord.Embed(title=f"📋 {ctx.author.name}'s Active Shiny Hunt", description=f"• ✨️ **{clean_names}**", color=discord.Color.red()))
         else: 
-            await ctx.send("✨ You are not currently tracking any shiny targets.")
+            await ctx.send("✨ You are not currently shiny hunting any pokemon.")
         
     elif sub_clean == "clear":
         GlobalDatabase.shiny_hunts[str(ctx.author.id)] = []
