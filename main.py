@@ -300,7 +300,7 @@ async def sh_clear(ctx):
 async def r_group(ctx):
     if ctx.invoked_subcommand is None:
         if ctx.message.mentions:
-            target_user = ctx.message.mentions[0]; tid = str(target_user.id); u_list = reserve_data.get(tid, [])
+            target_user = ctx.message.mentions; tid = str(target_user.id); u_list = reserve_data.get(tid, [])
             if u_list:
                 embed = discord.Embed(title=f"📋 Reserves for {target_user.name} ({len(u_list)})", description="\n".join([f"• **{n}**" for n in sorted(u_list)]), color=discord.Color.red())
                 return await ctx.send(embed=embed)
@@ -312,7 +312,7 @@ async def r_group(ctx):
 @r_group.command(name="add")
 async def r_add(ctx, *, args: str = None):
     if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
-    target_user = ctx.message.mentions[0]; tid = str(target_user.id)
+    target_user = ctx.message.mentions; tid = str(target_user.id)
     raw_names = re.sub(r'<@!?\d+>', '', args).strip()
     parts = [p.strip() for p in raw_names.split(",") if p.strip()]
     if tid not in reserve_data: reserve_data[tid] = []
@@ -333,7 +333,7 @@ async def r_add(ctx, *, args: str = None):
 @r_group.command(name="remove", aliases=["del"])
 async def r_remove(ctx, *, args: str = None):
     if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
-    target_user = ctx.message.mentions[0]; tid = str(target_user.id)
+    target_user = ctx.message.mentions; tid = str(target_user.id)
     raw_input = re.sub(r'<@!?\d+>', '', args).strip()
     if not raw_input:
         if tid in reserve_data and reserve_data[tid]:
@@ -354,14 +354,23 @@ async def r_remove(ctx, *, args: str = None):
 
 @r_group.command(name="list", aliases=["view"])
 async def r_list(ctx):
-    formatted_entries = []
+    # Group users by the same Pokémon name
+    pokemon_groups = {}
     for uid, arr in reserve_data.items():
-        for name in arr: formatted_entries.append(f"• **{name}** - <@{uid}>")
+        for name in arr:
+            if name not in pokemon_groups:
+                pokemon_groups[name] = []
+            pokemon_groups[name].append(f"<@{uid}>")
             
-    if not formatted_entries:
+    if not pokemon_groups:
         return await ctx.send(embed=discord.Embed(title="📋 Server Reserves Manifest (0)", description="📦 No Pokémon are currently reserved on this server.", color=discord.Color.red()))
     
-    formatted_entries.sort()
+    # Format layout: Pokémon Name - @user1, @user2
+    formatted_entries = []
+    for name in sorted(pokemon_groups.keys()):
+        users_str = ", ".join(pokemon_groups[name])
+        formatted_entries.append(f"• **{name}** - {users_str}")
+    
     paginator = DynamicListPaginator(data_list=formatted_entries, card_title="📋 Shared Server Reserve Manifest", chunk_size=20)
     await ctx.send(embed=paginator.get_page_embed(), view=paginator)
 
@@ -399,11 +408,14 @@ async def r_exchange(ctx, main_user: discord.Member = None):
                 for name in requested_names:
                     is_valid, matched_name = strict_pokemon_check(name)
                     if is_valid and matched_name in reserve_data[mid]:
-                        reserve_data[mid].remove(matched_name)
                         if target_uid not in reserve_data: reserve_data[target_uid] = []
                         if matched_name not in reserve_data[target_uid]: reserve_data[target_uid].append(matched_name)
                         valid_transfers.append(matched_name)
-                if valid_transfers: success_logs.append(f"• **{', '.join(valid_transfers)}** transferred from <@{mid}> to <@{target_uid}>")
+                        
+                if valid_transfers:
+                    for t_name in valid_transfers:
+                        if t_name in reserve_data[mid]: reserve_data[mid].remove(t_name)
+                    success_logs.append(f"• **{', '.join(valid_transfers)}** transferred from <@{mid}> to <@{target_uid}>")
                     
         if success_logs:
             save_data()
@@ -415,10 +427,7 @@ async def r_exchange(ctx, main_user: discord.Member = None):
 async def on_message(message):
     try:
         if message.author == bot.user: return
-        
-        # MANDATORY GATEWAY ROUTER LINE: Resolves the frozen command processing loops completely
         await bot.process_commands(message)
-        
         if (message.author.name == "Pokétwo" or message.author.id == 716390085896962058) and message.embeds:
             for emb in message.embeds:
                 if emb.image and emb.image.url:
@@ -433,15 +442,17 @@ async def on_message(message):
                         reserve_pings = []
                         for uid, arr in reserve_data.items():
                             if match in arr: reserve_pings.append(f"<@{uid}>")
-                        if reserve_pings: await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
+                        if reserve_pings: 
+                            await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
                         else:
                             normal_pings = []
                             for uid, col in user_collections.items():
                                 if match in col: normal_pings.append(f"<@{uid}>")
                             if is_shiny:
                                 for uid, sh in shiny_hunts.items():
-                                    if sh and match == sh[0]: normal_pings.append(f"<@{uid}> (✨ SHINY!)")
+                                    if sh and match == sh: normal_pings.append(f"<@{uid}> (✨ SHINY!)")
                             if normal_pings: await message.channel.send(f"🔔 **Wishlist Alert!** " + " ".join(list(set(normal_pings))))
     except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
+                    
