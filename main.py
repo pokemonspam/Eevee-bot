@@ -8,7 +8,6 @@ from PIL import Image
 from io import BytesIO
 from discord.ext import commands
 
-# Force full intents connection to allow the bot to read messages and resolve names
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=["e!", "E!"], intents=intents, help_command=None)
 
@@ -16,7 +15,6 @@ ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
 COLLECTION_FILE = "collection.json"
 
-# Strict dictionary containing all official Pokémon entries to check typos against
 VALID_POKEMON_NAMES = [
     "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise",
     "Caterpie", "Metapod", "Butterfree", "Weedle", "Kakuna", "Beedrill", "Pidgey", "Pidgeotto", "Pidgeot", "Rattata",
@@ -146,7 +144,7 @@ def save_data():
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump({"collection": user_collections, "shiny": shiny_hunts, "reserve_data": reserve_data}, f, indent=4)
         os.replace(temp_file, COLLECTION_FILE)
-    except Exception as e: print(f"[ERROR] Failed to save JSON block: {e}")
+    except Exception as e: print(f"[ERROR] Failed to save runtime database block: {e}")
 
 def strict_pokemon_check(input_name):
     clean_search = input_name.strip().lower()
@@ -196,7 +194,7 @@ async def on_ready():
     try:
         response = requests.get(ONLINE_DB_URL, timeout=15)
         if response.status_code == 200: pokemon_db = response.json()
-    except Exception as e: print(f"[CRITICAL] Online DB pull aborted: {e}")
+    except Exception as e: print(f"[CRITICAL] Network cloud stream broken: {e}")
 @bot.command(name="tags")
 async def tags_command(ctx):
     try:
@@ -255,7 +253,6 @@ async def cl_list(ctx):
 @cl_group.command(name="clear")
 async def cl_clear(ctx):
     user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection clean.")
-
 @bot.group(name="sh", invoke_without_command=True)
 async def sh_group(ctx, *, explicit_target: str = None):
     if ctx.invoked_subcommand is None:
@@ -290,7 +287,7 @@ async def sh_remove(ctx, *, name: str = None):
 @sh_group.command(name="list", aliases=["view"])
 async def sh_list(ctx):
     uid = str(ctx.author.id)
-    if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid][0]}**", color=discord.Color.red()))
+    if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid]}**", color=discord.Color.red()))
     else: await ctx.send("✨ You are not currently tracking any shiny targets.")
 
 @sh_group.command(name="clear")
@@ -304,17 +301,23 @@ async def r_group(ctx):
             if u_list:
                 embed = discord.Embed(title=f"📋 Reserves for {target_user.name} ({len(u_list)})", description="\n".join([f"• **{n}**" for n in sorted(u_list)]), color=discord.Color.red())
                 return await ctx.send(embed=embed)
-            else: return await ctx.send(embed=discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red()))
+            else: 
+                embed = discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red())
+                return await ctx.send(embed=embed)
                 
         embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`e!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`e!r remove @user` • Completely clear all active reserves for that user only\n`e!r @user` • View the reserved list for a specific person\n`e!r list` • View the entire server's reserve listings (20 entries per page)\n`e!r clear` • Wipe the absolute entire server reserve file data clean\n`e!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
         await ctx.send(embed=embed)
 
 @r_group.command(name="add")
 async def r_add(ctx, *, args: str = None):
-    if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
-    target_user = ctx.message.mentions; tid = str(target_user.id)
+    if not args: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
+    mention_match = re.search(r'<@!?(\d+)>', args)
+    if not mention_match: return await ctx.send("⚠️ Please mention a user to reserve the Pokémon for!")
+    
+    tid = str(mention_match.group(1))
     raw_names = re.sub(r'<@!?\d+>', '', args).strip()
     parts = [p.strip() for p in raw_names.split(",") if p.strip()]
+    
     if tid not in reserve_data: reserve_data[tid] = []
     added, duplicate, broken = [], [], []
     for raw in parts:
@@ -323,6 +326,7 @@ async def r_add(ctx, *, args: str = None):
             if matched not in reserve_data[tid]: reserve_data[tid].append(matched); added.append(matched)
             else: duplicate.append(matched)
         else: broken.append(raw)
+            
     if added or duplicate or broken: save_data()
     res = ""
     if added: res += f"📦 Added to reserves for <@{tid}>: **{', '.join(added)}**\n"
@@ -332,13 +336,18 @@ async def r_add(ctx, *, args: str = None):
 
 @r_group.command(name="remove", aliases=["del"])
 async def r_remove(ctx, *, args: str = None):
-    if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
-    target_user = ctx.message.mentions; tid = str(target_user.id)
+    if not args: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
+    mention_match = re.search(r'<@!?(\d+)>', args)
+    if not mention_match: return await ctx.send("⚠️ Please mention a user to remove reserves from!")
+        
+    tid = str(mention_match.group(1))
     raw_input = re.sub(r'<@!?\d+>', '', args).strip()
+    
     if not raw_input:
         if tid in reserve_data and reserve_data[tid]:
             reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑️ Wiped all reserves for <@{tid}>!")
         else: return await ctx.send(f"⚠️ <@{tid}> has no active reserves.")
+            
     parts = [p.strip() for p in raw_input.split(",") if p.strip()]
     removed, missing = [], []
     if tid in reserve_data:
@@ -354,18 +363,14 @@ async def r_remove(ctx, *, args: str = None):
 
 @r_group.command(name="list", aliases=["view"])
 async def r_list(ctx):
-    # Group users by the same Pokémon name
     pokemon_groups = {}
     for uid, arr in reserve_data.items():
         for name in arr:
-            if name not in pokemon_groups:
-                pokemon_groups[name] = []
+            if name not in pokemon_groups: pokemon_groups[name] = []
             pokemon_groups[name].append(f"<@{uid}>")
             
-    if not pokemon_groups:
-        return await ctx.send(embed=discord.Embed(title="📋 Server Reserves Manifest (0)", description="📦 No Pokémon are currently reserved on this server.", color=discord.Color.red()))
+    if not pokemon_groups: return await ctx.send(embed=discord.Embed(title="📋 Server Reserves Manifest (0)", description="📦 No Pokémon are currently reserved on this server.", color=discord.Color.red()))
     
-    # Format layout: Pokémon Name - @user1, @user2
     formatted_entries = []
     for name in sorted(pokemon_groups.keys()):
         users_str = ", ".join(pokemon_groups[name])
@@ -411,7 +416,6 @@ async def r_exchange(ctx, main_user: discord.Member = None):
                         if target_uid not in reserve_data: reserve_data[target_uid] = []
                         if matched_name not in reserve_data[target_uid]: reserve_data[target_uid].append(matched_name)
                         valid_transfers.append(matched_name)
-                        
                 if valid_transfers:
                     for t_name in valid_transfers:
                         if t_name in reserve_data[mid]: reserve_data[mid].remove(t_name)
@@ -442,8 +446,7 @@ async def on_message(message):
                         reserve_pings = []
                         for uid, arr in reserve_data.items():
                             if match in arr: reserve_pings.append(f"<@{uid}>")
-                        if reserve_pings: 
-                            await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
+                        if reserve_pings: await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
                         else:
                             normal_pings = []
                             for uid, col in user_collections.items():
@@ -455,4 +458,3 @@ async def on_message(message):
     except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
-                    
