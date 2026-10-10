@@ -9,7 +9,6 @@ from io import BytesIO
 from discord.ext import commands
 
 intents = discord.Intents.all()
-# CHANGED PREFIX ROUTING MATRIX TO A! AND a! ONLY
 bot = commands.Bot(command_prefix=["a!", "A!"], intents=intents, help_command=None)
 
 ONLINE_DB_URL = "https://githubusercontent.com"
@@ -80,7 +79,7 @@ VALID_POKEMON_NAMES += [
     "Sawsbuck", "Emolga", "Karrablast", "Escavalier", "Foongus", "Amoonguss", "Frillish", "Jellicent", "Alomomola",
     "Joltik", "Galvantula", "Ferroseed", "Ferrothorn", "Klink", "Klang", "Klinklang", "Tynamo", "Eelektrik", "Eelektross",
     "Elgyem", "Beheeyem", "Litwick", "Lampent", "Chandelure", "Axew", "Fraxure", "Haxorus", "Cubchoo", "Beartic",
-    "Cryogonad", "Shelmet", "Accelgor", "Stunfisk", "Mienfoo", "Mienshao", "Druddigon", "Golett", "Golurk", "Pawniard",
+    "Cryogonal", "Shelmet", "Accelgor", "Stunfisk", "Mienfoo", "Mienshao", "Druddigon", "Golett", "Golurk", "Pawniard",
     "Bisharp", "Bouffalant", "Rufflet", "Braviary", "Vullaby", "Mandibuzz", "Heatmor", "Durant", "Deino", "Welsh",
     "Hydreigon", "Larvesta", "Volcarona", "Cobalion", "Terrakion", "Virizion", "Tornadus", "Thundurus", "Reshiram",
     "Zekrom", "Landorus", "Kyurem", "Keldeo", "Meloetta", "Genesect", "Chespin", "Quilladin", "Chesnaught", "Fennekin",
@@ -209,14 +208,25 @@ async def on_ready():
         print(f"[CRITICAL] Network cloud stream broken: {e}")
 
 @bot.command(name="tags", aliases=["A!tags", "a!tags"])
-async def tags_command(ctx):
+async def tags_command(ctx, *, search_name: str = None):
     try:
-        active = {uid: hunts for uid, hunts in GlobalDatabase.shiny_hunts.items() if hunts}
-        if not active: 
-            return await ctx.send("✨ No active shiny hunters found on this server! Use `a!sh add <name>`.")
-        embed = discord.Embed(title="🌟 Server Shiny Hunters Master List", color=discord.Color.red())
-        description_text = "".join([f"• **@{bot.get_user(int(uid)).name if bot.get_user(int(uid)) else uid}** is hunting: *{', '.join(hunts)}*\n" for uid, hunts in active.items()])
-        embed.description = description_text
+        if not search_name:
+            return await ctx.send("⚠️ Format: `a!tags <pokemon_name>`")
+            
+        is_valid, matched_name = strict_pokemon_check(search_name)
+        if not is_valid:
+            return await ctx.send(f"❌ **{search_name}** is not a real Pokémon!")
+            
+        active_hunters = []
+        for uid, hunts in GlobalDatabase.shiny_hunts.items():
+            if hunts and matched_name in hunts:
+                active_hunters.append(f"• <@{uid}>")
+                
+        if not active_hunters:
+            return await ctx.send(f"📋 No active shiny hunters found tracking **{matched_name}** right now.")
+            
+        embed = discord.Embed(title=f"📋 Shiny Hunters tracking {matched_name}", color=discord.Color.red())
+        embed.description = "\n".join(active_hunters)
         embed.set_footer(text="Eevee Tracker Framework")
         await ctx.send(embed=embed)
     except Exception as e: 
@@ -232,7 +242,7 @@ async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
         if not arguments: 
             return await ctx.send("⚠️ Please specify at least one Pokémon! Example: `a!cl add Pikachu, Eevee`")
         uid = str(ctx.author.id)
-        if uid not in GlobalDatabase.user_collections: 
+        if uid not in user_collections: 
             GlobalDatabase.user_collections[uid] = []
         parts = [p.strip() for p in arguments.split(",") if p.strip()]
         added, duplicate, broken = [], [], []
@@ -327,7 +337,9 @@ async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
     elif sub_clean in ["list", "view"]:
         uid = str(ctx.author.id)
         if uid in GlobalDatabase.shiny_hunts and GlobalDatabase.shiny_hunts[uid]:
-            await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{GlobalDatabase.shiny_hunts[uid]}**", color=discord.Color.red()))
+            # FIXED: Grabs clean names out of the tracking list structure without bracket layouts
+            clean_names = ", ".join(GlobalDatabase.shiny_hunts[uid])
+            await ctx.send(embed=discord.Embed(title=f"📋 {ctx.author.name}'s Active Shiny Target", description=f"• **{clean_names}**", color=discord.Color.red()))
         else: 
             await ctx.send("✨ You are not currently tracking any shiny targets.")
         
@@ -443,7 +455,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         try:
             replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
             lines = replied_msg.content.split("\n")
-            if mid not in GlobalDatabase.reserve_data or not GlobalDatabase.reserve_data[mid]: return await ctx.send(f"❌ <@{mid}> has no active Pokémon reserved to exchange.")
+            if mid not in GlobalDatabase.reserve_data or not reserve_data[mid]: return await ctx.send(f"❌ <@{mid}> has no active Pokémon reserved to exchange.")
             success_logs = []
             for line in lines:
                 if not line.strip() or "-" not in line: continue
