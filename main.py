@@ -156,6 +156,7 @@ async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
                     if form not in GlobalDatabase.user_collections[uid]: GlobalDatabase.user_collections[uid].append(form); bulk_added.append(form)
                 if bulk_added: save_data()
                 return await ctx.send(f"✅ Added **{len(bulk_added)}** Pokémon to your collections for this server!")
+
             parts = [p.strip() for p in arguments.split(",") if p.strip()]
             added, duplicate, broken = [], [], []
             for raw in parts:
@@ -239,7 +240,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
             tid = str(mention_match.group(1)); target_user = await bot.fetch_user(int(tid))
             u_list = GlobalDatabase.reserve_data.get(tid, [])
             if u_list: return await ctx.send(embed=discord.Embed(title=f"📋 Reserves for {target_user.name} ({len(u_list)})", description="\n".join([f"• **{n}**" for n in sorted(u_list)]), color=discord.Color.red()))
-            else: return await ctx.send(embed=discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red()))
+            else: return await ctx.send(embed=discord.Embed(title=f"📋 Server Reserves", description=f"📦 <@{tid}> has no Pokémon reserved currently.", color=discord.Color.red()))
 
         if sub_clean == "add":
             if not args: return await ctx.send("⚠️ Format: `a!r add Pikachu @user` or `a!r add all furfrou @user`")
@@ -256,6 +257,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
                     if form not in GlobalDatabase.reserve_data[tid]: GlobalDatabase.reserve_data[tid].append(form); bulk_added.append(form)
                 if bulk_added: save_data()
                 return await ctx.send(f"📦 Added **{len(bulk_added)}** Pokémon to reserves for <@{tid}>!")
+
             parts = [p.strip() for p in raw_names.split(",") if p.strip()]
             added, duplicate, broken = [], [], []
             for raw in parts:
@@ -344,7 +346,6 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
                 else: await ctx.send("❌ Exchange failed! Make sure requested Pokémon are owned by the main user.")
             except Exception as e: print(f"Reserve exchange fault: {e}")
     except Exception as e: print(f"R Router fault: {e}")
-
 @bot.listen("on_message")
 async def poketwo_image_scanner(message):
     try:
@@ -372,6 +373,6 @@ async def poketwo_image_scanner(message):
                             for uid, sh in GlobalDatabase.shiny_hunts.items():
                                 if sh and (sh.lower() == matched_lower or sh.lower() == f"normal {matched_lower}"): normal_pings.append(f"<@{uid}> (✨ SHINY!)")
                         if normal_pings: await message.channel.send(f"🔔 **List Alert!** " + " ".join(list(set(normal_pings))))
-except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
+    except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
