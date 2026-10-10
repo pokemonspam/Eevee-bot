@@ -201,7 +201,7 @@ async def on_ready():
 async def tags_command(ctx):
     try:
         active = {uid: hunts for uid, hunts in shiny_hunts.items() if hunts}
-        if not active: return await ctx.send("✨ No active shiny hunters found on this server! Use `e!sh add <name>`.")
+        if not active: return await ctx.send("✨ No active shiny hunters found on this server! Use `e!sh <name>`.")
         embed = discord.Embed(title="🌟 Server Shiny Hunters Master List", color=discord.Color.red())
         description_text = "".join([f"• **@{bot.get_user(int(uid)).name if bot.get_user(int(uid)) else uid}** is hunting: *{', '.join(hunts)}*\n" for uid, hunts in active.items()])
         embed.description = description_text; embed.set_footer(text="Eevee Tracker Framework")
@@ -256,10 +256,21 @@ async def cl_clear(ctx):
     user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection clean.")
 @bot.group(name="sh", invoke_without_command=True)
 async def sh_group(ctx, *, arg: str = None):
+    # COMPREHENSIVE TEXT ROUTER FIX: Prevents arguments from breaking lookups or double-responding
     if arg:
         arg_lower = arg.lower().strip()
-        if arg_lower in ["list", "view"]: return await ctx.invoke(bot.get_command('sh list'))
-        elif arg_lower == "clear": return await ctx.invoke(bot.get_command('sh clear'))
+        if arg_lower in ["list", "view"]: 
+            return await ctx.invoke(bot.get_command('sh list'))
+        elif arg_lower == "clear": 
+            return await ctx.invoke(bot.get_command('sh clear'))
+        elif arg_lower.startswith("remove "):
+            return await ctx.invoke(bot.get_command('sh remove'), name=arg[7:])
+        elif arg_lower.startswith("del "):
+            return await ctx.invoke(bot.get_command('sh remove'), name=arg[4:])
+        else:
+            # Fallback path directly triggers add configuration
+            return await ctx.invoke(bot.get_command('sh add'), name=arg)
+            
     embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh <name>` • Set active shiny target\n`e!sh remove <name>` • Drop shiny target\n`e!sh list` • View target\n`e!sh clear` • Wipe data", color=discord.Color.red())
     await ctx.send(embed=embed)
 
@@ -284,7 +295,7 @@ async def sh_remove(ctx, *, name: str = None):
 @sh_group.command(name="list", aliases=["view"])
 async def sh_list(ctx):
     uid = str(ctx.author.id)
-    if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid]}**", color=discord.Color.red()))
+    if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid][0]}**", color=discord.Color.red()))
     else: await ctx.send("✨ You are not currently tracking any shiny targets.")
 
 @sh_group.command(name="clear")
@@ -293,7 +304,7 @@ async def sh_clear(ctx):
 @bot.group(name="r", invoke_without_command=True)
 async def r_group(ctx):
     if ctx.message.mentions and not ctx.subcommand_passed:
-        target_user = ctx.message.mentions
+        target_user = ctx.message.mentions[0]
         tid = str(target_user.id)
         u_list = reserve_data.get(tid, [])
         if u_list:
@@ -307,7 +318,7 @@ async def r_group(ctx):
 @r_group.command(name="add")
 async def r_add(ctx, *, args: str = None):
     if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
-    target_user = ctx.message.mentions; tid = str(target_user.id)
+    target_user = ctx.message.mentions[0]; tid = str(target_user.id)
     raw_names = re.sub(r'<@!?\d+>', '', args).strip()
     parts = [p.strip() for p in raw_names.split(",") if p.strip()]
     if tid not in reserve_data: reserve_data[tid] = []
@@ -320,7 +331,7 @@ async def r_add(ctx, *, args: str = None):
         else: broken.append(raw)
     if added or duplicate or broken: save_data()
     res = ""
-    if added: res += f"✅ Added to reserves for <@{tid}>: **{', '.join(added)}**\n"
+    if added: res += f"📦 Added to reserves for <@{tid}>: **{', '.join(added)}**\n"
     if duplicate: res += f"⚠️ Already reserved: **{', '.join(duplicate)}**\n"
     if broken: res += f"❌ **{', '.join(broken)}** is not a real Pokémon! Blocked.\n"
     await ctx.send(res)
@@ -328,7 +339,7 @@ async def r_add(ctx, *, args: str = None):
 @r_group.command(name="remove", aliases=["del"])
 async def r_remove(ctx, *, args: str = None):
     if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
-    target_user = ctx.message.mentions; tid = str(target_user.id)
+    target_user = ctx.message.mentions[0]; tid = str(target_user.id)
     raw_input = re.sub(r'<@!?\d+>', '', args).strip()
     if not raw_input:
         if tid in reserve_data and reserve_data[tid]:
@@ -378,16 +389,13 @@ async def r_exchange(ctx, main_user: discord.Member = None):
         for line in lines:
             if not line.strip() or "-" not in line: continue
             
-            # UNIFIED MULTI-LINE SPLIT LOGIC ENGINE
             left_part, right_part = line.split("-", 1)
             target_uid = None
             
-            # 1. Scan the line segment looking for direct system mention numbers
             uid_match = re.search(r'(\d+)', left_part)
             if uid_match:
                 target_uid = str(uid_match.group(1))
             else:
-                # 2. String Match Fallback: Clear formatting characters to inspect the text tag string
                 clean_tag = left_part.replace('•', '').replace('*', '').strip().lower()
                 for member in ctx.guild.members:
                     if clean_tag in member.name.lower() or (member.nick and clean_tag in member.nickname.lower()):
@@ -412,7 +420,7 @@ async def r_exchange(ctx, main_user: discord.Member = None):
         if success_logs:
             save_data()
             await ctx.send(embed=discord.Embed(title="🔄 Reserve Exchange Ledger Summary", description="\n".join(success_logs), color=discord.Color.red()))
-        else: await ctx.send("❌ Exchange failed! Make sure the listed Pokémon are currently owned by the main user on their `e!r` list.")
+        else: await ctx.send("❌ Exchange failed! Make sure requested Pokémon are owned by the main user.")
     except Exception as e: await ctx.send(f"❌ Error reading message context strings: {e}")
 
 @bot.event
