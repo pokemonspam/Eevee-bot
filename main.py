@@ -281,7 +281,7 @@ async def sh_list(ctx):
 @sh_group.command(name="clear")
 async def sh_clear(ctx):
     shiny_hunts[str(ctx.author.id)] = []; save_data(); await ctx.send("✨🗑️ Shiny hunt cleared.")
-@bot.group(name="r", invoke_without_command=True)
+ @bot.group(name="r", invoke_without_command=True)
 async def r_group(ctx):
     # LOOKUP ENGINE: Displays the specific target user's active reserves in an embed card
     if ctx.message.mentions and not ctx.subcommand_passed:
@@ -341,7 +341,6 @@ async def r_remove(ctx, *, args: str = None):
 
 @r_group.command(name="list", aliases=["view"])
 async def r_list(ctx):
-    # FIXED FLIPPED VERTICAL MAP LAYOUT ENGINE
     formatted_entries = []
     for uid, arr in reserve_data.items():
         for name in arr: formatted_entries.append(f"• **{name}** - <@{uid}>")
@@ -349,10 +348,7 @@ async def r_list(ctx):
     if not formatted_entries:
         return await ctx.send(embed=discord.Embed(title="📋 Server Reserves Manifest (0)", description="📦 No Pokémon are currently reserved on this server.", color=discord.Color.red()))
     
-    # Sort entries alphabetically by Pokemon name
     formatted_entries.sort()
-    
-    # Spawn interactive pagination screen chunked at exactly 20 lines per card view
     paginator = ReservePaginator(data_list=formatted_entries, chunk_size=20)
     await ctx.send(embed=paginator.get_page_embed(), view=paginator)
 
@@ -372,23 +368,33 @@ async def r_exchange(ctx, main_user: discord.Member = None):
             
         success_logs = []
         for line in lines:
-            # Captures both flipped format profiles: PokemonName - @User or PokemonName - <@123>
-            match = re.search(r'•?\s*\*?([A-Za-z0-9♀♂\s\',.:-]+)\*?\s*-\s*<@!?(\d+)>', line)
-            if match:
-                poke_raw = match.group(1).strip()
-                target_uid = str(match.group(2))
-                is_valid, matched_name = strict_pokemon_check(poke_raw)
+            if not line.strip(): continue
+            
+            user_match = re.search(r'<@!?(\d+)>', line)
+            if user_match:
+                target_uid = str(user_match.group(1))
+                # Isolate the text segment holding the name values
+                clean_chunk = re.sub(r'<@!?\d+>', '', line).replace('•', '').replace('-', '').replace('*', '').strip()
                 
-                if is_valid and matched_name in reserve_data[mid]:
-                    reserve_data[mid].remove(matched_name)
-                    if target_uid not in reserve_data: reserve_data[target_uid] = []
-                    if matched_name not in reserve_data[target_uid]: reserve_data[target_uid].append(matched_name)
-                    success_logs.append(f"• **{matched_name}** transferred from <@{mid}> to <@{target_uid}>")
+                # Split the block cleanly by comma structures to allow multiple transfers on a single text line
+                requested_names = [p.strip() for p in clean_chunk.split(",") if p.strip()]
+                
+                valid_transfers = []
+                for name in requested_names:
+                    is_valid, matched_name = strict_pokemon_check(name)
+                    if is_valid and matched_name in reserve_data[mid]:
+                        reserve_data[mid].remove(matched_name)
+                        if target_uid not in reserve_data: reserve_data[target_uid] = []
+                        if matched_name not in reserve_data[target_uid]: reserve_data[target_uid].append(matched_name)
+                        valid_transfers.append(matched_name)
+                        
+                if valid_transfers:
+                    success_logs.append(f"• **{', '.join(valid_transfers)}** transferred from <@{mid}> to <@{target_uid}>")
                     
         if success_logs:
             save_data()
             await ctx.send(embed=discord.Embed(title="🔄 Reserve Exchange Ledger Summary", description="\n".join(success_logs), color=discord.Color.red()))
-        else: await ctx.send("❌ Exchange failed! Text formatting mismatch or requested Pokémon aren't held by main user.")
+        else: await ctx.send("❌ Exchange failed! Make sure the listed Pokémon are currently owned by the main user on their `e!r` list.")
     except Exception as e: await ctx.send(f"❌ Error reading message context strings: {e}")
 
 @bot.event
@@ -426,3 +432,4 @@ async def on_message(message):
     except Exception as general_err: print(f"[FATAL SCANNER LOG] Trapped safely: {general_err}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
+                   
