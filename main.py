@@ -14,7 +14,6 @@ bot = commands.Bot(command_prefix=["e!", "E!"], intents=intents, help_command=No
 ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
 COLLECTION_FILE = "collection.json"
-
 VALID_POKEMON_NAMES = [
     "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise",
     "Caterpie", "Metapod", "Butterfree", "Weedle", "Kakuna", "Beedrill", "Pidgey", "Pidgeotto", "Pidgeot", "Rattata",
@@ -206,96 +205,102 @@ async def tags_command(ctx):
         await ctx.send(embed=embed)
     except Exception as e: await ctx.send(f"❌ Error handling command: {e}")
 
-@bot.group(name="cl", invoke_without_command=True)
+@bot.group(name="cl")
 async def cl_group(ctx):
-    if ctx.invoked_subcommand is None:
+    pass
+
+@bot.command(name="cl", aliases=["E!cl"])
+async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
+    if not subcommand:
         embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Add Pokémon (Separate entries with commas)\n`e!cl remove <name>` • Remove a target\n`e!cl list` • View your wishlist embed (20 entries per page)\n`e!cl clear` • Wipe list clean", color=discord.Color.red())
-        await ctx.send(embed=embed)
+        return await ctx.send(embed=embed)
+        
+    sub_clean = subcommand.lower().strip()
+    if sub_clean == "add":
+        if not arguments: return await ctx.send("⚠️ Please specify at least one Pokémon! Example: `e!cl add Pikachu, Eevee`")
+        uid = str(ctx.author.id)
+        if uid not in user_collections: user_collections[uid] = []
+        parts = [p.strip() for p in arguments.split(",") if p.strip()]
+        added, duplicate, broken = [], [], []
+        for raw in parts:
+            is_valid, matched_name = strict_pokemon_check(raw)
+            if is_valid:
+                if matched_name not in user_collections[uid]: user_collections[uid].append(matched_name); added.append(matched_name)
+                else: duplicate.append(matched_name)
+            else: broken.append(raw)
+        if added or duplicate or broken: save_data()
+        res = ""
+        if added: res += f"✅ Added: **{', '.join(added)}**\n"
+        if duplicate: res += f"⚠️ Already tracked: **{', '.join(duplicate)}**\n"
+        if broken: res += f"❌ **{', '.join(broken)}** is not a real Pokémon! Blocked.\n"
+        await ctx.send(res)
+        
+    elif sub_clean in ["remove", "del"]:
+        if not arguments: return await ctx.send("⚠️ Please specify a Pokémon to drop!")
+        uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(arguments)
+        if is_valid and uid in user_collections and matched_name in user_collections[uid]:
+            user_collections[uid].remove(matched_name); save_data()
+            await ctx.send(f"❌ **{matched_name}** has been removed.")
+        else: await ctx.send(f"⚠️ Target Pokémon was not found inside your list.")
+        
+    elif sub_clean in ["list", "view"]:
+        uid = str(ctx.author.id)
+        if uid in user_collections and user_collections[uid]:
+            formatted_wishlist = [f"• **{n}**" for n in sorted(user_collections[uid])]
+            paginator = DynamicListPaginator(data_list=formatted_wishlist, card_title=f"📋 {ctx.author.name}'s Collection Wishlist")
+            await ctx.send(embed=paginator.get_page_embed(), view=paginator)
+        else: await ctx.send("📁 Your collection list is empty.")
+        
+    elif sub_clean == "clear":
+        user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection clean.")
+@bot.group(name="sh")
+async def sh_group(ctx):
+    pass
 
-@cl_group.command(name="add")
-async def cl_add(ctx, *, raw_names: str = None):
-    if not raw_names: return await ctx.send("⚠️ Please specify at least one Pokémon! Example: `e!cl add Pikachu, Eevee`")
-    uid = str(ctx.author.id)
-    if uid not in user_collections: user_collections[uid] = []
-    parts = [p.strip() for p in raw_names.split(",") if p.strip()]
-    added, duplicate, broken = [], [], []
-    for raw in parts:
-        is_valid, matched_name = strict_pokemon_check(raw)
-        if is_valid:
-            if matched_name not in user_collections[uid]: user_collections[uid].append(matched_name); added.append(matched_name)
-            else: duplicate.append(matched_name)
-        else: broken.append(raw)
-    if added or duplicate or broken: save_data()
-    res = ""
-    if added: res += f"✅ Added: **{', '.join(added)}**\n"
-    if duplicate: res += f"⚠️ Already tracked: **{', '.join(duplicate)}**\n"
-    if broken: res += f"❌ **{', '.join(broken)}** is not a real Pokémon! Blocked.\n"
-    await ctx.send(res)
+@bot.command(name="sh", aliases=["E!sh"])
+async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
+    if not subcommand:
+        embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh add <name>` • Set active shiny target\n`e!sh remove <name>` • Drop shiny target\n`e!sh list` • View target\n`e!sh clear` • Wipe data", color=discord.Color.red())
+        return await ctx.send(embed=embed)
+        
+    sub_clean = subcommand.lower().strip()
+    
+    if sub_clean not in ["add", "remove", "del", "list", "view", "clear"]:
+        full_name = (subcommand + " " + name_arg) if name_arg else subcommand
+        uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(full_name)
+        if not is_valid: return await ctx.send(f"❌ **{full_name}** is not a real Pokémon!")
+        if uid in shiny_hunts and shiny_hunts[uid] == [matched_name]: return await ctx.send(f"⚠️ Already tracking shiny **{matched_name}**.")
+        shiny_hunts[uid] = [matched_name]; save_data()
+        return await ctx.send(f"✨ **{matched_name}** has been registered as your active Shiny Hunt!")
 
-@cl_group.command(name="remove", aliases=["del"])
-async def cl_remove(ctx, *, name: str = None):
-    if not name: return await ctx.send("⚠️ Please specify a Pokémon to drop!")
-    uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(name)
-    if is_valid and uid in user_collections and matched_name in user_collections[uid]:
-        user_collections[uid].remove(matched_name); save_data()
-        await ctx.send(f"❌ **{matched_name}** has been removed.")
-    else: await ctx.send(f"⚠️ Target Pokémon was not found inside your list.")
-
-@cl_group.command(name="list", aliases=["view"])
-async def cl_list(ctx):
-    uid = str(ctx.author.id)
-    if uid in user_collections and user_collections[uid]:
-        formatted_wishlist = [f"• **{n}**" for n in sorted(user_collections[uid])]
-        paginator = DynamicListPaginator(data_list=formatted_wishlist, card_title=f"📋 {ctx.author.name}'s Collection Wishlist")
-        await ctx.send(embed=paginator.get_page_embed(), view=paginator)
-    else: await ctx.send("📁 Your collection list is empty.")
-
-@cl_group.command(name="clear")
-async def cl_clear(ctx):
-    user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection clean.")
-@bot.group(name="sh", invoke_without_command=True)
-async def sh_group(ctx, *, explicit_target: str = None):
-    if ctx.invoked_subcommand is None:
-        if explicit_target:
-            clean_arg = explicit_target.strip().lower()
-            if clean_arg in ["list", "view"]: return await ctx.invoke(bot.get_command('sh list'))
-            elif clean_arg == "clear": return await ctx.invoke(bot.get_command('sh clear'))
-            elif clean_arg.startswith("add "): return await ctx.invoke(bot.get_command('sh add'), name=explicit_target[4:])
-            elif clean_arg.startswith("remove "): return await ctx.invoke(bot.get_command('sh remove'), name=explicit_target[7:])
-            elif clean_arg.startswith("del "): return await ctx.invoke(bot.get_command('sh remove'), name=explicit_target[4:])
-            else: return await ctx.invoke(bot.get_command('sh add'), name=explicit_target)
-            
-        embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh <name>` • Set active shiny target\n`e!sh remove <name>` • Drop shiny target\n`e!sh list` • View target\n`e!sh clear` • Wipe data", color=discord.Color.red())
-        await ctx.send(embed=embed)
-
-@sh_group.command(name="add")
-async def sh_add(ctx, *, name: str = None):
-    if not name: return await ctx.send("⚠️ Please specify a target name!")
-    uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(name)
-    if not is_valid: return await ctx.send(f"❌ **{name}** is not a real Pokémon!")
-    if uid in shiny_hunts and shiny_hunts[uid] == [matched_name]: return await ctx.send(f"⚠️ Already tracking shiny **{matched_name}**.")
-    shiny_hunts[uid] = [matched_name]; save_data()
-    await ctx.send(f"✨ **{matched_name}** has been registered as your active Shiny Hunt!")
-
-@sh_group.command(name="remove", aliases=["del"])
-async def sh_remove(ctx, *, name: str = None):
-    if not name: return await ctx.send("⚠️ Please specify a target to remove!")
-    uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(name)
-    if is_valid and uid in shiny_hunts and matched_name in shiny_hunts[uid]: shiny_hunts[uid].remove(matched_name); save_data(); await ctx.send(f"❌ **{matched_name}** removed.")
-    else: await ctx.send("⚠️ Target was not active on your list.")
-
-@sh_group.command(name="list", aliases=["view"])
-async def sh_list(ctx):
-    uid = str(ctx.author.id)
-    if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid]}**", color=discord.Color.red()))
-    else: await ctx.send("✨ You are not currently tracking any shiny targets.")
-
-@sh_group.command(name="clear")
-async def sh_clear(ctx):
-    shiny_hunts[str(ctx.author.id)] = []; save_data(); await ctx.send("✨🗑 Shiny hunt cleared.")
-@bot.group(name="r", invoke_without_command=True)
+    if sub_clean == "add":
+        if not name_arg: return await ctx.send("⚠️ Please specify a target name!")
+        uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(name_arg)
+        if not is_valid: return await ctx.send(f"❌ **{name_arg}** is not a real Pokémon!")
+        if uid in shiny_hunts and shiny_hunts[uid] == [matched_name]: return await ctx.send(f"⚠️ Already tracking shiny **{matched_name}**.")
+        shiny_hunts[uid] = [matched_name]; save_data()
+        await ctx.send(f"✨ **{matched_name}** has been registered as your active Shiny Hunt!")
+        
+    elif sub_clean in ["remove", "del"]:
+        if not name_arg: return await ctx.send("⚠️ Please specify a target to remove!")
+        uid = str(ctx.author.id); is_valid, matched_name = strict_pokemon_check(name_arg)
+        if is_valid and uid in shiny_hunts and matched_name in shiny_hunts[uid]: shiny_hunts[uid].remove(matched_name); save_data(); await ctx.send(f"❌ **{matched_name}** removed.")
+        else: await ctx.send("⚠️ Target was not active on your list.")
+        
+    elif sub_clean in ["list", "view"]:
+        uid = str(ctx.author.id)
+        if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid]}**", color=discord.Color.red()))
+        else: await ctx.send("✨ You are not currently tracking any shiny targets.")
+        
+    elif sub_clean == "clear":
+        shiny_hunts[str(ctx.author.id)] = []; save_data(); await ctx.send("✨🗑 Shiny hunt cleared.")
+@bot.group(name="r")
 async def r_group(ctx):
-    if ctx.invoked_subcommand is None:
+    pass
+
+@bot.command(name="r", aliases=["E!r"])
+async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
+    if not subcommand:
         if ctx.message.mentions:
             target_user = ctx.message.mentions; tid = str(target_user.id); u_list = reserve_data.get(tid, [])
             if u_list:
@@ -306,127 +311,110 @@ async def r_group(ctx):
                 return await ctx.send(embed=embed)
                 
         embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`e!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`e!r remove @user` • Completely clear all active reserves for that user only\n`e!r @user` • View the reserved list for a specific person\n`e!r list` • View the entire server's reserve listings (20 entries per page)\n`e!r clear` • Wipe the absolute entire server reserve file data clean\n`e!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
-        await ctx.send(embed=embed)
-
-@r_group.command(name="add")
-async def r_add(ctx, *, args: str = None):
-    if not args: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
-    mention_match = re.search(r'<@!?(\d+)>', args)
-    if not mention_match: return await ctx.send("⚠️ Please mention a user to reserve the Pokémon for!")
-    
-    tid = str(mention_match.group(1))
-    raw_names = re.sub(r'<@!?\d+>', '', args).strip()
-    parts = [p.strip() for p in raw_names.split(",") if p.strip()]
-    
-    if tid not in reserve_data: reserve_data[tid] = []
-    added, duplicate, broken = [], [], []
-    for raw in parts:
-        is_valid, matched = strict_pokemon_check(raw)
-        if is_valid:
-            if matched not in reserve_data[tid]: reserve_data[tid].append(matched); added.append(matched)
-            else: duplicate.append(matched)
-        else: broken.append(raw)
-            
-    if added or duplicate or broken: save_data()
-    res = ""
-    if added: res += f"📦 Added to reserves for <@{tid}>: **{', '.join(added)}**\n"
-    if duplicate: res += f"⚠️ Already reserved: **{', '.join(duplicate)}**\n"
-    if broken: res += f"❌ **{', '.join(broken)}** is not a real Pokémon! Blocked.\n"
-    await ctx.send(res)
-
-@r_group.command(name="remove", aliases=["del"])
-async def r_remove(ctx, *, args: str = None):
-    if not args: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
-    mention_match = re.search(r'<@!?(\d+)>', args)
-    if not mention_match: return await ctx.send("⚠️ Please mention a user to remove reserves from!")
+        return await ctx.send(embed=embed)
         
-    tid = str(mention_match.group(1))
-    raw_input = re.sub(r'<@!?\d+>', '', args).strip()
-    
-    if not raw_input:
-        if tid in reserve_data and reserve_data[tid]:
-            reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑️ Wiped all reserves for <@{tid}>!")
-        else: return await ctx.send(f"⚠️ <@{tid}> has no active reserves.")
-            
-    parts = [p.strip() for p in raw_input.split(",") if p.strip()]
-    removed, missing = [], []
-    if tid in reserve_data:
+    sub_clean = subcommand.lower().strip()
+    if sub_clean == "add":
+        if not args: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
+        mention_match = re.search(r'<@!?(\d+)>', args)
+        if not mention_match: return await ctx.send("⚠️ Please mention a user to reserve the Pokémon for!")
+        tid = str(mention_match.group(1)); raw_names = re.sub(r'<@!?\d+>', '', args).strip()
+        parts = [p.strip() for p in raw_names.split(",") if p.strip()]
+        if tid not in reserve_data: reserve_data[tid] = []
+        added, duplicate, broken = [], [], []
         for raw in parts:
             is_valid, matched = strict_pokemon_check(raw)
-            if is_valid and matched in reserve_data[tid]: reserve_data[tid].remove(matched); removed.append(matched)
-            else: missing.append(raw)
-    if removed: save_data()
-    res = ""
-    if removed: res += f"❌ Removed from <@{tid}>: **{', '.join(removed)}**\n"
-    if missing: res += f"⚠️ Not found on their list: **{', '.join(missing)}**\n"
-    await ctx.send(res)
-
-@r_group.command(name="list", aliases=["view"])
-async def r_list(ctx):
-    pokemon_groups = {}
-    for uid, arr in reserve_data.items():
-        for name in arr:
-            if name not in pokemon_groups: pokemon_groups[name] = []
-            pokemon_groups[name].append(f"<@{uid}>")
-            
-    if not pokemon_groups: return await ctx.send(embed=discord.Embed(title="📋 Server Reserves Manifest (0)", description="📦 No Pokémon are currently reserved on this server.", color=discord.Color.red()))
-    
-    formatted_entries = []
-    for name in sorted(pokemon_groups.keys()):
-        users_str = ", ".join(pokemon_groups[name])
-        formatted_entries.append(f"• **{name}** - {users_str}")
-    
-    paginator = DynamicListPaginator(data_list=formatted_entries, card_title="📋 Shared Server Reserve Manifest", chunk_size=20)
-    await ctx.send(embed=paginator.get_page_embed(), view=paginator)
-
-@r_group.command(name="clear")
-async def r_clear(ctx):
-    global reserve_data; reserve_data = {}; save_data(); await ctx.send("📦🗑 Server Reserve Database file wiped clean!")
-
-@r_group.command(name="e")
-async def r_exchange(ctx, main_user: discord.Member = None):
-    if not main_user: return await ctx.send("⚠️ Example: `e!r e @mainuser`")
-    if not ctx.message.reference: return await ctx.send("⚠️ You must **reply** directly to the target list message with this command!")
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-        lines = replied_msg.content.split("\n")
-        mid = str(main_user.id)
-        if mid not in reserve_data or not reserve_data[mid]: return await ctx.send(f"❌ <@{mid}> has no active Pokémon reserved to exchange.")
-            
-        success_logs = []
-        for line in lines:
-            if not line.strip() or "-" not in line: continue
-            left_part, right_part = line.split("-", 1)
-            target_uid = None
-            uid_match = re.search(r'(\d+)', left_part)
-            if uid_match: target_uid = str(uid_match.group(1))
-            else:
-                clean_tag = left_part.replace('•', '').replace('*', '').strip().lower()
-                for member in ctx.guild.members:
-                    if clean_tag in member.name.lower() or (member.nick and clean_tag in member.nickname.lower()):
-                        target_uid = str(member.id); break
-                        
-            if target_uid:
-                clean_pokemon_block = right_part.replace('•', '').replace('*', '').strip()
-                requested_names = [p.strip() for p in clean_pokemon_block.split(",") if p.strip()]
-                valid_transfers = []
-                for name in requested_names:
-                    is_valid, matched_name = strict_pokemon_check(name)
-                    if is_valid and matched_name in reserve_data[mid]:
-                        if target_uid not in reserve_data: reserve_data[target_uid] = []
-                        if matched_name not in reserve_data[target_uid]: reserve_data[target_uid].append(matched_name)
-                        valid_transfers.append(matched_name)
-                if valid_transfers:
-                    for t_name in valid_transfers:
-                        if t_name in reserve_data[mid]: reserve_data[mid].remove(t_name)
-                    success_logs.append(f"• **{', '.join(valid_transfers)}** transferred from <@{mid}> to <@{target_uid}>")
-                    
-        if success_logs:
-            save_data()
-            await ctx.send(embed=discord.Embed(title="🔄 Reserve Exchange Ledger Summary", description="\n".join(success_logs), color=discord.Color.red()))
-        else: await ctx.send("❌ Exchange failed! Make sure requested Pokémon are owned by the main user.")
-    except Exception as e: await ctx.send(f"❌ Error reading message context strings: {e}")
-
+            if is_valid:
+                if matched not in reserve_data[tid]: reserve_data[tid].append(matched); added.append(matched)
+                else: duplicate.append(matched)
+            else: broken.append(raw)
+        if added or duplicate or broken: save_data()
+        res = ""
+        if added: res += f"📦 Added to reserves for <@{tid}>: **{', '.join(added)}**\n"
+        if duplicate: res += f"⚠️ Already reserved: **{', '.join(duplicate)}**\n"
+        if broken: res += f"❌ **{', '.join(broken)}** is not a real Pokémon! Blocked.\n"
+        await ctx.send(res)
+        
+    elif sub_clean in ["remove", "del"]:
+        if not args: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
+        mention_match = re.search(r'<@!?(\d+)>', args)
+        if not mention_match: return await ctx.send("⚠️ Please mention a user to remove reserves from!")
+        tid = str(mention_match.group(1)); raw_input = re.sub(r'<@!?\d+>', '', args).strip()
+        if not raw_input:
+            if tid in reserve_data and reserve_data[tid]:
+                reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑️ Wiped all reserves for <@{tid}>!")
+            else: return await ctx.send(f"⚠️ <@{tid}> has no active reserves.")
+        parts = [p.strip() for p in raw_input.split(",") if p.strip()]
+        removed, missing = [], []
+        if tid in reserve_data:
+            for raw in parts:
+                is_valid, matched = strict_pokemon_check(raw)
+                if is_valid and matched in reserve_data[tid]: reserve_data[tid].remove(matched); removed.append(matched)
+                else: missing.append(raw)
+        if removed: save_data()
+        res = ""
+        if removed: res += f"❌ Removed from <@{tid}>: **{', '.join(removed)}**\n"
+        if missing: res += f"⚠️ Not found on their list: **{', '.join(missing)}**\n"
+        await ctx.send(res)
+        
+    elif sub_clean in ["list", "view"]:
+        pokemon_groups = {}
+        for uid, arr in reserve_data.items():
+            for name in arr:
+                if name not in pokemon_groups: pokemon_groups[name] = []
+                pokemon_groups[name].append(f"<@{uid}>")
+        if not pokemon_groups: return await ctx.send(embed=discord.Embed(title="📋 Server Reserves Manifest (0)", description="📦 No Pokémon are currently reserved on this server.", color=discord.Color.red()))
+        formatted_entries = []
+        for name in sorted(pokemon_groups.keys()):
+            users_str = ", ".join(pokemon_groups[name])
+            formatted_entries.append(f"• **{name}** - {users_str}")
+        paginator = DynamicListPaginator(data_list=formatted_entries, card_title="📋 Shared Server Reserve Manifest", chunk_size=20)
+        await ctx.send(embed=paginator.get_page_embed(), view=paginator)
+        
+    elif sub_clean == "clear":
+        global reserve_data; reserve_data = {}; save_data(); await ctx.send("📦🗑 Server Reserve Database file wiped clean!")
+        
+    elif sub_clean == "e":
+        if not args: return await ctx.send("⚠️ Example: `e!r e @mainuser`")
+        mention_match = re.search(r'<@!?(\d+)>', args)
+        if not mention_match: return await ctx.send("⚠️ Please specify the main user to exchange from!")
+        mid = str(mention_match.group(1))
+        if not ctx.message.reference: return await ctx.send("⚠️ You must **reply** directly to the target list message with this command!")
+        try:
+            replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            lines = replied_msg.content.split("\n")
+            if mid not in reserve_data or not reserve_data[mid]: return await ctx.send(f"❌ <@{mid}> has no active Pokémon reserved to exchange.")
+            success_logs = []
+            for line in lines:
+                if not line.strip() or "-" not in line: continue
+                left_part, right_part = line.split("-", 1)
+                target_uid = None
+                uid_match = re.search(r'(\d+)', left_part)
+                if uid_match: target_uid = str(uid_match.group(1))
+                else:
+                    clean_tag = left_part.replace('•', '').replace('*', '').strip().lower()
+                    for member in ctx.guild.members:
+                        if clean_tag in member.name.lower() or (member.nick and clean_tag in member.nickname.lower()):
+                            target_uid = str(member.id); break
+                if target_uid:
+                    clean_pokemon_block = right_part.replace('•', '').replace('*', '').strip()
+                    requested_names = [p.strip() for p in clean_pokemon_block.split(",") if p.strip()]
+                    valid_transfers = []
+                    for name in requested_names:
+                        is_valid, matched_name = strict_pokemon_check(name)
+                        if is_valid and matched_name in reserve_data[mid]:
+                            if target_uid not in reserve_data: reserve_data[target_uid] = []
+                            if matched_name not in reserve_data[target_uid]: reserve_data[target_uid].append(matched_name)
+                            valid_transfers.append(matched_name)
+                    if valid_transfers:
+                        for t_name in valid_transfers:
+                            if t_name in reserve_data[mid]: reserve_data[mid].remove(t_name)
+                        success_logs.append(f"• **{', '.join(valid_transfers)}** transferred from <@{mid}> to <@{target_uid}>")
+            if success_logs:
+                save_data()
+                await ctx.send(embed=discord.Embed(title="🔄 Reserve Exchange Ledger Summary", description="\n".join(success_logs), color=discord.Color.red()))
+            else: await ctx.send("❌ Exchange failed! Make sure requested Pokémon are owned by the main user.")
+        except Exception as e: await ctx.send(f"❌ Error reading message context strings: {e}")
 @bot.event
 async def on_message(message):
     try:
