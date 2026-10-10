@@ -427,6 +427,66 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         if removed: save_data()
         res = ""
         if removed: res += f"❌ Removed from <@{tid}>: **{', '.join(removed)}**\n"
+@bot.group(name="r")
+async def r_group(ctx):
+    pass
+
+@bot.command(name="r", aliases=["E!r"])
+async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
+    if not subcommand:
+        if ctx.message.mentions:
+            target_user = ctx.message.mentions; tid = str(target_user.id); u_list = reserve_data.get(tid, [])
+            if u_list:
+                embed = discord.Embed(title=f"📋 Reserves for {target_user.name} ({len(u_list)})", description="\n".join([f"• **{n}**" for n in sorted(u_list)]), color=discord.Color.red())
+                return await ctx.send(embed=embed)
+            else: 
+                embed = discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red())
+                return await ctx.send(embed=embed)
+                
+        embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`e!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`e!r remove @user` • Completely clear all active reserves for that user only\n`e!r @user` • View the reserved list for a specific person\n`e!r list` • View the entire server's reserve listings (20 entries per page)\n`e!r clear` • Wipe the absolute entire server reserve file data clean\n`e!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
+        return await ctx.send(embed=embed)
+        
+    sub_clean = subcommand.lower().strip()
+    if sub_clean == "add":
+        if not args: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
+        mention_match = re.search(r'<@!?(\d+)>', args)
+        if not mention_match: return await ctx.send("⚠️ Please mention a user to reserve the Pokémon for!")
+        tid = str(mention_match.group(1)); raw_names = re.sub(r'<@!?\d+>', '', args).strip()
+        parts = [p.strip() for p in raw_names.split(",") if p.strip()]
+        if tid not in reserve_data: reserve_data[tid] = []
+        added, duplicate, broken = [], [], []
+        for raw in parts:
+            is_valid, matched = strict_pokemon_check(raw)
+            if is_valid:
+                if matched not in reserve_data[tid]: reserve_data[tid].append(matched); added.append(matched)
+                else: duplicate.append(matched)
+            else: broken.append(raw)
+        if added or duplicate or broken: save_data()
+        res = ""
+        if added: res += f"📦 Added to reserves for <@{tid}>: **{', '.join(added)}**\n"
+        if duplicate: res += f"⚠️ Already reserved: **{', '.join(duplicate)}**\n"
+        if broken: res += f"❌ **{', '.join(broken)}** is not a real Pokémon! Blocked.\n"
+        await ctx.send(res)
+        
+    elif sub_clean in ["remove", "del"]:
+        if not args: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
+        mention_match = re.search(r'<@!?(\d+)>', args)
+        if not mention_match: return await ctx.send("⚠️ Please mention a user to remove reserves from!")
+        tid = str(mention_match.group(1)); raw_input = re.sub(r'<@!?\d+>', '', args).strip()
+        if not raw_input:
+            if tid in reserve_data and reserve_data[tid]:
+                reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑️ Wiped all reserves for <@{tid}>!")
+            else: return await ctx.send(f"⚠️ <@{tid}> has no active reserves.")
+        parts = [p.strip() for p in raw_input.split(",") if p.strip()]
+        removed, missing = [], []
+        if tid in reserve_data:
+            for raw in parts:
+                is_valid, matched = strict_pokemon_check(raw)
+                if is_valid and matched in reserve_data[tid]: reserve_data[tid].remove(matched); removed.append(matched)
+                else: missing.append(raw)
+        if removed: save_data()
+        res = ""
+        if removed: res += f"❌ Removed from <@{tid}>: **{', '.join(removed)}**\n"
         if missing: res += f"⚠️ Not found on their list: **{', '.join(missing)}**\n"
         await ctx.send(res)
         
@@ -445,8 +505,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         await ctx.send(embed=paginator.get_page_embed(), view=paginator)
         
     elif sub_clean == "clear":
-        global reserve_data
-        reserve_data = {}
+        reserve_data.clear()
         save_data()
         await ctx.send("📦🗑 Server Reserve Database file wiped clean!")
         
@@ -491,6 +550,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
                 await ctx.send(embed=discord.Embed(title="🔄 Reserve Exchange Ledger Summary", description="\n".join(success_logs), color=discord.Color.red()))
             else: await ctx.send("❌ Exchange failed! Make sure requested Pokémon are owned by the main user.")
         except Exception as e: await ctx.send(f"❌ Error reading message context strings: {e}")
+
 
 @bot.event
 async def on_message(message):
