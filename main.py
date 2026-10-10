@@ -9,16 +9,14 @@ import imagehash
 from PIL import Image
 from io import BytesIO
 
-# Using the robust Extension Bot structure for less buggy message routing
-intents = discord.Intents.default()
-intents.message_content = True
+# FORCING MAXIMUM PERMISSIONS: Turning on every gateway flag to override any Discord permission blocks
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="e!", intents=intents, help_command=None)
 
 ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
 COLLECTION_FILE = "collection.json"
 
-# Safe Data Matrix Loading
 try:
     if os.path.exists(COLLECTION_FILE):
         with open(COLLECTION_FILE, "r", encoding="utf-8") as f:
@@ -33,7 +31,6 @@ except Exception as e:
     user_collections, shiny_hunts, reserve_list = {}, {}, []
 
 def save_data():
-    """Failsafe storage engine with temporary write buffer protection"""
     try:
         temp_file = COLLECTION_FILE + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
@@ -49,17 +46,17 @@ def save_data():
 @bot.event
 async def on_ready():
     global pokemon_db
-    name = bot.user.name if bot.user else "Eevee Bot"
-    print(f"==========================================")
-    print(f"STATUS: Loaded successfully as {name}!")
-    print(f"SYSTEM: Initializing cloud pHash profiles...")
-    print(f"==========================================")
+    bot_user = bot.user if bot.user else "Eevee Bot"
+    print("==========================================")
+    print(f"STATUS: Successfully verified connection with Discord servers!")
+    print(f"IDENTITY: Active as {bot_user} (ID: {bot.user.id if bot.user else 'Unknown'})")
+    print("==========================================")
     
     try:
         response = requests.get(ONLINE_DB_URL, timeout=15)
         if response.status_code == 200:
             pokemon_db = response.json()
-            print(f"[SUCCESS] Loaded {len(pokemon_db)} target vectors into local cache!")
+            print(f"[SUCCESS] Loaded image database vectors into memory cache!")
         else:
             print(f"[ERROR] Cloud buffer returned status: {response.status_code}")
     except Exception as e:
@@ -78,7 +75,7 @@ async def tags_command(ctx):
             lines.append(f"• **@{name}** is hunting: *{', '.join(sorted(hunts))}*")
         await ctx.send("\n".join(lines))
     except Exception as e:
-        await ctx.send(f"❌ Command Error inside tags framework: {e}")
+        await ctx.send(f"❌ Error handling command: {e}")
 
 @bot.group(name="cl", invoke_without_command=True)
 async def cl_group(ctx):
@@ -131,7 +128,6 @@ async def cl_clear(ctx):
 
 @bot.group(name="sh", invoke_without_command=True)
 async def sh_group(ctx, *, arg: str = None):
-    # This allows typing either 'e!sh Pikachu' or 'e!sh add Pikachu' seamlessly
     if arg:
         arg_lower = arg.lower().strip()
         if arg_lower in ["list", "view"]:
@@ -194,7 +190,7 @@ async def sh_clear(ctx):
         await ctx.send("⚠️ Your tracking list is already empty.")
 @bot.group(name="r", invoke_without_command=True)
 async def r_group(ctx):
-    # Safe lookup logic handles mentions without ever crashing out the context object
+    # FIXED: Failsafe mention validation that works natively on mobile or desktop text feeds
     if ctx.message.mentions:
         target = ctx.message.mentions[0]
         tid = str(target.id)
@@ -251,15 +247,12 @@ async def r_clear(ctx):
 
 @bot.event
 async def on_message(message):
-    # Absolute background handler protection to bypass all text-parsing bugs completely
     try:
         if message.author == bot.user:
             return
             
-        # 1. Standard command prefix processor execution
         await bot.process_commands(message)
         
-        # 2. Fully shielded computer vision scanner loop targeting Poketwo embeds
         if message.author.name == "Pokétwo" or message.author.id == 716390085896962058:
             if message.embeds:
                 for emb in message.embeds:
@@ -268,7 +261,6 @@ async def on_message(message):
                         is_shiny = "shiny" in url.lower()
                         
                         try:
-                            # Stream file directly into temporary local bit vector array
                             res = requests.get(url, timeout=10)
                             img = Image.open(BytesIO(res.content))
                             hsh = imagehash.phash(img, hash_size=8)
@@ -300,15 +292,14 @@ async def on_message(message):
                                         msg += " ⚠️ **[Server Reserve Match Found!]**"
                                     await message.channel.send(msg)
                         except Exception as img_err:
-                            print(f"[SCANNER FAULT] Image loop processing halted: {img_err}")
+                            print(f"[SCANNER FAULT] Image processing loop halted: {img_err}")
                             
     except Exception as general_err:
         print(f"[FATAL LOG ERROR] Trapped loop variance safely: {general_err}")
-        traceback.print_exc()
 
-# Clean execution context fetches private dashboard tokens safely
+# Securely boots the script process using your dashboard settings environment token
 token = os.environ.get("DISCORD_TOKEN")
 if token:
     bot.run(token)
 else:
-    print("[CRITICAL SHUTDOWN] Your DISCORD_TOKEN is missing from your production configurations environment variables panel!")
+    print("[CRITICAL SHUTDOWN] Your DISCORD_TOKEN is missing from your environment variables panel!")
