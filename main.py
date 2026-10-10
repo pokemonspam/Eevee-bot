@@ -3,12 +3,11 @@ import json
 import discord
 import requests
 import imagehash
-import difflib
 from PIL import Image
 from io import BytesIO
 from discord.ext import commands
 
-# 1. CORE GATEWAY ROUTING INTERFACE
+# 1. FORCING COMPLETE SYSTEM INTERFACES
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=["e!", "E!"], intents=intents, help_command=None)
 
@@ -16,7 +15,7 @@ ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
 COLLECTION_FILE = "collection.json"
 
-# 2. STATIC VALIDATION MAP - CONTAINS ALL 1,025 OFFICIAL STANDARD POKEMON ENTRIES
+# 2. THE STRICT BASELINE DICTIONARY - CONTAINS ALL 1,025 OFFICIAL POKÉMON ENTRIES
 VALID_POKEMON_NAMES = [
     "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise",
     "Caterpie", "Metapod", "Butterfree", "Weedle", "Kakuna", "Beedrill", "Pidgey", "Pidgeotto", "Pidgeot", "Rattata",
@@ -129,7 +128,6 @@ VALID_POKEMON_NAMES += [
     "Iron Boulder", "Iron Crown", "Terapagos", "Pecharunt"
 ]
 
-# STORAGE SYNCHRONIZATION AND FAILSAFE INITIALIZER
 try:
     if os.path.exists(COLLECTION_FILE):
         with open(COLLECTION_FILE, "r", encoding="utf-8") as f:
@@ -140,13 +138,8 @@ try:
     else: user_collections, shiny_hunts, reserve_list = {}, {}, []
 except Exception as e:
     print(f"[CRITICAL] Storage Initialization Error: {e}")
-user_collections, shiny_hunts, reserve_list = {}, {}, []---
-
-### 📦 Box 3: IO Core, Strict Spellchecker, on_ready, and Master Hunter Tags
-
-```python
+    user_collections, shiny_hunts, reserve_list = {}, {}, []
 def save_data():
-    """Failsafe atomic save process using an intermediate transaction file."""
     try:
         temp_file = COLLECTION_FILE + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
@@ -154,12 +147,12 @@ def save_data():
         os.replace(temp_file, COLLECTION_FILE)
     except Exception as e: print(f"[ERROR] Failed to save runtime matrix out to disk: {e}")
 
-def validate_pokemon(input_name):
-    """Absolute hardcoded verification layer. Rejects bad entries like 'eeveee' or 'jojo' instantly."""
-    clean_name = input_name.strip().title()
-    if clean_name in VALID_POKEMON_NAMES: return True, clean_name
-    matches = difflib.get_close_matches(clean_name, VALID_POKEMON_NAMES, n=1, cutoff=0.7)
-    if matches: return False, matches[0]
+def strict_pokemon_check(input_name):
+    """Zero tolerance validation engine. Input MUST map cleanly to a string inside our master list."""
+    clean_search = input_name.strip().lower()
+    for official_name in VALID_POKEMON_NAMES:
+        if official_name.lower() == clean_search:
+            return True, official_name
     return False, None
 
 @bot.event
@@ -180,14 +173,19 @@ async def on_ready():
 async def tags_command(ctx):
     try:
         active = {uid: hunts for uid, hunts in shiny_hunts.items() if hunts}
-        if not active: return await ctx.send("✨ No active shiny hunters found on this server! Use `e!sh <name>` to add targets.")
+        if not active: return await ctx.send("✨ No active shiny hunters found on this server! Use `e!sh add <name>`.")
         embed = discord.Embed(title="🌟 Server Shiny Hunters Master List", color=discord.Color.red())
         description_text = "".join([f"• **@{bot.get_user(int(uid)).name if bot.get_user(int(uid)) else uid}** is hunting: *{', '.join(hunts)}*\n" for uid, hunts in active.items()])
         embed.description = description_text; embed.set_footer(text="Eevee Tracker Framework")
         await ctx.send(embed=embed)
-    except Exception as e: await ctx.send(f"❌ Error handling command: {e}")@bot.group(name="cl", invoke_without_command=True)
+    except Exception as e: await ctx.send(f"❌ Error handling command: {e}")
+@bot.group(name="cl", invoke_without_command=True)
 async def cl_group(ctx):
-    embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Separate names with commas\n`e!cl remove <name>` • Drop a target\n`e!cl list` • View your collection wishlist\n`e!cl clear` • Reset your list", color=discord.Color.red())
+    embed = discord.Embed(
+        title="📋 Collection List Commands", 
+        description="`e!cl add <names>` • Add Pokémon (Separate multiple entries with commas)\n`e!cl remove <name>` • Remove a target from your index\n`e!cl list` • View your embedded wishlist\n`e!cl clear` • Completely wipe your collection list clean", 
+        color=discord.Color.red()
+    )
     await ctx.send(embed=embed)
 
 @cl_group.command(name="add")
@@ -195,32 +193,35 @@ async def cl_add(ctx, *, raw_names: str = None):
     if not raw_names: return await ctx.send("⚠️ Please specify at least one Pokémon! Example: `e!cl add Pikachu, Eevee`")
     uid = str(ctx.author.id)
     if uid not in user_collections: user_collections[uid] = []
+    
     parts = [p.strip() for p in raw_names.split(",") if p.strip()]
     added, duplicate, broken = [], [], []
+    
     for raw in parts:
-        is_valid, matched_name = validate_pokemon(raw)
+        is_valid, matched_name = strict_pokemon_check(raw)
         if is_valid:
             if matched_name not in user_collections[uid]:
                 user_collections[uid].append(matched_name); added.append(matched_name)
             else: duplicate.append(matched_name)
-        else: broken.append((raw, matched_name))
+        else: broken.append(raw)
+            
     if added or duplicate or broken: save_data()
+    
     response = ""
     if added: response += f"✅ Added to collection: **{', '.join(added)}**\n"
     if duplicate: response += f"⚠️ Already tracked: **{', '.join(duplicate)}**\n"
-    for wrong, guess in broken:
-        if guess: response += f"❌ **{wrong}** is wrong! Did you mean **{guess}**? Please type it again.\n"
-        else: response += f"❌ **{wrong}** is not a real Pokémon! Please check the spelling and type it again.\n"
+    if broken: response += f"❌ **{', '.join(broken)}** is not a real Pokémon! This entry was blocked and not added to your list.\n"
     await ctx.send(response)
 
 @cl_group.command(name="remove", aliases=["del"])
 async def cl_remove(ctx, *, name: str = None):
     if not name: return await ctx.send("⚠️ Please specify a Pokémon to drop!")
-    uid, name = str(ctx.author.id), name.strip().title()
-    if uid in user_collections and name in user_collections[uid]:
-        user_collections[uid].remove(name); save_data()
-        await ctx.send(f"❌ **{name}** has been removed from your tracking index.")
-    else: await ctx.send(f"⚠️ Target **{name}** was not found inside your collection list.")
+    uid = str(ctx.author.id)
+    is_valid, matched_name = strict_pokemon_check(name)
+    if is_valid and uid in user_collections and matched_name in user_collections[uid]:
+        user_collections[uid].remove(matched_name); save_data()
+        await ctx.send(f"❌ **{matched_name}** has been removed from your tracking index.")
+    else: await ctx.send(f"⚠️ Target Pokémon was not found inside your collection list.")
 
 @cl_group.command(name="list", aliases=["view"])
 async def cl_list(ctx):
@@ -259,10 +260,8 @@ async def sh_group(ctx, *, arg: str = None):
 async def sh_add(ctx, *, name: str = None):
     if not name: return await ctx.send("⚠️ Please specify a target name!")
     uid = str(ctx.author.id)
-    is_valid, matched_name = validate_pokemon(name)
-    if not is_valid:
-        if matched_name: return await ctx.send(f"❌ **{name}** is wrong! Did you mean **{matched_name}**? Please type it again.")
-        else: return await ctx.send(f"❌ **{name}** is not a real Pokémon! Please check the spelling and type it again.")
+    is_valid, matched_name = strict_pokemon_check(name)
+    if not is_valid: return await ctx.send(f"❌ **{name}** is not a real Pokémon! This shiny hunt was blocked.")
     if uid in shiny_hunts and shiny_hunts[uid] and shiny_hunts[uid] == [matched_name]: return await ctx.send(f"⚠️ You are already actively tracking shiny **{matched_name}**.")
     old_mon = shiny_hunts[uid] if (uid in shiny_hunts and shiny_hunts[uid]) else None
     shiny_hunts[uid] = [matched_name]; save_data()
@@ -272,9 +271,11 @@ async def sh_add(ctx, *, name: str = None):
 @sh_group.command(name="remove", aliases=["del"])
 async def sh_remove(ctx, *, name: str = None):
     if not name: return await ctx.send("⚠️ Please specify a target to remove!")
-    uid, name = str(ctx.author.id), name.strip().title()
-    if uid in shiny_hunts and shiny_hunts[uid] and name in shiny_hunts[uid]: shiny_hunts[uid].remove(name); save_data(); await ctx.send(f"❌ **{name}** removed from your active hunting priorities.")
-    else: await ctx.send(f"⚠️ Target **{name}** was not active on your tracking list.")
+    uid = str(ctx.author.id)
+    is_valid, matched_name = strict_pokemon_check(name)
+    if is_valid and uid in shiny_hunts and shiny_hunts[uid] and matched_name in shiny_hunts[uid]:
+        shiny_hunts[uid].remove(matched_name); save_data(); await ctx.send(f"❌ **{matched_name}** removed from your active hunting priorities.")
+    else: await ctx.send(f"⚠️ Target was not active on your tracking list.")
 
 @sh_group.command(name="list", aliases=["view"])
 async def sh_list(ctx):
@@ -298,7 +299,7 @@ async def r_group(ctx):
         embed.add_field(name="🔹 Collection Targets", value=", ".join(sorted(c_dt)) if c_dt else "*None*", inline=False)
         embed.add_field(name="✨ Active Shiny Hunt", value=f"**{s_dt[0]}**" if s_dt else "*None*", inline=False)
         embed.set_footer(text="Eevee Registry Search Matrix"); return await ctx.send(embed=embed)
-    embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names>` • Separate multiple names with commas\n`e!r remove <name>` • Remove from reserves\n`e!r list` • View server reserve list\n`e!r clear` • Reset shared list\n`e!r @user` • Inspect another user's list", color=discord.Color.red())
+    embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names>` • Add Pokémon to global reserves\n`e!r remove <name>` • Remove from reserves\n`e!r list` • View server reserve list\n`e!r clear` • Reset shared list\n`e!r @user` • Inspect another user's list", color=discord.Color.red())
     await ctx.send(embed=embed)
 
 @r_group.command(name="add")
@@ -306,26 +307,26 @@ async def r_add(ctx, *, raw_names: str = None):
     if not raw_names: return await ctx.send("⚠️ Specify at least one Pokémon name! Example: `e!r add Mewtwo, Lugia`")
     global reserve_list; parts = [p.strip() for p in raw_names.split(",") if p.strip()]; added, duplicate, broken = [], [], []
     for raw in parts:
-        is_valid, matched_name = validate_pokemon(raw)
+        is_valid, matched_name = strict_pokemon_check(raw)
         if is_valid:
             if matched_name not in reserve_list: reserve_list.append(matched_name); added.append(matched_name)
             else: duplicate.append(matched_name)
-        else: broken.append((raw, matched_name))
+        else: broken.append(raw)
     if added or duplicate or broken: save_data()
     response = ""
     if added: response += f"📦 Added to server reserves: **{', '.join(added)}**\n"
     if duplicate: response += f"⚠️ Already on server reserves: **{', '.join(duplicate)}**\n"
-    for wrong, guess in broken:
-        if guess: response += f"❌ **{wrong}** is wrong! Did you mean **{guess}**? Please type it again.\n"
-        else: response += f"❌ **{wrong}** is not a real Pokémon! Please check the spelling and type it again.\n"
+    if broken: response += f"❌ **{', '.join(broken)}** is not a real Pokémon! This entry was blocked.\n"
     await ctx.send(response)
 
 @r_group.command(name="remove", aliases=["del"])
 async def r_remove(ctx, *, name: str = None):
     if not name: return await ctx.send("⚠️ Specify a reserve target name to remove!")
-    global reserve_list; name = name.strip().title()
-    if name in reserve_list: reserve_list.remove(name); save_data(); await ctx.send(f"❌ **{name}** pulled from the Server Reserve index.")
-    else: await ctx.send(f"⚠️ Target **{name}** does not exist inside the server profile repository.")
+    global reserve_list
+    is_valid, matched_name = strict_pokemon_check(name)
+    if is_valid and matched_name in reserve_list:
+        reserve_list.remove(matched_name); save_data(); await ctx.send(f"❌ **{matched_name}** pulled from the Server Reserve index.")
+    else: await ctx.send(f"⚠️ Target Pokémon does not exist inside the server profile repository.")
 
 @r_group.command(name="list", aliases=["view"])
 async def r_list(ctx):
@@ -365,7 +366,7 @@ async def on_message(message):
                                     if match in col: pings.append(f"<@{uid}> (Collection)")
                                 if is_shiny:
                                     for uid, sh in shiny_hunts.items():
-                                        if sh and match == sh[0]: pings.append(f"<@{uid}> (✨ SHINY TARGET!)")
+                                        if sh and match == sh: pings.append(f"<@{uid}> (✨ SHINY TARGET!)")
                                 is_on_reserve = match in reserve_list
                                 if pings or is_on_reserve:
                                     msg = "🔔 **Target Alert!** " + " ".join(pings)
