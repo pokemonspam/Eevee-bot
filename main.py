@@ -9,7 +9,8 @@ from io import BytesIO
 from discord.ext import commands
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix=["e!", "E!"], intents=intents, help_command=None)
+# CHANGED PREFIX ROUTING MATRIX TO A! AND a! ONLY
+bot = commands.Bot(command_prefix=["a!", "A!"], intents=intents, help_command=None)
 
 ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
@@ -79,7 +80,7 @@ VALID_POKEMON_NAMES += [
     "Sawsbuck", "Emolga", "Karrablast", "Escavalier", "Foongus", "Amoonguss", "Frillish", "Jellicent", "Alomomola",
     "Joltik", "Galvantula", "Ferroseed", "Ferrothorn", "Klink", "Klang", "Klinklang", "Tynamo", "Eelektrik", "Eelektross",
     "Elgyem", "Beheeyem", "Litwick", "Lampent", "Chandelure", "Axew", "Fraxure", "Haxorus", "Cubchoo", "Beartic",
-    "Cryogonal", "Shelmet", "Accelgor", "Stunfisk", "Mienfoo", "Mienshao", "Druddigon", "Golett", "Golurk", "Pawniard",
+    "Cryogonad", "Shelmet", "Accelgor", "Stunfisk", "Mienfoo", "Mienshao", "Druddigon", "Golett", "Golurk", "Pawniard",
     "Bisharp", "Bouffalant", "Rufflet", "Braviary", "Vullaby", "Mandibuzz", "Heatmor", "Durant", "Deino", "Welsh",
     "Hydreigon", "Larvesta", "Volcarona", "Cobalion", "Terrakion", "Virizion", "Tornadus", "Thundurus", "Reshiram",
     "Zekrom", "Landorus", "Kyurem", "Keldeo", "Meloetta", "Genesect", "Chespin", "Quilladin", "Chesnaught", "Fennekin",
@@ -125,6 +126,7 @@ VALID_POKEMON_NAMES += [
     "Okidogi", "Munkidori", "Fezandipiti", "Ogerpon", "Archaludon", "Hydrapple", "Gouging Fire", "Raging Bolt",
     "Iron Boulder", "Iron Crown", "Terapagos", "Pecharunt"
 ]
+
 class GlobalDatabase:
     user_collections = {}
     shiny_hunts = {}
@@ -206,12 +208,12 @@ async def on_ready():
     except Exception as e: 
         print(f"[CRITICAL] Network cloud stream broken: {e}")
 
-@bot.command(name="tags")
+@bot.command(name="tags", aliases=["A!tags", "a!tags"])
 async def tags_command(ctx):
     try:
         active = {uid: hunts for uid, hunts in GlobalDatabase.shiny_hunts.items() if hunts}
         if not active: 
-            return await ctx.send("✨ No active shiny hunters found on this server! Use `e!sh add <name>`.")
+            return await ctx.send("✨ No active shiny hunters found on this server! Use `a!sh add <name>`.")
         embed = discord.Embed(title="🌟 Server Shiny Hunters Master List", color=discord.Color.red())
         description_text = "".join([f"• **@{bot.get_user(int(uid)).name if bot.get_user(int(uid)) else uid}** is hunting: *{', '.join(hunts)}*\n" for uid, hunts in active.items()])
         embed.description = description_text
@@ -219,16 +221,16 @@ async def tags_command(ctx):
         await ctx.send(embed=embed)
     except Exception as e: 
         await ctx.send(f"❌ Error handling command: {e}")
-@bot.command(name="cl", aliases=["E!cl"])
+@bot.command(name="cl", aliases=["A!cl"])
 async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
     if not subcommand:
-        embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Add Pokémon (Separate entries with commas)\n`e!cl remove <name>` • Remove a target\n`e!cl list` • View your wishlist embed (20 entries per page)\n`e!cl clear` • Wipe list clean", color=discord.Color.red())
+        embed = discord.Embed(title="📋 Collection List Commands", description="`a!cl add <names>` • Add Pokémon (Separate entries with commas)\n`a!cl remove <name>` • Remove a target\n`a!cl list` • View your wishlist embed (20 entries per page)\n`a!cl clear` • Wipe list clean", color=discord.Color.red())
         return await ctx.send(embed=embed)
         
     sub_clean = subcommand.lower().strip()
     if sub_clean == "add":
         if not arguments: 
-            return await ctx.send("⚠️ Please specify at least one Pokémon! Example: `e!cl add Pikachu, Eevee`")
+            return await ctx.send("⚠️ Please specify at least one Pokémon! Example: `a!cl add Pikachu, Eevee`")
         uid = str(ctx.author.id)
         if uid not in GlobalDatabase.user_collections: 
             GlobalDatabase.user_collections[uid] = []
@@ -277,10 +279,10 @@ async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
         GlobalDatabase.user_collections[str(ctx.author.id)] = []
         save_data()
         await ctx.send("🗑 Wiped collection clean.")
-@bot.command(name="sh", aliases=["E!sh"])
+@bot.command(name="sh", aliases=["A!sh"])
 async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
     if not subcommand:
-        embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh add <name>` • Set active shiny target\n`e!sh remove <name>` • Drop shiny target\n`e!sh list` • View target\n`e!sh clear` • Wipe data", color=discord.Color.red())
+        embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`a!sh add <name>` • Set active shiny target\n`a!sh remove <name>` • Drop shiny target\n`a!sh list` • View target\n`a!sh clear` • Wipe data", color=discord.Color.red())
         return await ctx.send(embed=embed)
         
     sub_clean = subcommand.lower().strip()
@@ -333,9 +335,8 @@ async def sh_base_router(ctx, subcommand: str = None, *, name_arg: str = None):
         GlobalDatabase.shiny_hunts[str(ctx.author.id)] = []
         save_data()
         await ctx.send("✨🗑 Shiny hunt cleared.")
-@bot.command(name="r", aliases=["E!r"])
+@bot.command(name="r", aliases=["A!r"])
 async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
-    # LOOKUP ENGINE: If they type 'e!r @user' with no sub-argument, show that user's list
     if not subcommand:
         if ctx.message.mentions:
             target_user = ctx.message.mentions
@@ -348,13 +349,11 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
                 embed = discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red())
                 return await ctx.send(embed=embed)
                 
-        # RESTORED HELP INTERFACE
-        embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`e!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`e!r remove @user` • Completely clear all active reserves for that user only\n`e!r @user` • View the reserved list for a specific person\n`e!r list` • View the entire server's reserve listings (20 entries per page)\n`e!r clear` • Wipe the absolute entire server reserve file data clean\n`e!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
+        embed = discord.Embed(title="📦 Server Reserve Commands", description="`a!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`a!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`a!r remove @user` • Completely clear all active reserves for that user only\n`a!r @user` • View the reserved list for a specific person\n`a!r list` • View the entire server's reserve listings (20 entries per page)\n`a!r clear` • Wipe the absolute entire server reserve file data clean\n`a!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
         return await ctx.send(embed=embed)
         
     sub_clean = subcommand.lower().strip()
     
-    # INTERCEPT SHORTCUT Lookups if user mentions someone directly as the subcommand string parameter
     if re.search(r'<@!?(\d+)>', subcommand):
         mention_match = re.search(r'<@!?(\d+)>', subcommand)
         tid = str(mention_match.group(1))
@@ -367,10 +366,10 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
             else:
                 embed = discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red())
                 return await ctx.send(embed=embed)
-        except: return await ctx.send("❌ Could not resolve that user profile target lookup tag.")
-
+        except: 
+            return await ctx.send("❌ Could not resolve that user profile target lookup tag.")
     if sub_clean == "add":
-        if not args: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
+        if not args: return await ctx.send("⚠️ Format: `a!r add Pikachu, Eevee @user`")
         mention_match = re.search(r'<@!?(\d+)>', args)
         if not mention_match: return await ctx.send("⚠️ Please mention a user to reserve the Pokémon for!")
         tid = str(mention_match.group(1)); raw_names = re.sub(r'<@!?\d+>', '', args).strip()
@@ -380,7 +379,6 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         for raw in parts:
             is_valid, matched = strict_pokemon_check(raw)
             if is_valid:
-                # FIXED MULTI-USER SYNC: Allows different players to track the exact same target lines simultaneously
                 if matched not in GlobalDatabase.reserve_data[tid]:
                     GlobalDatabase.reserve_data[tid].append(matched)
                     added.append(matched)
@@ -394,20 +392,24 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         await ctx.send(res)
         
     elif sub_clean in ["remove", "del"]:
-        if not args: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
+        if not args: return await ctx.send("⚠️ Format: `a!r remove Pikachu @user` or `a!r remove @user`")
         mention_match = re.search(r'<@!?(\d+)>', args)
         if not mention_match: return await ctx.send("⚠️ Please mention a user to remove reserves from!")
         tid = str(mention_match.group(1)); raw_input = re.sub(r'<@!?\d+>', '', args).strip()
         if not raw_input:
             if tid in GlobalDatabase.reserve_data and GlobalDatabase.reserve_data[tid]:
-                GlobalDatabase.reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑️ Wiped all reserves for <@{tid}>!")
+                GlobalDatabase.reserve_data[tid] = []
+                save_data()
+                return await ctx.send(f"🗑️ Wiped all reserves for <@{tid}>!")
             else: return await ctx.send(f"⚠️ <@{tid}> has no active reserves.")
         parts = [p.strip() for p in raw_input.split(",") if p.strip()]
         removed, missing = [], []
         if tid in GlobalDatabase.reserve_data:
             for raw in parts:
                 is_valid, matched = strict_pokemon_check(raw)
-                if is_valid and matched in GlobalDatabase.reserve_data[tid]: GlobalDatabase.reserve_data[tid].remove(matched); removed.append(matched)
+                if is_valid and matched in GlobalDatabase.reserve_data[tid]: 
+                    GlobalDatabase.reserve_data[tid].remove(matched)
+                    removed.append(matched)
                 else: missing.append(raw)
         if removed: save_data()
         res = ""
@@ -433,7 +435,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         GlobalDatabase.reserve_data.clear(); save_data(); await ctx.send("📦🗑 Server Reserve Database file wiped clean!")
         
     elif sub_clean == "e":
-        if not args: return await ctx.send("⚠️ Example: `e!r e @mainuser`")
+        if not args: return await ctx.send("⚠️ Example: `a!r e @mainuser`")
         mention_match = re.search(r'<@!?(\d+)>', args)
         if not mention_match: return await ctx.send("⚠️ Please specify the main user to exchange from!")
         mid = str(mention_match.group(1))
@@ -442,8 +444,6 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
             replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
             lines = replied_msg.content.split("\n")
             if mid not in GlobalDatabase.reserve_data or not GlobalDatabase.reserve_data[mid]: return await ctx.send(f"❌ <@{mid}> has no active Pokémon reserved to exchange.")
-            
-            # FIXED CROSS-EXCHANGE LOGIC: Loops through line by line to add copies to multiple users simultaneously
             success_logs = []
             for line in lines:
                 if not line.strip() or "-" not in line: continue
@@ -478,10 +478,7 @@ async def on_message(message):
     try:
         if message.author == bot.user: 
             return
-            
-        # Execute commands route path cleanly
         await bot.process_commands(message)
-        
         if (message.author.name == "Pokétwo" or message.author.id == 716390085896962058) and message.embeds:
             for emb in message.embeds:
                 if emb.image and emb.image.url:
@@ -503,7 +500,6 @@ async def on_message(message):
                             if match in arr: 
                                 reserve_pings.append(f"<@{uid}>")
                         if reserve_pings: 
-                            # FIXED SCROLL ALERTS: Combines all users holding this target into a single ping block instantly
                             await message.channel.send(f"🔔 **Reserve Match Alert!** " + " ".join(list(set(reserve_pings))) + " - Target reserved for you!")
                         else:
                             normal_pings = []
