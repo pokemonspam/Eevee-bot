@@ -8,7 +8,6 @@ from PIL import Image
 from io import BytesIO
 from discord.ext import commands
 
-# 1. ENFORCING MAXIMUM SYSTEM GATEWAY OVERRIDES
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=["e!", "E!"], intents=intents, help_command=None)
 
@@ -16,7 +15,6 @@ ONLINE_DB_URL = "https://githubusercontent.com"
 pokemon_db = {}
 COLLECTION_FILE = "collection.json"
 
-# 2. MASTER 1,025 OFFICIAL POKÉMON DICTIONARY LOOKUP GRID
 VALID_POKEMON_NAMES = [
     "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise",
     "Caterpie", "Metapod", "Butterfree", "Weedle", "Kakuna", "Beedrill", "Pidgey", "Pidgeotto", "Pidgeot", "Rattata",
@@ -154,11 +152,11 @@ def strict_pokemon_check(input_name):
         if official_name.lower() == clean_search: return True, official_name
     return False, None
 
-# INTERACTIVE EMBED BUTTON PAGINATION CLASS
-class ReservePaginator(discord.ui.View):
-    def __init__(self, data_list, chunk_size=20):
+class DynamicListPaginator(discord.ui.View):
+    def __init__(self, data_list, card_title, chunk_size=20):
         super().__init__(timeout=180)
         self.data_list = data_list
+        self.card_title = card_title
         self.chunk_size = chunk_size
         self.current_page = 0
         self.total_pages = max(1, (len(data_list) - 1) // chunk_size + 1)
@@ -168,7 +166,7 @@ class ReservePaginator(discord.ui.View):
         end = start + self.chunk_size
         chunk = self.data_list[start:end]
         
-        embed = discord.Embed(title=f"📋 Server Reserves Manifest ({len(self.data_list)} Total)", color=discord.Color.red())
+        embed = discord.Embed(title=f"{self.card_title} ({len(self.data_list)} Total)", color=discord.Color.red())
         embed.description = "\n".join(chunk)
         embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
         return embed
@@ -197,10 +195,21 @@ async def on_ready():
     try:
         response = requests.get(ONLINE_DB_URL, timeout=15)
         if response.status_code == 200: pokemon_db = response.json()
-    except Exception as e: print(f"[CRITICAL] Network streaming aborted: {e}")
+    except Exception as e: print(f"[CRITICAL] Cloud synchronization aborted: {e}")
+@bot.command(name="tags")
+async def tags_command(ctx):
+    try:
+        active = {uid: hunts for uid, hunts in shiny_hunts.items() if hunts}
+        if not active: return await ctx.send("✨ No active shiny hunters found on this server! Use `e!sh add <name>`.")
+        embed = discord.Embed(title="🌟 Server Shiny Hunters Master List", color=discord.Color.red())
+        description_text = "".join([f"• **@{bot.get_user(int(uid)).name if bot.get_user(int(uid)) else uid}** is hunting: *{', '.join(hunts)}*\n" for uid, hunts in active.items()])
+        embed.description = description_text; embed.set_footer(text="Eevee Tracker Framework")
+        await ctx.send(embed=embed)
+    except Exception as e: await ctx.send(f"❌ Error handling command: {e}")
+
 @bot.group(name="cl", invoke_without_command=True)
 async def cl_group(ctx):
-    embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Add Pokémon (Separate entries with commas)\n`e!cl remove <name>` • Remove a target\n`e!cl list` • View your wishlist embed\n`e!cl clear` • Wipe list clean", color=discord.Color.red())
+    embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Add Pokémon (Separate entries with commas)\n`e!cl remove <name>` • Remove a target\n`e!cl list` • View your wishlist embed (20 entries per page)\n`e!cl clear` • Wipe list clean", color=discord.Color.red())
     await ctx.send(embed=embed)
 
 @cl_group.command(name="add")
@@ -236,13 +245,14 @@ async def cl_remove(ctx, *, name: str = None):
 async def cl_list(ctx):
     uid = str(ctx.author.id)
     if uid in user_collections and user_collections[uid]:
-        embed = discord.Embed(title=f"📋 {ctx.author.name}'s Collection ({len(user_collections[uid])})", description="\n".join([f"• {n}" for n in sorted(user_collections[uid])]), color=discord.Color.red())
-        await ctx.send(embed=embed)
+        formatted_wishlist = [f"• **{n}**" for n in sorted(user_collections[uid])]
+        paginator = DynamicListPaginator(data_list=formatted_wishlist, card_title=f"📋 {ctx.author.name}'s Collection Wishlist")
+        await ctx.send(embed=paginator.get_page_embed(), view=paginator)
     else: await ctx.send("📁 Your collection list is empty.")
 
 @cl_group.command(name="clear")
 async def cl_clear(ctx):
-    user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑/ Wiped collection clean.")
+    user_collections[str(ctx.author.id)] = []; save_data(); await ctx.send("🗑 Wiped collection clean.")
 
 @bot.group(name="sh", invoke_without_command=True)
 async def sh_group(ctx, *, arg: str = None):
@@ -250,8 +260,8 @@ async def sh_group(ctx, *, arg: str = None):
         arg_lower = arg.lower().strip()
         if arg_lower in ["list", "view"]: return await ctx.invoke(bot.get_command('sh list'))
         elif arg_lower == "clear": return await ctx.invoke(bot.get_command('sh clear'))
-        elif arg_lower.startswith("remove ") or arg_lower.startswith("del "): return await ctx.invoke(bot.get_command('sh remove'), name=arg.split(" ", 1)[1])
-        else: return await ctx.invoke(bot.get_command('sh add'), name=arg.split(" ", 1)[1] if arg_lower.startswith("add ") else arg)
+        elif arg_lower.startswith("remove ") or arg_lower.startswith("del "): return await ctx.invoke(bot.get_command('sh remove'), name=arg.split(" ", 1))
+        else: return await ctx.invoke(bot.get_command('sh add'), name=arg.split(" ", 1) if arg_lower.startswith("add ") else arg)
     await ctx.send(embed=discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh <name>` • Set active shiny target\n`e!sh remove <name>` • Drop shiny target\n`e!sh list` • View target\n`e!sh clear` • Wipe data", color=discord.Color.red()))
 
 @sh_group.command(name="add")
@@ -275,31 +285,30 @@ async def sh_remove(ctx, *, name: str = None):
 @sh_group.command(name="list", aliases=["view"])
 async def sh_list(ctx):
     uid = str(ctx.author.id)
-    if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid][0]}**", color=discord.Color.red()))
+    if uid in shiny_hunts and shiny_hunts[uid]: await ctx.send(embed=discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid]}**", color=discord.Color.red()))
     else: await ctx.send("✨ You are not currently tracking any shiny targets.")
 
 @sh_group.command(name="clear")
 async def sh_clear(ctx):
-    shiny_hunts[str(ctx.author.id)] = []; save_data(); await ctx.send("✨🗑️ Shiny hunt cleared.")
- @bot.group(name="r", invoke_without_command=True)
+    shiny_hunts[str(ctx.author.id)] = []; save_data(); await ctx.send("✨🗑 Shiny hunt cleared.")
+@bot.group(name="r", invoke_without_command=True)
 async def r_group(ctx):
-    # LOOKUP ENGINE: Displays the specific target user's active reserves in an embed card
     if ctx.message.mentions and not ctx.subcommand_passed:
-        target_user = ctx.message.mentions[0]
+        target_user = ctx.message.mentions
         tid = str(target_user.id)
         u_list = reserve_data.get(tid, [])
         if u_list:
-            embed = discord.Embed(title=f"📋 Reserves for {target_user.name} ({len(u_list)})", description="\n".join([f"• 📦 **{n}**" for n in sorted(u_list)]), color=discord.Color.red())
+            embed = discord.Embed(title=f"📋 Reserves for {target_user.name} ({len(u_list)})", description="\n".join([f"• **{n}**" for n in sorted(u_list)]), color=discord.Color.red())
             return await ctx.send(embed=embed)
         else: return await ctx.send(embed=discord.Embed(title=f"📋 Reserves for {target_user.name} (0)", description="📦 This user has no Pokémon reserved.", color=discord.Color.red()))
             
-    embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`e!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`e!r remove @user` • Completely clear all active reserves for that user only\n`e!r @user` • View the reserved list for a specific person\n`e!r list` • View the entire server's reserve listings\n`e!r clear` • Wipe the absolute entire server reserve file data clean\n`e!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
+    embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names> @user` • Reserve Pokémon for a specific user (commas allowed)\n`e!r remove <names> @user` • Drop reserved targets from a user (commas allowed)\n`e!r remove @user` • Completely clear all active reserves for that user only\n`e!r @user` • View the reserved list for a specific person\n`e!r list` • View the entire server's reserve listings (20 entries per page)\n`e!r clear` • Wipe the absolute entire server reserve file data clean\n`e!r e @mainuser` • Reply to a list of trades to transfer them all from @mainuser", color=discord.Color.red())
     await ctx.send(embed=embed)
 
 @r_group.command(name="add")
 async def r_add(ctx, *, args: str = None):
     if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r add Pikachu, Eevee @user`")
-    target_user = ctx.message.mentions[0]; tid = str(target_user.id)
+    target_user = ctx.message.mentions; tid = str(target_user.id)
     raw_names = re.sub(r'<@!?\d+>', '', args).strip()
     parts = [p.strip() for p in raw_names.split(",") if p.strip()]
     if tid not in reserve_data: reserve_data[tid] = []
@@ -312,7 +321,7 @@ async def r_add(ctx, *, args: str = None):
         else: broken.append(raw)
     if added or duplicate or broken: save_data()
     res = ""
-    if added: res += f"📦 Reserved for <@{tid}>: **{', '.join(added)}**\n"
+    if added: res += f"✅ Added to reserves for <@{tid}>: **{', '.join(added)}**\n"
     if duplicate: res += f"⚠️ Already reserved: **{', '.join(duplicate)}**\n"
     if broken: res += f"❌ **{', '.join(broken)}** is not a real Pokémon! Blocked.\n"
     await ctx.send(res)
@@ -320,11 +329,11 @@ async def r_add(ctx, *, args: str = None):
 @r_group.command(name="remove", aliases=["del"])
 async def r_remove(ctx, *, args: str = None):
     if not args or not ctx.message.mentions: return await ctx.send("⚠️ Format: `e!r remove Pikachu @user` or `e!r remove @user`")
-    target_user = ctx.message.mentions[0]; tid = str(target_user.id)
+    target_user = ctx.message.mentions; tid = str(target_user.id)
     raw_input = re.sub(r'<@!?\d+>', '', args).strip()
     if not raw_input:
         if tid in reserve_data and reserve_data[tid]:
-            reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑️ Wiped all reserves for <@{tid}>!")
+            reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑 Wiped all reserves for <@{tid}>!")
         else: return await ctx.send(f"⚠️ <@{tid}> has no active reserves.")
     parts = [p.strip() for p in raw_input.split(",") if p.strip()]
     removed, missing = [], []
@@ -349,12 +358,12 @@ async def r_list(ctx):
         return await ctx.send(embed=discord.Embed(title="📋 Server Reserves Manifest (0)", description="📦 No Pokémon are currently reserved on this server.", color=discord.Color.red()))
     
     formatted_entries.sort()
-    paginator = ReservePaginator(data_list=formatted_entries, chunk_size=20)
+    paginator = DynamicListPaginator(data_list=formatted_entries, card_title="📋 Shared Server Reserve Manifest", chunk_size=20)
     await ctx.send(embed=paginator.get_page_embed(), view=paginator)
 
 @r_group.command(name="clear")
 async def r_clear(ctx):
-    global reserve_data; reserve_data = {}; save_data(); await ctx.send("📦🗑️ **Server Reserve Database file wiped clean!**")
+    global reserve_data; reserve_data = {}; save_data(); await ctx.send("📦🗑 Server Reserve Database file wiped clean!")
 
 @r_group.command(name="e")
 async def r_exchange(ctx, main_user: discord.Member = None):
@@ -370,13 +379,15 @@ async def r_exchange(ctx, main_user: discord.Member = None):
         for line in lines:
             if not line.strip(): continue
             
-            user_match = re.search(r'<@!?(\d+)>', line)
-            if user_match:
-                target_uid = str(user_match.group(1))
-                # Isolate the text segment holding the name values
+            # FIXED ROBUST REGEX PARSER: Extracts the targeted user token out of any point on the text line
+            user_find = re.search(r'<@!?(\d+)>', line)
+            if user_find:
+                target_uid = str(user_find.group(1))
+                
+                # Wipe markers, user structures, and dashes to isolate the raw Pokemon name list block
                 clean_chunk = re.sub(r'<@!?\d+>', '', line).replace('•', '').replace('-', '').replace('*', '').strip()
                 
-                # Split the block cleanly by comma structures to allow multiple transfers on a single text line
+                # Split entry cleanly by commas to parse multi-Pokemon transfers per single message line
                 requested_names = [p.strip() for p in clean_chunk.split(",") if p.strip()]
                 
                 valid_transfers = []
@@ -394,8 +405,8 @@ async def r_exchange(ctx, main_user: discord.Member = None):
         if success_logs:
             save_data()
             await ctx.send(embed=discord.Embed(title="🔄 Reserve Exchange Ledger Summary", description="\n".join(success_logs), color=discord.Color.red()))
-        else: await ctx.send("❌ Exchange failed! Make sure the listed Pokémon are currently owned by the main user on their `e!r` list.")
-    except Exception as e: await ctx.send(f"❌ Error reading message context strings: {e}")
+        else: await ctx.send("❌ Exchange failed! Verify your formatting and confirm requested Pokémon are owned by the main user.")
+    except Exception as e: await ctx.send(f"❌ Error processing context data strings: {e}")
 
 @bot.event
 async def on_message(message):
@@ -432,4 +443,3 @@ async def on_message(message):
     except Exception as general_err: print(f"[FATAL SCANNER LOG] Trapped safely: {general_err}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
-                   
