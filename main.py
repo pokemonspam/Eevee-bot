@@ -1,4 +1,4 @@
-import os, json, discord, requests, imagehash
+import os, json, discord, requests, imagehash, difflib
 from PIL import Image
 from io import BytesIO
 from discord.ext import commands
@@ -29,6 +29,16 @@ def save_data():
         os.replace(temp_file, COLLECTION_FILE)
     except Exception as e: print(f"[ERROR] Failed to save runtime matrix out to disk: {e}")
 
+def validate_pokemon(input_name):
+    """Uses a dynamic string matching distance threshold to catch spelling typos."""
+    if not pokemon_db: return True, input_name.strip().title()
+    clean_name = input_name.strip().title()
+    valid_names = [d["name"] for d in pokemon_db.values()]
+    if clean_name in valid_names: return True, clean_name
+    matches = difflib.get_close_matches(clean_name, valid_names, n=1, cutoff=0.6)
+    if matches: return False, matches[0]
+    return False, None
+
 @bot.event
 async def on_ready():
     global pokemon_db; bot_user = bot.user if bot.user else "Eevee Bot"
@@ -48,13 +58,8 @@ async def tags_command(ctx):
     try:
         active = {uid: hunts for uid, hunts in shiny_hunts.items() if hunts}
         if not active: return await ctx.send("✨ No active shiny hunters found on this server! Use `e!sh <name>` to add targets.")
-        
         embed = discord.Embed(title="🌟 Server Shiny Hunters Master List", color=discord.Color.red())
-        description_text = ""
-        for uid, hunts in active.items():
-            user = bot.get_user(int(uid)); name = user.name if user else f"UserID-{uid}"
-            description_text += f"• **@{name}** is hunting: *{', '.join(hunts)}*\n"
-        
+        description_text = "".join([f"• **@{bot.get_user(int(uid)).name if bot.get_user(int(uid)) else uid}** is hunting: *{', '.join(hunts)}*\n" for uid, hunts in active.items()])
         embed.description = description_text
         embed.set_footer(text="Eevee Tracker Framework")
         await ctx.send(embed=embed)
@@ -62,22 +67,36 @@ async def tags_command(ctx):
 
 @bot.group(name="cl", invoke_without_command=True)
 async def cl_group(ctx):
-    embed = discord.Embed(
-        title="📋 Collection List Commands", 
-        description="`e!cl add <name>` • Add a target to your collection list\n`e!cl remove <name>` • Remove a target\n`e!cl list` • View your collection wishlist\n`e!cl clear` • Wipe your collection list clean",
-        color=discord.Color.red()
-    )
+    embed = discord.Embed(title="📋 Collection List Commands", description="`e!cl add <names>` • Separate names with commas\n`e!cl remove <name>` • Drop a target\n`e!cl list` • View your collection wishlist\n`e!cl clear` • Reset your list", color=discord.Color.red())
     await ctx.send(embed=embed)
 
 @cl_group.command(name="add")
-async def cl_add(ctx, *, name: str = None):
-    if not name: return await ctx.send("⚠️ Please specify a Pokémon! Example: `e!cl add Pikachu`")
-    uid, name = str(ctx.author.id), name.strip().title()
+async def cl_add(ctx, *, raw_names: str = None):
+    if not raw_names: return await ctx.send("⚠️ Please specify at least one Pokémon! Example: `e!cl add Pikachu, Eevee`")
+    uid = str(ctx.author.id)
     if uid not in user_collections: user_collections[uid] = []
-    if name not in user_collections[uid]:
-        user_collections[uid].append(name); save_data()
-        await ctx.send(f"✅ **{name}** has been added to your collection list!")
-    else: await ctx.send(f"⚠️ **{name}** is already inside your tracking index.")
+    
+    parts = [p.strip() for p in raw_names.split(",") if p.strip()]
+    added, duplicate, broken = [], [], []
+    
+    for raw in parts:
+        is_valid, matched_name = validate_pokemon(raw)
+        if is_valid:
+            if matched_name not in user_collections[uid]:
+                user_collections[uid].append(matched_name); added.append(matched_name)
+            else: duplicate.append(matched_name)
+        else:
+            broken.append((raw, matched_name))
+            
+    if added or duplicate or broken: save_data()
+    
+    response = ""
+    if added: response += f"✅ Added to collection: **{', '.join(added)}**\n"
+    if duplicate: response += f"⚠️ Already tracked: **{', '.join(duplicate)}**\n"
+    for wrong, guess in broken:
+        if guess: response += f"❌ **{wrong}** is wrong! Did you mean **{guess}**? Please type it again.\n"
+        else: response += f"❌ **{wrong}** is not recognized! Please check the spelling and type it again.\n"
+    await ctx.send(response)
 
 @cl_group.command(name="remove", aliases=["del"])
 async def cl_remove(ctx, *, name: str = None):
@@ -93,15 +112,8 @@ async def cl_list(ctx):
     uid = str(ctx.author.id)
     if uid in user_collections and user_collections[uid]:
         sorted_list = sorted(user_collections[uid])
-        total_count = len(sorted_list)
-        
         lines = [f"• {n}" for n in sorted_list]
-        
-        embed = discord.Embed(
-            title=f"📋 {ctx.author.name}'s Collection ({total_count})",
-            description="\n".join(lines),
-            color=discord.Color.red()
-        )
+        embed = discord.Embed(title=f"📋 {ctx.author.name}'s Collection ({len(sorted_list)})", description="\n".join(lines), color=discord.Color.red())
         embed.set_footer(text="Eevee Tracking Hub | Est. 2026")
         await ctx.send(embed=embed)
     else:
@@ -125,29 +137,27 @@ async def sh_group(ctx, *, arg: str = None):
         elif arg_lower.startswith("remove "): return await ctx.invoke(bot.get_command('sh remove'), name=arg[7:])
         elif arg_lower.startswith("del "): return await ctx.invoke(bot.get_command('sh remove'), name=arg[4:])
         else: return await ctx.invoke(bot.get_command('sh add'), name=arg)
-    embed = discord.Embed(
-        title="✨ Shiny Hunt Commands",
-        description="`e!sh <name>` • Set your active single shiny target\n`e!sh remove <name>` • Stop tracking a shiny target\n`e!sh list` • View your active shiny target\n`e!sh clear` • Wipe your shiny tracking data",
-        color=discord.Color.red()
-    )
+    embed = discord.Embed(title="✨ Shiny Hunt Commands", description="`e!sh <name>` • Set your active single shiny target\n`e!sh remove <name>` • Stop tracking a shiny target\n`e!sh list` • View your active shiny target\n`e!sh clear` • Wipe your shiny tracking data", color=discord.Color.red())
     await ctx.send(embed=embed)
 
 @sh_group.command(name="add")
 async def sh_add(ctx, *, name: str = None):
     if not name: return await ctx.send("⚠️ Please specify a target name!")
-    uid, name = str(ctx.author.id), name.strip().title()
+    uid = str(ctx.author.id)
+    is_valid, matched_name = validate_pokemon(name)
     
-    if uid in shiny_hunts and shiny_hunts[uid] and shiny_hunts[uid] == [name]:
-        return await ctx.send(f"⚠️ You are already actively tracking shiny **{name}**.")
+    if not is_valid:
+        if matched_name: return await ctx.send(f"❌ **{name}** is wrong! Did you mean **{matched_name}**? Please type it again.")
+        else: return await ctx.send(f"❌ **{name}** is not recognized! Please check the spelling and type it again.")
+
+    if uid in shiny_hunts and shiny_hunts[uid] and shiny_hunts[uid] == [matched_name]:
+        return await ctx.send(f"⚠️ You are already actively tracking shiny **{matched_name}**.")
 
     old_mon = shiny_hunts[uid][0] if (uid in shiny_hunts and shiny_hunts[uid]) else None
-    shiny_hunts[uid] = [name]
-    save_data()
+    shiny_hunts[uid] = [matched_name]; save_data()
     
-    if old_mon:
-        await ctx.send(f"✨ **{name}** is your new Shiny Hunt! *(Your previous target, **{old_mon}**, has been removed)*")
-    else:
-        await ctx.send(f"✨ **{name}** has been registered as your active Shiny Hunt!")
+    if old_mon: await ctx.send(f"✨ **{matched_name}** is your new Shiny Hunt! *(Your previous target, **{old_mon}**, has been removed)*")
+    else: await ctx.send(f"✨ **{matched_name}** has been registered as your active Shiny Hunt!")
 
 @sh_group.command(name="remove", aliases=["del"])
 async def sh_remove(ctx, *, name: str = None):
@@ -162,11 +172,7 @@ async def sh_remove(ctx, *, name: str = None):
 async def sh_list(ctx):
     uid = str(ctx.author.id)
     if uid in shiny_hunts and shiny_hunts[uid]:
-        embed = discord.Embed(
-            title=f"🌟 {ctx.author.name}'s Active Shiny Target",
-            description=f"• ✨ **{shiny_hunts[uid][0]}**",
-            color=discord.Color.red()
-        )
+        embed = discord.Embed(title=f"🌟 {ctx.author.name}'s Active Shiny Target", description=f"• ✨ **{shiny_hunts[uid][0]}**", color=discord.Color.red())
         embed.set_footer(text="Eevee Tracking Hub | Est. 2026")
         await ctx.send(embed=embed)
     else:
@@ -186,28 +192,38 @@ async def r_group(ctx):
     if ctx.message.mentions:
         target = ctx.message.mentions[0]; tid = str(target.id)
         c_dt = user_collections.get(tid, []); s_dt = shiny_hunts.get(tid, [])
-        
         embed = discord.Embed(title=f"📋 Wishlist Profile for {target.name}", color=discord.Color.red())
         embed.add_field(name="🔹 Collection Targets", value=", ".join(sorted(c_dt)) if c_dt else "*None*", inline=False)
         embed.add_field(name="✨ Active Shiny Hunt", value=f"**{s_dt[0]}**" if s_dt else "*None*", inline=False)
         embed.set_footer(text="Eevee Registry Search Matrix")
         return await ctx.send(embed=embed)
-        
-    embed = discord.Embed(
-        title="📦 Server Reserve Commands",
-        description="`e!r add <name>` • Add a Pokemon to global reserves\n`e!r remove <name>` • Remove from global reserves\n`e!r list` • View the shared server reserve list\n`e!r clear` • Reset the shared reserve list\n`e!r @user` • Inspect another user's priority targets",
-        color=discord.Color.red()
-    )
+    embed = discord.Embed(title="📦 Server Reserve Commands", description="`e!r add <names>` • Separate multiple names with commas\n`e!r remove <name>` • Remove from reserves\n`e!r list` • View server reserve list\n`e!r clear` • Reset shared list\n`e!r @user` • Inspect another user's list", color=discord.Color.red())
     await ctx.send(embed=embed)
 
 @r_group.command(name="add")
-async def r_add(ctx, *, name: str = None):
-    if not name: return await ctx.send("⚠️ Specify a Pokémon name! Example: `e!r add Mewtwo`")
-    global reserve_list; name = name.strip().title()
-    if name not in reserve_list:
-        reserve_list.append(name); save_data()
-        await ctx.send(f"📦 **{name}** has been added to the global Server Reserve manifest!")
-    else: await ctx.send(f"⚠️ **{name}** already resides inside the server reserve catalog.")
+async def r_add(ctx, *, raw_names: str = None):
+    if not raw_names: return await ctx.send("⚠️ Specify at least one Pokémon name! Example: `e!r add Mewtwo, Lugia`")
+    global reserve_list
+    parts = [p.strip() for p in raw_names.split(",") if p.strip()]
+    added, duplicate, broken = [], [], []
+    
+    for raw in parts:
+        is_valid, matched_name = validate_pokemon(raw)
+        if is_valid:
+            if matched_name not in reserve_list:
+                reserve_list.append(matched_name); added.append(matched_name)
+            else: duplicate.append(matched_name)
+        else: broken.append((raw, matched_name))
+        
+    if added or duplicate or broken: save_data()
+    
+    response = ""
+    if added: response += f"📦 Added to server reserves: **{', '.join(added)}**\n"
+    if duplicate: response += f"⚠️ Already on server reserves: **{', '.join(duplicate)}**\n"
+    for wrong, guess in broken:
+        if guess: response += f"❌ **{wrong}** is wrong! Did you mean **{guess}**? Please type it again.\n"
+        else: response += f"❌ **{wrong}** is not recognized! Please check the spelling and type it again.\n"
+    await ctx.send(response)
 
 @r_group.command(name="remove", aliases=["del"])
 async def r_remove(ctx, *, name: str = None):
@@ -222,11 +238,7 @@ async def r_remove(ctx, *, name: str = None):
 async def r_list(ctx):
     if reserve_list:
         lines = [f"• {n}" for n in sorted(reserve_list)]
-        embed = discord.Embed(
-            title=f"📋 Shared Server Reserve List ({len(reserve_list)})",
-            description="\n".join(lines),
-            color=discord.Color.red()
-        )
+        embed = discord.Embed(title=f"📋 Shared Server Reserve List ({len(reserve_list)})", description="\n".join(lines), color=discord.Color.red())
         embed.set_footer(text="Eevee Tracking Hub | Est. 2026")
         await ctx.send(embed=embed)
     else:
