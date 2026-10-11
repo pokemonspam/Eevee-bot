@@ -58,7 +58,7 @@ async def collection_group(ctx):
             "**`A!cl`** - Display this collection help list.\n"
             "**`A!cl list`** - View your personal collection list.\n"
             "**`A!cl add <mons>`** - Add Pokémon to your collection.\n"
-            "**`A!cl remove <mons>`** - Remove Pokémon from your collection."
+            "**`A!cl remove <mons>`** - Remove Pokémon from your collection.\n"
             "**`A!cl clear`** - Clear your entire collection."
         ),
         color=discord.Color.blue()
