@@ -8,7 +8,8 @@ from dataset import (
     parse_pokemon_list,
     format_pokemon_name,
     get_evolution_family,
-    is_gmax_eligible
+    is_gmax_eligible,
+    validate_species
 )
 
 # Setup Bot Client
@@ -112,8 +113,10 @@ async def collection_add(ctx, *, mons: str = None):
         else:
             final_mons.append(item)
 
-    unique_mons = list(dict.fromkeys(final_mons))
-    valid_mons = [format_pokemon_name(m) for m in unique_mons if validate_species(m)]
+    valid_mons = []
+    for m in final_mons:
+        if validate_species(m):
+            valid_mons.append(format_pokemon_name(m))
 
     if not valid_mons:
         embed = discord.Embed(
@@ -123,13 +126,15 @@ async def collection_add(ctx, *, mons: str = None):
         await ctx.send(embed=embed)
         return
 
+    unique_mons = list(dict.fromkeys(valid_mons))
+
     await collections_col.update_one(
         {"user_id": ctx.author.id},
-        {"$addToSet": {"pokemon": {"$each": valid_mons}}},
+        {"$addToSet": {"pokemon": {"$each": unique_mons}}},
         upsert=True
     )
 
-    added_str = ", ".join(valid_mons)
+    added_str = ", ".join(unique_mons)
     embed = discord.Embed(
         description=f"✅ Added to your collection: **{added_str}**",
         color=discord.Color.green()
@@ -161,8 +166,10 @@ async def collection_remove(ctx, *, mons: str = None):
         else:
             final_mons.append(item)
 
-    unique_mons = list(dict.fromkeys(final_mons))
-    valid_mons = [format_pokemon_name(m) for m in unique_mons if validate_species(m)]
+    valid_mons = []
+    for m in final_mons:
+        if validate_species(m):
+            valid_mons.append(format_pokemon_name(m))
 
     if not valid_mons:
         embed = discord.Embed(
@@ -172,12 +179,14 @@ async def collection_remove(ctx, *, mons: str = None):
         await ctx.send(embed=embed)
         return
 
+    unique_mons = list(dict.fromkeys(valid_mons))
+
     await collections_col.update_one(
         {"user_id": ctx.author.id},
-        {"$pull": {"pokemon": {"$in": valid_mons}}}
+        {"$pull": {"pokemon": {"$in": unique_mons}}}
     )
 
-    removed_str = ", ".join(valid_mons)
+    removed_str = ", ".join(unique_mons)
     embed = discord.Embed(
         description=f"✅ Removed from your collection: **{removed_str}**",
         color=discord.Color.green()
