@@ -89,10 +89,26 @@ async def collection_list(ctx):
 
 @collection_group.command(name="add")
 async def collection_add(ctx, *, mons: str):
-    mon_list = parse_pokemon_list(mons)
-    if not mon_list:
+    raw_list = mons.split(",")
+    final_mons = []
+
+    for item in raw_list:
+        clean_item = item.strip().lower()
+        if clean_item.startswith("all "):
+            target = clean_item.replace("all ", "").strip()
+            # Fetches all forms for multi-form Pokémon from dataset.py
+            forms = get_pokemon_forms(target)
+            final_mons.extend(forms if forms else [target])
+        else:
+            final_mons.append(clean_item)
+
+    # Deduplicate and validate against dataset.py rules
+    unique_mons = list(dict.fromkeys(final_mons))
+    valid_mons = [format_pokemon_name(m) for m in unique_mons if validate_species(m)]
+
+    if not valid_mons:
         embed = discord.Embed(
-            description="❌ Please specify valid Pokémon to add.",
+            description="❌ No valid Pokémon species or forms were provided.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
@@ -100,22 +116,42 @@ async def collection_add(ctx, *, mons: str):
 
     await collections_col.update_one(
         {"user_id": ctx.author.id},
-        {"$addToSet": {"pokemon": {"$each": mon_list}}},
+        {"$addToSet": {"pokemon": {"$each": valid_mons}}},
         upsert=True
     )
+
+    added_str = ", ".join(valid_mons)
     embed = discord.Embed(
-        description=f"✅ Added {len(mon_list)} Pokémon to your collection.",
+        description=f"✅ Added to your collection: **{added_str}**",
         color=discord.Color.green()
     )
     await ctx.send(embed=embed)
+
 
 
 @collection_group.command(name="remove")
+@collection_group.command(name="remove")
 async def collection_remove(ctx, *, mons: str):
-    mon_list = parse_pokemon_list(mons)
-    if not mon_list:
+    raw_list = mons.split(",")
+    final_mons = []
+
+    for item in raw_list:
+        clean_item = item.strip().lower()
+        if clean_item.startswith("all "):
+            target = clean_item.replace("all ", "").strip()
+            # Fetches all forms for multi-form Pokémon from dataset.py
+            forms = get_pokemon_forms(target)
+            final_mons.extend(forms if forms else [target])
+        else:
+            final_mons.append(clean_item)
+
+    # Deduplicate and validate against dataset.py rules
+    unique_mons = list(dict.fromkeys(final_mons))
+    valid_mons = [format_pokemon_name(m) for m in unique_mons if validate_species(m)]
+
+    if not valid_mons:
         embed = discord.Embed(
-            description="❌ Please specify valid Pokémon to remove.",
+            description="❌ No valid Pokémon species or forms were provided.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
@@ -123,13 +159,17 @@ async def collection_remove(ctx, *, mons: str):
 
     await collections_col.update_one(
         {"user_id": ctx.author.id},
-        {"$pull": {"pokemon": {"$in": mon_list}}}
+        {"$pull": {"pokemon": {"$in": valid_mons}}}
     )
+
+    removed_str = ", ".join(valid_mons)
     embed = discord.Embed(
-        description="✅ Removed specified Pokémon from your collection.",
+        description=f"✅ Removed from your collection: **{removed_str}**",
         color=discord.Color.green()
     )
     await ctx.send(embed=embed)
+
+
 
 
 @collection_group.command(name="clear")
