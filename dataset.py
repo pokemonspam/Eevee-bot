@@ -148,6 +148,13 @@ def validate_species(name: str) -> bool:
             
     return False
 
+def parse_pokemon_list(raw_text: str) -> list[str]:
+    """Helper to parse a raw string of comma-separated Pokémon names."""
+    if not raw_text:
+        return []
+    return [m.strip().lower() for m in raw_text.split(",") if m.strip()]
+
+
 
 # Initialize on import
 load_dataset()
