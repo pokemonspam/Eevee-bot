@@ -8,8 +8,8 @@ from dataset import (
     parse_pokemon_list,
     format_pokemon_name,
     get_evolution_family,
-    is_gmax_eligible,
-    validate_species
+    validate_species,
+    POKEMON_FORMS
 )
 
 # Setup Bot Client
@@ -116,21 +116,16 @@ async def collection_add(ctx, *, mons: str = None):
     invalid_items = []
 
     for item in raw_list:
-        if item.startswith("all "):
-            target = item.replace("all ", "").strip()
-            if validate_species(target):
-                forms = get_evolution_family(target)
-                if forms:
-                    final_mons.extend(forms)
-                else:
-                    final_mons.append(target)
+        clean_item = item.replace("all ", "").strip()
+        
+        if validate_species(clean_item):
+            if clean_item in POKEMON_FORMS or item.startswith("all "):
+                forms = get_evolution_family(clean_item)
+                final_mons.extend(forms)
             else:
-                invalid_items.append(item)
+                final_mons.append(format_pokemon_name(clean_item))
         else:
-            if validate_species(item):
-                final_mons.append(item)
-            else:
-                invalid_items.append(item)
+            invalid_items.append(item)
 
     if invalid_items:
         bad_words = ", ".join([f'"{w}"' for w in invalid_items])
@@ -141,8 +136,7 @@ async def collection_add(ctx, *, mons: str = None):
         await ctx.send(embed=embed)
         return
 
-    valid_mons = [format_pokemon_name(m) for m in final_mons if validate_species(m)]
-    unique_mons = list(dict.fromkeys(valid_mons))
+    unique_mons = list(dict.fromkeys(final_mons))
 
     await collections_col.update_one(
         {"user_id": ctx.author.id},
@@ -173,21 +167,16 @@ async def collection_remove(ctx, *, mons: str = None):
     invalid_items = []
 
     for item in raw_list:
-        if item.startswith("all "):
-            target = item.replace("all ", "").strip()
-            if validate_species(target):
-                forms = get_evolution_family(target)
-                if forms:
-                    final_mons.extend(forms)
-                else:
-                    final_mons.append(target)
+        clean_item = item.replace("all ", "").strip()
+        
+        if validate_species(clean_item):
+            if clean_item in POKEMON_FORMS or item.startswith("all "):
+                forms = get_evolution_family(clean_item)
+                final_mons.extend(forms)
             else:
-                invalid_items.append(item)
+                final_mons.append(format_pokemon_name(clean_item))
         else:
-            if validate_species(item):
-                final_mons.append(item)
-            else:
-                invalid_items.append(item)
+            invalid_items.append(item)
 
     if invalid_items:
         bad_words = ", ".join([f'"{w}"' for w in invalid_items])
@@ -198,8 +187,7 @@ async def collection_remove(ctx, *, mons: str = None):
         await ctx.send(embed=embed)
         return
 
-    valid_mons = [format_pokemon_name(m) for m in final_mons if validate_species(m)]
-    unique_mons = list(dict.fromkeys(valid_mons))
+    unique_mons = list(dict.fromkeys(final_mons))
 
     await collections_col.update_one(
         {"user_id": ctx.author.id},
@@ -214,10 +202,8 @@ async def collection_remove(ctx, *, mons: str = None):
     await ctx.send(embed=embed)
 
 
-
 @collection_group.command(name="clear")
 async def collection_clear(ctx):
-    # Clears the author's entire collection
     result = await collections_col.delete_one({"user_id": ctx.author.id})
     if result.deleted_count > 0:
         embed = discord.Embed(
@@ -232,14 +218,13 @@ async def collection_clear(ctx):
     await ctx.send(embed=embed)
 
 
-
 # ==========================================
 # 📋 RESERVE COMMANDS (A!r)
 # ==========================================
 
 @bot.group(name="r", invoke_without_command=True)
 async def reserve_group(ctx, target: discord.Member = None):
-    # Lookup specific user reserves if @user is provided
+    # If a user mention or ID is provided directly after A!r
     if target:
         user_doc = await reserves_col.find_one({"guild_id": ctx.guild.id, "user_id": target.id})
         if not user_doc or not user_doc.get("pokemon"):
@@ -256,10 +241,11 @@ async def reserve_group(ctx, target: discord.Member = None):
             description=f"**Reserved:** {mons}",
             color=discord.Color.gold()
         )
+        embed.set_footer(text=f"Total Reserved: {len(user_doc['pokemon'])}")
         await ctx.send(embed=embed)
         return
 
-    # Default Help Menu with Compact Headers
+    # Default Help Menu
     embed = discord.Embed(
         title="📋 Reserve Commands",
         description=(
@@ -273,7 +259,7 @@ async def reserve_group(ctx, target: discord.Member = None):
             "**`A!r remove <mons> [@user]`** - Remove specified reserves.\n"
             "**`A!r clear @user`** - Clear all reserves for a specific user.\n"
             "**`A!r clear`** - Clear all reserves across the entire server.\n"
-            "**`A!r e @mainuser`** - Exchange reserves from replied message.\n\n"
+            "**`A!r e @mainuser`** - Exchange reserves from a replied message.\n\n"
             "## Admin Role Permissions\n"
             "**`A!r role list`** - View authorized staff roles.\n"
             "**`A!r role add @Role`** - Grant reserve staff permissions.\n"
@@ -312,6 +298,252 @@ async def reserve_list(ctx):
     await ctx.send(embed=embed)
 
 
+@reserve_group.command(name="e")
+async def reserve_exchange(ctx, main_user: discord.Member = None):
+    if not await is_staff(ctx):
+        embed = discord.Embed(
+            description="❌ You do not have permission to exchange reserves.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if not main_user:
+        embed = discord.Embed(
+            description="❌ Please specify the main user to exchange reserves with (e.g., `A!r e @User`).",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if not ctx.message.reference or not ctx.message.reference.message_id:
+        embed = discord.Embed(
+            description="❌ Please **reply to a message** containing the Pokémon list while running this command.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    try:
+        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    except Exception:
+        embed = discord.Embed(
+            description="❌ Could not fetch the replied message.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    raw_content = replied_msg.content
+    if not raw_content and replied_msg.embeds:
+        raw_content = replied_msg.embeds[0].description or ""
+
+    if not raw_content:
+        embed = discord.Embed(
+            description="❌ The replied message contains no text or readable Pokémon.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    raw_list = [m.strip().lower() for m in raw_content.replace("\n", ",").split(",") if m.strip()]
+    final_mons = []
+
+    for item in raw_list:
+        clean_item = item.replace("all ", "").strip()
+        if validate_species(clean_item):
+            if clean_item in POKEMON_FORMS or item.startswith("all "):
+                forms = get_evolution_family(clean_item)
+                final_mons.extend(forms)
+            else:
+                final_mons.append(format_pokemon_name(clean_item))
+
+    if not final_mons:
+        embed = discord.Embed(
+            description="❌ No valid Pokémon species or forms found in the replied message.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    unique_mons = list(dict.fromkeys(final_mons))
+
+    await reserves_col.update_one(
+        {"guild_id": ctx.guild.id, "user_id": main_user.id},
+        {"$pull": {"pokemon": {"$in": unique_mons}}}
+    )
+
+    await reserves_col.update_one(
+        {"guild_id": ctx.guild.id, "user_id": ctx.author.id},
+        {"$addToSet": {"pokemon": {"$each": unique_mons}}},
+        upsert=True
+    )
+
+    exchanged_str = ", ".join(unique_mons)
+    embed = discord.Embed(
+        title="🔄 Reserve Exchange Successful",
+        description=(
+            f"Transferred **{len(unique_mons)}** Pokémon from {main_user.mention} to {ctx.author.mention}.\n\n"
+            f"**Exchanged Pokémon:**\n{exchanged_str}"
+        ),
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+
+
+@reserve_group.command(name="add")
+async def reserve_add(ctx, *, args: str = None):
+    if not await is_staff(ctx):
+        embed = discord.Embed(
+            description="❌ You do not have permission to modify reserves.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if not args:
+        embed = discord.Embed(
+            description="❌ Please specify Pokémon to reserve (e.g. `A!r add Charmander @User`).",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    target_user = ctx.author
+    if ctx.message.mentions:
+        target_user = ctx.message.mentions[0]
+        for mention in ctx.message.mentions:
+            args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
+
+    raw_list = [m.strip().lower() for m in args.split(",") if m.strip()]
+    final_mons = []
+    invalid_items = []
+
+    for item in raw_list:
+        clean_item = item.replace("all ", "").strip()
+        if validate_species(clean_item):
+            if clean_item in POKEMON_FORMS or item.startswith("all "):
+                forms = get_evolution_family(clean_item)
+                final_mons.extend(forms)
+            else:
+                final_mons.append(format_pokemon_name(clean_item))
+        else:
+            invalid_items.append(item)
+
+    if invalid_items:
+        bad_words = ", ".join([f'"{w}"' for w in invalid_items])
+        embed = discord.Embed(
+            description=f"❌ {bad_words} is not a valid Pokémon or form.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    unique_mons = list(dict.fromkeys(final_mons))
+
+    await reserves_col.update_one(
+        {"guild_id": ctx.guild.id, "user_id": target_user.id},
+        {"$addToSet": {"pokemon": {"$each": unique_mons}}},
+        upsert=True
+    )
+
+    added_str = ", ".join(unique_mons)
+    embed = discord.Embed(
+        description=f"✅ Added to reserves for {target_user.mention}: **{added_str}**",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+
+
+@reserve_group.command(name="remove")
+async def reserve_remove(ctx, *, args: str = None):
+    if not await is_staff(ctx):
+        embed = discord.Embed(
+            description="❌ You do not have permission to modify reserves.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if not args:
+        embed = discord.Embed(
+            description="❌ Please specify Pokémon to remove from reserves.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    target_user = ctx.author
+    if ctx.message.mentions:
+        target_user = ctx.message.mentions[0]
+        for mention in ctx.message.mentions:
+            args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
+
+    raw_list = [m.strip().lower() for m in args.split(",") if m.strip()]
+    final_mons = []
+
+    for item in raw_list:
+        clean_item = item.replace("all ", "").strip()
+        if validate_species(clean_item):
+            if clean_item in POKEMON_FORMS or item.startswith("all "):
+                forms = get_evolution_family(clean_item)
+                final_mons.extend(forms)
+            else:
+                final_mons.append(format_pokemon_name(clean_item))
+
+    unique_mons = list(dict.fromkeys(final_mons))
+
+    await reserves_col.update_one(
+        {"guild_id": ctx.guild.id, "user_id": target_user.id},
+        {"$pull": {"pokemon": {"$in": unique_mons}}}
+    )
+
+    removed_str = ", ".join(unique_mons)
+    embed = discord.Embed(
+        description=f"✅ Removed from reserves for {target_user.mention}: **{removed_str}**",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+
+
+@reserve_group.command(name="search")
+async def reserve_search(ctx, *, mon: str = None):
+    if not mon:
+        embed = discord.Embed(
+            description="❌ Please specify a Pokémon to search.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    formatted_mon = format_pokemon_name(mon)
+    cursor = reserves_col.find({
+        "guild_id": ctx.guild.id, 
+        "pokemon": {"$regex": f"^{formatted_mon}$", "$options": "i"}
+    })
+    results = await cursor.to_list(length=50)
+
+    if not results:
+        embed = discord.Embed(
+            description=f"🔍 No user has **{formatted_mon}** reserved.",
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    users = []
+    for doc in results:
+        member = ctx.guild.get_member(doc["user_id"])
+        users.append(member.mention if member else f"User ID {doc['user_id']}")
+
+    embed = discord.Embed(
+        title=f"🔍 Reserve Search: {formatted_mon}",
+        description="**Reserved by:**\n" + "\n".join(users),
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
+
+
 @reserve_group.command(name="clear")
 async def reserve_clear(ctx, target: discord.Member = None):
     if not await is_staff(ctx):
@@ -323,19 +555,112 @@ async def reserve_clear(ctx, target: discord.Member = None):
         return
 
     if target:
-        # Clear specific user reserves
         await reserves_col.delete_one({"guild_id": ctx.guild.id, "user_id": target.id})
         embed = discord.Embed(
             description=f"✅ Cleared all reserves for {target.mention}.",
             color=discord.Color.green()
         )
     else:
-        # Full server-wide reset
         await reserves_col.delete_many({"guild_id": ctx.guild.id})
         embed = discord.Embed(
             description="✅ Cleared all reserves across the entire server.",
             color=discord.Color.green()
         )
+    await ctx.send(embed=embed)
+
+
+# --- Reserve Staff Role Management Subgroup ---
+
+@reserve_group.group(name="role", invoke_without_command=True)
+async def reserve_role_group(ctx):
+    embed = discord.Embed(
+        title="🛡️ Reserve Staff Role Commands",
+        description=(
+            "**`A!r role list`** - View configured staff roles.\n"
+            "**`A!r role add @Role`** - Grant reserve staff permissions.\n"
+            "**`A!r role remove @Role`** - Revoke reserve staff permissions."
+        ),
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
+
+
+@reserve_role_group.command(name="list")
+async def reserve_role_list(ctx):
+    doc = await roles_col.find_one({"guild_id": ctx.guild.id})
+    if not doc or not doc.get("roles"):
+        embed = discord.Embed(
+            description="ℹ️ No staff roles configured. Administrators have default access.",
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    roles = [f"<@&{rid}>" for rid in doc["roles"]]
+    embed = discord.Embed(
+        title="🛡️ Authorized Reserve Staff Roles",
+        description="\n".join(roles),
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
+
+
+@reserve_role_group.command(name="add")
+async def reserve_role_add(ctx, role: discord.Role = None):
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ Only server administrators can manage staff roles.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if not role:
+        embed = discord.Embed(
+            description="❌ Please mention a valid role (e.g. `A!r role add @Staff`).",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    await roles_col.update_one(
+        {"guild_id": ctx.guild.id},
+        {"$addToSet": {"roles": role.id}},
+        upsert=True
+    )
+    embed = discord.Embed(
+        description=f"✅ Granted reserve staff permissions to {role.mention}.",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+
+
+@reserve_role_group.command(name="remove")
+async def reserve_role_remove(ctx, role: discord.Role = None):
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ Only server administrators can manage staff roles.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if not role:
+        embed = discord.Embed(
+            description="❌ Please mention a valid role to remove.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    await roles_col.update_one(
+        {"guild_id": ctx.guild.id},
+        {"$pull": {"roles": role.id}}
+    )
+    embed = discord.Embed(
+        description=f"✅ Revoked reserve staff permissions from {role.mention}.",
+        color=discord.Color.green()
+    )
     await ctx.send(embed=embed)
 
 
@@ -346,14 +671,23 @@ async def reserve_clear(ctx, target: discord.Member = None):
 @bot.group(name="sh", invoke_without_command=True)
 async def shiny_group(ctx, *, target_mon: str = None):
     if target_mon:
-        formatted_mon = format_pokemon_name(target_mon)
+        clean_target = target_mon.strip().lower()
+        if not validate_species(clean_target):
+            embed = discord.Embed(
+                description=f"❌ **{target_mon}** is not a valid Pokémon.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        formatted_mon = format_pokemon_name(clean_target)
         await shiny_col.update_one(
             {"user_id": ctx.author.id},
             {"$set": {"target": formatted_mon}},
             upsert=True
         )
         embed = discord.Embed(
-            description=f"✅ Set active shiny hunt target to ✨️ {formatted_mon}.",
+            description=f"✅ Set active shiny hunt to ✨️ **{formatted_mon}**.",
             color=discord.Color.green()
         )
         await ctx.send(embed=embed)
@@ -363,8 +697,8 @@ async def shiny_group(ctx, *, target_mon: str = None):
     target = user_doc.get("target", "None") if user_doc else "None"
 
     embed = discord.Embed(
-        title="✨️ Shiny Hunt Management",
-        description=f"**Current Active Hunt:** ✨️ {target}\n\nUse **`A!sh <mon>`** to set a new target.",
+        title="✨️ Shiny Hunt",
+        description=f"**Current Active Hunt:** ✨️ **{target}**\n\nUse **`A!sh <mon>`** to set a new target.",
         color=discord.Color.purple()
     )
     await ctx.send(embed=embed)
