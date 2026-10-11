@@ -16,7 +16,6 @@ if MONGO_URI:
         mongo_client = pymongo.MongoClient(MONGO_URI)
         db = mongo_client["pokebot_db"]
         
-        # Collection handlers
         collections_col = db["collections"]
         hunts_col = db["shiny_hunts"]
         reserves_col = db["reserves"]
@@ -32,7 +31,6 @@ else:
 # 2. GLOBAL DATABASE HELPER CLASS
 # ==========================================
 class GlobalDatabase:
-    # --- Collections ---
     @staticmethod
     def get_collection(user_id: str):
         if mongo_client is not None:
@@ -49,7 +47,6 @@ class GlobalDatabase:
                 upsert=True
             )
 
-    # --- Shiny Hunts ---
     @staticmethod
     def get_shiny_hunt(user_id: str):
         if mongo_client is not None:
@@ -66,7 +63,6 @@ class GlobalDatabase:
                 upsert=True
             )
 
-    # --- Reserves ---
     @staticmethod
     def get_reserve(user_id: str):
         if mongo_client is not None:
@@ -83,7 +79,6 @@ class GlobalDatabase:
                 upsert=True
             )
 
-    # --- Starboard Config ---
     @staticmethod
     def load_starboard_config():
         if mongo_client is not None:
@@ -116,11 +111,8 @@ async def on_ready():
 # ==========================================
 # 4. COMMANDS
 # ==========================================
-
-# --- Shiny Hunt Commands ---
 @bot.command(name="hunt")
 async def set_hunt(ctx, *, pokemon_name: str):
-    """Set your current shiny hunt target."""
     user_id = str(ctx.author.id)
     target = pokemon_name.strip().title()
     GlobalDatabase.set_shiny_hunt(user_id, target)
@@ -128,7 +120,6 @@ async def set_hunt(ctx, *, pokemon_name: str):
 
 @bot.command(name="myhunt")
 async def my_hunt(ctx):
-    """Check your active shiny hunt target."""
     user_id = str(ctx.author.id)
     target = GlobalDatabase.get_shiny_hunt(user_id)
     if target:
@@ -136,14 +127,11 @@ async def my_hunt(ctx):
     else:
         await ctx.send("❌ You don't have an active shiny hunt target set! Use `!hunt <pokemon>`.")
 
-# --- Collection Commands ---
 @bot.command(name="addcol")
 async def add_collection(ctx, *, pokemon_name: str):
-    """Add a Pokémon to your persistent collection."""
     user_id = str(ctx.author.id)
     pokemon = pokemon_name.strip().title()
     collection = GlobalDatabase.get_collection(user_id)
-    
     if pokemon not in collection:
         collection.append(pokemon)
         GlobalDatabase.save_collection(user_id, collection)
@@ -153,23 +141,18 @@ async def add_collection(ctx, *, pokemon_name: str):
 
 @bot.command(name="mycol")
 async def view_collection(ctx):
-    """View your persistent collection."""
     user_id = str(ctx.author.id)
     collection = GlobalDatabase.get_collection(user_id)
     if collection:
-        col_list = ", ".join(collection)
-        await ctx.send(f"📋 **{ctx.author.display_name}'s Collection:**\n{col_list}")
+        await ctx.send(f"📋 **{ctx.author.display_name}'s Collection:**\n{', '.join(collection)}")
     else:
         await ctx.send("📂 Your collection is empty!")
 
-# --- Reserve List Commands ---
 @bot.command(name="reserve")
 async def reserve_pokemon(ctx, *, pokemon_name: str):
-    """Add a Pokémon to your reserve list."""
     user_id = str(ctx.author.id)
     pokemon = pokemon_name.strip().title()
     reserves = GlobalDatabase.get_reserve(user_id)
-    
     if pokemon not in reserves:
         reserves.append(pokemon)
         GlobalDatabase.save_reserve(user_id, reserves)
@@ -179,20 +162,16 @@ async def reserve_pokemon(ctx, *, pokemon_name: str):
 
 @bot.command(name="myreserves")
 async def view_reserves(ctx):
-    """View your reserve list."""
     user_id = str(ctx.author.id)
     reserves = GlobalDatabase.get_reserve(user_id)
     if reserves:
-        res_list = ", ".join(reserves)
-        await ctx.send(f"📝 **{ctx.author.display_name}'s Reserved Pokémon:**\n{res_list}")
+        await ctx.send(f"📝 **{ctx.author.display_name}'s Reserved Pokémon:**\n{', '.join(reserves)}")
     else:
         await ctx.send("📂 Your reserve list is empty!")
 
-# --- Starboard Setup Command ---
 @bot.command(name="setstarboard")
 @commands.has_permissions(administrator=True)
 async def set_starboard(ctx, category: str, channel: discord.TextChannel):
-    """Set a starboard channel for a category (shiny, rare, gmax, regional, high_iv, low_iv)."""
     category = category.lower().strip()
     if category in starboard.starboard_channels:
         starboard.StarboardManager.set_channel(category, channel.id)
@@ -202,40 +181,58 @@ async def set_starboard(ctx, category: str, channel: discord.TextChannel):
         await ctx.send(f"❌ Invalid category! Choose from: `{valid_cats}`")
 
 # ==========================================
-# 5. AUTOMATIC POKÉTWO CATCH LISTENER
+# 5. AUTOMATIC POKÉTWO CATCH LISTENER & ROUTER
 # ==========================================
 POKETWO_ID = 716390085896962058  # Pokétwo Discord ID
 
 @bot.event
 async def on_message(message):
-    # Ignore messages from other bots except Pokétwo
     if message.author.bot and message.author.id != POKETWO_ID:
         await bot.process_commands(message)
         return
 
-    # Process Pokétwo catch notifications
     if message.author.id == POKETWO_ID:
         content = message.content
+        
+        # Check if it's a catch confirmation message
         if "Congratulations" in content and "caught a" in content:
-            # Extract Catcher User Mention/ID
             user_match = re.search(r"<@!?(\d+)>", content)
-            # Extract Caught Pokémon Name
             mon_match = re.search(r"caught a (?:level \d+ )?([✨\w\s-]+)!", content, re.IGNORECASE)
             
             if user_match and mon_match:
                 catcher_id = user_match.group(1)
-                caught_mon = mon_match.group(1).strip()
+                caught_mon = mon_match.group(1).strip().lower()
 
-                # 1. Trigger Shiny Starboard
-                if "✨" in content or "shiny" in caught_mon.lower():
+                # 1. SHINY CHECK
+                if "✨" in content or "shiny" in caught_mon:
                     await starboard.StarboardManager.process_starboard(message, "shiny")
-                
-                # 2. Check Active Shiny Hunt Targets
+
+                # 2. REGIONAL FORM CHECK (Galarian, Alolan, Hisuian, Paldean)
+                regional_keywords = ["galarian", "alolan", "hisuian", "paldean"]
+                if any(region in caught_mon for region in regional_keywords):
+                    await starboard.StarboardManager.process_starboard(message, "regional")
+
+                # 3. GIGANTAMAX CHECK
+                if "gigantamax" in caught_mon or "g-max" in caught_mon:
+                    await starboard.StarboardManager.process_starboard(message, "gmax")
+
+                # 4. SHINY HUNT TARGET MATCH
                 hunt_target = GlobalDatabase.get_shiny_hunt(catcher_id)
-                if hunt_target and hunt_target.lower() in caught_mon.lower():
-                    await message.channel.send(
-                        f"🎉 <@{catcher_id}> caught their target shiny: **{caught_mon}**!"
-                    )
+                if hunt_target and hunt_target.lower() in caught_mon:
+                    await message.channel.send(f"🎉 <@{catcher_id}> caught their target shiny: **{caught_mon.title()}**!")
+
+        # 5. IV CHECK (Parsing Pokétwo Embeds for IV Stats if applicable)
+        if message.embeds:
+            for embed in message.embeds:
+                embed_text = (embed.description or "") + (embed.title or "")
+                # Look for IV percentages (e.g., "95.56%" or "100%")
+                iv_match = re.search(r"(\d+(?:\.\d+)?)\s*%", embed_text)
+                if iv_match:
+                    iv_value = float(iv_match.group(1))
+                    if iv_value >= 90.0:
+                        await starboard.StarboardManager.process_starboard(message, "high_iv")
+                    elif iv_value == 0.0:
+                        await starboard.StarboardManager.process_starboard(message, "low_iv")
 
     await bot.process_commands(message)
 
