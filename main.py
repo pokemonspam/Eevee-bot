@@ -68,8 +68,7 @@ async def collection_group(ctx):
 
 
 @collection_group.command(name="list")
-async def collection_list(ctx):
-    # Strictly retrieves author's collection
+async def collection_list(ctx, page: int = 1):
     user_doc = await collections_col.find_one({"user_id": ctx.author.id})
     if not user_doc or not user_doc.get("pokemon"):
         embed = discord.Embed(
@@ -79,14 +78,27 @@ async def collection_list(ctx):
         await ctx.send(embed=embed)
         return
 
-    mons = ", ".join(user_doc["pokemon"])
+    all_pokemon = user_doc["pokemon"]
+    per_page = 20
+    total_pages = (len(all_pokemon) + per_page - 1) // per_page
+
+    if page < 1 or page > total_pages:
+        page = 1
+
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    current_page_mons = all_pokemon[start_idx:end_idx]
+
+    # Format as vertical list with numbers
+    lines = [f"{start_idx + i + 1}. {mon}" for i, mon in enumerate(current_page_mons)]
+    
     embed = discord.Embed(
-        title="📦 Your Collection",
-        description=f"**List:** {mons}",
+        title=f"📦 Your Collection (Page {page}/{total_pages})",
+        description="\n".join(lines),
         color=discord.Color.blue()
     )
+    embed.set_footer(text=f"Total Pokémon: {len(all_pokemon)}")
     await ctx.send(embed=embed)
-
 
 
 @collection_group.command(name="add")
@@ -101,31 +113,35 @@ async def collection_add(ctx, *, mons: str = None):
 
     raw_list = [m.strip().lower() for m in mons.split(",") if m.strip()]
     final_mons = []
+    invalid_items = []
 
     for item in raw_list:
         if item.startswith("all "):
             target = item.replace("all ", "").strip()
-            forms = get_evolution_family(target)
-            if forms:
-                final_mons.extend(forms)
+            if validate_species(target):
+                forms = get_evolution_family(target)
+                if forms:
+                    final_mons.extend(forms)
+                else:
+                    final_mons.append(target)
             else:
-                final_mons.append(target)
+                invalid_items.append(item)
         else:
-            final_mons.append(item)
+            if validate_species(item):
+                final_mons.append(item)
+            else:
+                invalid_items.append(item)
 
-    valid_mons = []
-    for m in final_mons:
-        if validate_species(m):
-            valid_mons.append(format_pokemon_name(m))
-
-    if not valid_mons:
+    if invalid_items:
+        bad_words = ", ".join([f'"{w}"' for w in invalid_items])
         embed = discord.Embed(
-            description="❌ No valid Pokémon species or forms were provided.",
+            description=f"❌ {bad_words} is not a valid Pokémon or form.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
         return
 
+    valid_mons = [format_pokemon_name(m) for m in final_mons if validate_species(m)]
     unique_mons = list(dict.fromkeys(valid_mons))
 
     await collections_col.update_one(
@@ -154,31 +170,35 @@ async def collection_remove(ctx, *, mons: str = None):
 
     raw_list = [m.strip().lower() for m in mons.split(",") if m.strip()]
     final_mons = []
+    invalid_items = []
 
     for item in raw_list:
         if item.startswith("all "):
             target = item.replace("all ", "").strip()
-            forms = get_evolution_family(target)
-            if forms:
-                final_mons.extend(forms)
+            if validate_species(target):
+                forms = get_evolution_family(target)
+                if forms:
+                    final_mons.extend(forms)
+                else:
+                    final_mons.append(target)
             else:
-                final_mons.append(target)
+                invalid_items.append(item)
         else:
-            final_mons.append(item)
+            if validate_species(item):
+                final_mons.append(item)
+            else:
+                invalid_items.append(item)
 
-    valid_mons = []
-    for m in final_mons:
-        if validate_species(m):
-            valid_mons.append(format_pokemon_name(m))
-
-    if not valid_mons:
+    if invalid_items:
+        bad_words = ", ".join([f'"{w}"' for w in invalid_items])
         embed = discord.Embed(
-            description="❌ No valid Pokémon species or forms were provided.",
+            description=f"❌ {bad_words} is not a valid Pokémon or form.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
         return
 
+    valid_mons = [format_pokemon_name(m) for m in final_mons if validate_species(m)]
     unique_mons = list(dict.fromkeys(valid_mons))
 
     await collections_col.update_one(
@@ -192,8 +212,6 @@ async def collection_remove(ctx, *, mons: str = None):
         color=discord.Color.green()
     )
     await ctx.send(embed=embed)
-
-
 
 
 
