@@ -83,6 +83,11 @@ class CollectionPaginationView(discord.ui.View):
         else:
             await interaction.response.defer()
 
+    # Spacer Button (Creates a visible gap between arrows)
+    @discord.ui.button(label="⠀  ", style=discord.ButtonStyle.secondary, disabled=True, custom_id="spacer")
+    async def spacer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+    
     @discord.ui.button(label="▶", style=discord.ButtonStyle.primary, custom_id="next_page")
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
