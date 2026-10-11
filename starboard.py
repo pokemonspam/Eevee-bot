@@ -25,6 +25,65 @@ def save_config():
             json.dump(starboard_channels, f, indent=4)
     except Exception as e:
         print(f"Config save error: {e}")
+@bot.command(name="starboard")
+@commands.has_permissions(manage_channels=True)
+async def starboard_config_router(ctx, action: str = None, category: str = None, channel_arg: discord.TextChannel = None):
+    try:
+        valid_cats = ["low_iv", "high_iv", "gmax", "shiny", "regional", "rare"]
+        
+        # If user types just a!starboard or wrong parameters, output the help menu list
+        if not action or action.lower() != "set" or not category or category.lower() not in valid_cats:
+            embed = discord.Embed(title="📋 Starboard Configuration Commands List", color=discord.Color.red())
+            embed.description = (
+                "Link any category to any channel from anywhere using this syntax:\n"
+                "`a!starboard set <category> <#channel_mention or channel_id>`\n\n"
+                "**Available Categories:**\n"
+                "• `shiny` - Shiny catches\n"
+                "• `rare` - Legends, Mythicals, Paradox, Gmax Rares\n"
+                "• `high_iv` - High IV catches (>= 90%)\n"
+                "• `low_iv` - Low IV catches (< 10%)\n"
+                "• `regional` - Regional variant catches\n"
+                "• `gmax` - Standard Gigantamax catches\n\n"
+                "**Examples:**\n"
+                "`a!starboard set shiny #shiny-starboard`\n"
+                "`a!starboard set rare 123456789012345678`"
+            )
+            return await ctx.send(embed=embed)
+        
+        target_channel = channel_arg if channel_arg else ctx.channel
+        cat_clean = category.lower().strip()
+        
+        starboard_channels[cat_clean] = target_channel.id
+        save_config()
+        await ctx.send(f"✅ **Redirect Successful!** Catches for **{cat_clean}** will now automatically post into {target_channel.mention}.")
+    except Exception as e:
+        await ctx.send(f"❌ Setup error: {e}")
+import os
+import json
+import discord
+import re
+
+CONFIG_FILE = "starboard_config.json"
+starboard_channels = {
+    "low_iv": None, "high_iv": None, "gmax": None,
+    "shiny": None, "regional": None, "rare": None
+}
+
+if os.path.exists(CONFIG_FILE):
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            for k in starboard_channels:
+                starboard_channels[k] = data.get(k)
+    except Exception as e:
+        print(f"Config load error: {e}")
+
+def save_config():
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(starboard_channels, f, indent=4)
+    except Exception as e:
+        print(f"Config save error: {e}")
 RARE_POKEMON_LIST = [
     "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", "lugia", "ho-oh", "celebi",
     "regirock", "regice", "registeel", "latias", "latios", "kyogre", "groudon", "rayquaza", "jirachi", "deoxys",
@@ -64,39 +123,6 @@ GMAX_POKEMON_LIST = [
     "vanilla cream flower sweet alcremie", "vanilla cream ribbon sweet alcremie", "eternatus", "urshifu",
     "rapid strike urshifu", "melmetal"
 ]
-@bot.command(name="starboard")
-@commands.has_permissions(manage_channels=True)
-async def starboard_config_router(ctx, action: str = None, category: str = None, channel_arg: discord.TextChannel = None):
-    try:
-        valid_cats = ["low_iv", "high_iv", "gmax", "shiny", "regional", "rare"]
-        
-        # If user types just a!starboard or wrong parameters, output the help menu list
-        if not action or action.lower() != "set" or not category or category.lower() not in valid_cats:
-            embed = discord.Embed(title="📋 Starboard Configuration Commands List", color=discord.Color.red())
-            embed.description = (
-                "Link any category to any channel from anywhere using this syntax:\n"
-                "`a!starboard set <category> <#channel_mention or channel_id>`\n\n"
-                "**Available Categories:**\n"
-                "• `shiny` - Shiny catches\n"
-                "• `rare` - Legends, Mythicals, Paradox, Gmax Rares\n"
-                "• `high_iv` - High IV catches (>= 90%)\n"
-                "• `low_iv` - Low IV catches (< 10%)\n"
-                "• `regional` - Regional variant catches\n"
-                "• `gmax` - Standard Gigantamax catches\n\n"
-                "**Examples:**\n"
-                "`a!starboard set shiny #shiny-starboard`\n"
-                "`a!starboard set rare 123456789012345678`"
-            )
-            return await ctx.send(embed=embed)
-        
-        target_channel = channel_arg if channel_arg else ctx.channel
-        cat_clean = category.lower().strip()
-        
-        starboard_channels[cat_clean] = target_channel.id
-        save_config()
-        await ctx.send(f"✅ **Redirect Successful!** Catches for **{cat_clean}** will now automatically post into {target_channel.mention}.")
-    except Exception as e:
-        await ctx.send(f"❌ Setup error: {e}")
 async def process_starboard_message(message):
     content = message.content if message.content else ""
     combined_text = content
