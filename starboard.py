@@ -2,6 +2,7 @@ import os
 import json
 import discord
 import re
+from main import bot  # Hooks into your main active bot instance cleanly
 
 CONFIG_FILE = "starboard_config.json"
 starboard_channels = {
@@ -9,7 +10,6 @@ starboard_channels = {
     "shiny": None, "regional": None, "rare": None
 }
 
-# Live Configuration IO Matrix Saves Your Channel Links Automatically
 if os.path.exists(CONFIG_FILE):
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -25,7 +25,6 @@ def save_config():
             json.dump(starboard_channels, f, indent=4)
     except Exception as e:
         print(f"Config save error: {e}")
-# 🦅 Hardcoded Pokétwo Rare Verification Registry
 RARE_POKEMON_LIST = [
     "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", "lugia", "ho-oh", "celebi",
     "regirock", "regice", "registeel", "latias", "latios", "kyogre", "groudon", "rayquaza", "jirachi", "deoxys",
@@ -34,16 +33,13 @@ RARE_POKEMON_LIST = [
     "terrakion", "virizion", "tornadus", "thundurus", "reshiram", "zekrom", "landorus", "kyurem", "keldeo",
     "meloetta", "pirouette meloetta", "genesect", "yveltal", "diancie", "hoopa", "volcanion", "type: null",
     "tapu koko", "tapu lele", "tapu bulu", "tapu fini", "cosmog", "cosmoem", "solgaleo", "lunala", "nihilego",
-    "buzzwole", "pheromosa", "xurkitree", "celesteela", "kartana", "guzzlord", "necrozma", "magearna"
-]
-RARE_POKEMON_LIST += [
+    "buzzwole", "pheromosa", "xurkitree", "celesteela", "kartana", "guzzlord", "necrozma", "magearna",
     "marshadow", "poipole", "naganadel", "stakataka", "blacephalon", "zeraora", "meltan", "kubfu", "zarude",
     "dada zarude", "regieleki", "regidrago", "glastrier", "spectrier", "calyrex", "enamorus", "wo-chien",
     "chien-pao", "ting-lu", "chi-yu", "okidogi", "munkidori", "fezandipiti", "terapagos", "pecharunt",
     "zacian", "zamazenta", "eternatus", "urshifu", "rapid strike urshifu", "melmetal"
 ]
 
-# 🗺️ Hardcoded Pokétwo Regional Verification Registry
 REGIONAL_POKEMON_LIST = [
     "alolan ninetales", "alolan vulpix", "alolan geodude", "alolan graveler", "alolan raticate", "alolan rattata",
     "alolan persian", "alolan meowth", "alolan exeggutor", "alolan dugtrio", "alolan diglett", "alolan grimer",
@@ -58,7 +54,7 @@ REGIONAL_POKEMON_LIST = [
     "hisuian goodra", "basculegion", "sneasler", "overqwil", "paldean wooper", "combat breed tauros",
     "blaze breed tauros", "aqua breed tauros"
 ]
-# ⚔️ Hardcoded Pokétwo Gigantamax Verification Registry
+
 GMAX_POKEMON_LIST = [
     "venusaur", "eevee", "charizard", "blastoise", "butterfree", "pikachu", "meowth", "machamp", "gengar",
     "kingler", "lapras", "snorlax", "garbodor", "rillaboom", "cinderace", "inteleon", "corviknight", "orbeetle",
@@ -68,30 +64,39 @@ GMAX_POKEMON_LIST = [
     "vanilla cream flower sweet alcremie", "vanilla cream ribbon sweet alcremie", "eternatus", "urshifu",
     "rapid strike urshifu", "melmetal"
 ]
-# Injects the new interactive setup management router command directly into your active engine
 @bot.command(name="starboard")
 @commands.has_permissions(manage_channels=True)
-async def starboard_config_router(ctx, action: str = None, category: str = None):
+async def starboard_config_router(ctx, action: str = None, category: str = None, channel_arg: discord.TextChannel = None):
     try:
         valid_cats = ["low_iv", "high_iv", "gmax", "shiny", "regional", "rare"]
+        
+        # If user types just a!starboard or wrong parameters, output the help menu list
         if not action or action.lower() != "set" or not category or category.lower() not in valid_cats:
-            embed = discord.Embed(title="⚙️ Live Starboard Configuration Router", color=discord.Color.red())
+            embed = discord.Embed(title="📋 Starboard Configuration Commands List", color=discord.Color.red())
             embed.description = (
-                "Go to your desired room and link it by running:\n"
-                "`a!starboard set <category>`\n\n"
-                "**Available Target Categories:**\n"
-                "• `low_iv` (< 10% catches)\n• `high_iv` (>= 90% catches)\n"
-                "• `gmax` (Gigantamax catches)\n• `shiny` (Shiny catches)\n"
-                "• `regional` (Variants catches)\n• `rare` (Legends, Mythicals, Paradox)"
+                "Link any category to any channel from anywhere using this syntax:\n"
+                "`a!starboard set <category> <#channel_mention or channel_id>`\n\n"
+                "**Available Categories:**\n"
+                "• `shiny` - Shiny catches\n"
+                "• `rare` - Legends, Mythicals, Paradox, Gmax Rares\n"
+                "• `high_iv` - High IV catches (>= 90%)\n"
+                "• `low_iv` - Low IV catches (< 10%)\n"
+                "• `regional` - Regional variant catches\n"
+                "• `gmax` - Standard Gigantamax catches\n\n"
+                "**Examples:**\n"
+                "`a!starboard set shiny #shiny-starboard`\n"
+                "`a!starboard set rare 123456789012345678`"
             )
             return await ctx.send(embed=embed)
         
+        target_channel = channel_arg if channel_arg else ctx.channel
         cat_clean = category.lower().strip()
-        starboard_channels[cat_clean] = ctx.channel.id
+        
+        starboard_channels[cat_clean] = target_channel.id
         save_config()
-        await ctx.send(f"✅ Successful link! This channel is now active for **{cat_clean}** logs.")
+        await ctx.send(f"✅ **Redirect Successful!** Catches for **{cat_clean}** will now automatically post into {target_channel.mention}.")
     except Exception as e:
-        await ctx.send(f"❌ Setup error context parameters dropped: {e}")
+        await ctx.send(f"❌ Setup error: {e}")
 async def process_starboard_message(message):
     content = message.content if message.content else ""
     combined_text = content
@@ -130,10 +135,10 @@ async def process_starboard_message(message):
             await route_to_boards(message, name_text, user_id, level, iv_val, is_shiny, is_gmax, is_regional, is_rare)
         except Exception as e:
             print(f"[STARBOARD SCAN ERROR] {e}")
+
 def create_starboard_embed(title_text, emoji_icon, name, user_id, level, iv, color_hex):
     embed = discord.Embed(title=f"{emoji_icon} {title_text}", color=color_hex)
-    desc_msg = f"**Caught By:** <@{user_id}>\n**Pokémon:** {name}\n**Level:** {level}\n**IV:** {iv}%\n"
-    embed.description = desc_msg
+    embed.description = f"**Caught By:** <@{user_id}>\n**Pokémon:** {name}\n**Level:** {level}\n**IV:** {iv}%\n"
     return embed
 
 class JumpButtonView(discord.ui.View):
@@ -145,32 +150,26 @@ async def route_to_boards(orig_msg, name, user_id, level, iv, is_shiny, is_gmax,
     jump_url = orig_msg.jump_url
     guild = orig_msg.guild
     
-    # 📉 LOW IV CHANNEL MAPPING ROUTER
     if iv < 10.0 and starboard_channels["low_iv"]:
         ch = guild.get_channel(starboard_channels["low_iv"])
         if ch: await ch.send(embed=create_starboard_embed("Low IV Catch Detected", "📉", name, user_id, level, iv, discord.Color.blue()), view=JumpButtonView(jump_url))
 
-    # 📈 HIGH IV CHANNEL MAPPING ROUTER
     if iv >= 90.0 and starboard_channels["high_iv"]:
         ch = guild.get_channel(starboard_channels["high_iv"])
         if ch: await ch.send(embed=create_starboard_embed("High IV Catch Detected", "📈", name, user_id, level, iv, discord.Color.green()), view=JumpButtonView(jump_url))
 
-    # ⚔️ GIGANTAMAX CHANNEL MAPPING ROUTER
     if is_gmax and starboard_channels["gmax"]:
         ch = guild.get_channel(starboard_channels["gmax"])
         if ch: await ch.send(embed=create_starboard_embed("Gigantamax Catch Detected", "⚔️", name, user_id, level, iv, discord.Color.magenta()), view=JumpButtonView(jump_url))
 
-    # ✨ SHINY CHANNEL MAPPING ROUTER
     if is_shiny and starboard_channels["shiny"]:
         ch = guild.get_channel(starboard_channels["shiny"])
         if ch: await ch.send(embed=create_starboard_embed("Shiny Catch Detected", "✨", name, user_id, level, iv, discord.Color.gold()), view=JumpButtonView(jump_url))
 
-    # 🗺️ REGIONAL CHANNEL MAPPING ROUTER
     if is_regional and starboard_channels["regional"]:
         ch = guild.get_channel(starboard_channels["regional"])
         if ch: await ch.send(embed=create_starboard_embed("Regional Catch Detected", "🗺️", name, user_id, level, iv, discord.Color.teal()), view=JumpButtonView(jump_url))
 
-    # 🦅 RARE CHANNEL MAPPING ROUTER
     if is_rare and starboard_channels["rare"]:
         ch = guild.get_channel(starboard_channels["rare"])
         if ch: await ch.send(embed=create_starboard_embed("Rare Catch Detected", "🦅", name, user_id, level, iv, discord.Color.orange()), view=JumpButtonView(jump_url))
