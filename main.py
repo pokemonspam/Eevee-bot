@@ -3,14 +3,16 @@ import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# Import dataset helpers from dataset.py
+# Import dataset helpers and registries from dataset.py
 from dataset import (
     parse_pokemon_list,
     format_pokemon_name,
     get_evolution_family,
     validate_species,
-    POKEMON_FORMS
+    POKEMON_FORMS,
+    REGIONAL_FORMS
 )
+
 
 # Setup Bot Client
 intents = discord.Intents.default()
@@ -164,10 +166,15 @@ async def collection_add(ctx, *, mons: str = None):
             clean_item = item.replace("all ", "").strip()
             
             if validate_species(clean_item) or validate_species(item):
+                # Check if it's a form group or requested with "all"
                 if clean_item in POKEMON_FORMS or item.startswith("all "):
                     forms = get_evolution_family(clean_item)
                     final_mons.extend(forms)
                     display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in REGIONAL_FORMS:
+                    formatted_name = REGIONAL_FORMS[clean_item]
+                    final_mons.append(formatted_name)
+                    display_names.append(formatted_name)
                 else:
                     formatted_name = format_pokemon_name(item if validate_species(item) else clean_item)
                     final_mons.append(formatted_name)
@@ -193,7 +200,7 @@ async def collection_add(ctx, *, mons: str = None):
         if invalid_items:
             bad_words = ", ".join([f'"{w}"' for w in invalid_items])
             embed = discord.Embed(
-                description=f"⚠️ {bad_words} is not a valid Pokémon or form.",
+                description=f"⚠️ Added valid Pokémon, but ignored invalid items: {bad_words}",
                 color=discord.Color.gold()
             )
             await ctx.send(embed=embed)
@@ -227,6 +234,10 @@ async def collection_remove(ctx, *, mons: str = None):
                     forms = get_evolution_family(clean_item)
                     final_mons.extend(forms)
                     display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in REGIONAL_FORMS:
+                    formatted_name = REGIONAL_FORMS[clean_item]
+                    final_mons.append(formatted_name)
+                    display_names.append(formatted_name)
                 else:
                     formatted_name = format_pokemon_name(item if validate_species(item) else clean_item)
                     final_mons.append(formatted_name)
@@ -251,7 +262,7 @@ async def collection_remove(ctx, *, mons: str = None):
         if invalid_items:
             bad_words = ", ".join([f'"{w}"' for w in invalid_items])
             embed = discord.Embed(
-                description=f"⚠️ {bad_words} is not a valid Pokémon or form.",
+                description=f"⚠️ Removed valid Pokémon, but ignored unknown items: {bad_words}",
                 color=discord.Color.gold()
             )
             await ctx.send(embed=embed)
@@ -260,22 +271,6 @@ async def collection_remove(ctx, *, mons: str = None):
         print(f"Error in collection_remove: {e}")
         await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
 
-
-
-@collection_group.command(name="clear")
-async def collection_clear(ctx):
-    result = await collections_col.delete_one({"user_id": ctx.author.id})
-    if result.deleted_count > 0:
-        embed = discord.Embed(
-            description="✅ Your collection has been completely cleared.",
-            color=discord.Color.green()
-        )
-    else:
-        embed = discord.Embed(
-            description="❌ Your collection is already empty.",
-            color=discord.Color.red()
-        )
-    await ctx.send(embed=embed)
 
 
 # ==========================================
