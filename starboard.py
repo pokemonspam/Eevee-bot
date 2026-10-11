@@ -71,8 +71,9 @@ class Starboard(commands.Cog):
         embed.set_footer(text="Catch Detection System")
         return embed
 
-    @commands.group(name="starboard", aliases=["STARBOARD"], invoke_without_command=True)
+    @commands.group(name="starboard", invoke_without_command=True)
     async def starboard_group(self, ctx):
+
         """Displays help configuration menu if no subcommand is passed."""
         embed = discord.Embed(
             title="📋 Starboard Configuration Commands List",
