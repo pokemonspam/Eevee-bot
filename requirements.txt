@@ -5,3 +5,4 @@ requests
 pymongo[srv]
 dnspython
 python-levenshtein
+aiohttp
