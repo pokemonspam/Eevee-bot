@@ -1041,6 +1041,26 @@ async def shiny_group(ctx, *, target_mon: str = None):
     )
     await ctx.send(embed=embed)
 
+@shiny_group.command(name="clear")
+async def shiny_clear(ctx):
+    try:
+        result = await shiny_col.delete_one({"user_id": ctx.author.id})
+        if result.deleted_count > 0:
+            embed = discord.Embed(
+                description="✅ Your active shiny hunt has been cleared.",
+                color=discord.Color.green()
+            )
+        else:
+            embed = discord.Embed(
+                description="❌ You do not have an active shiny hunt to clear.",
+                color=discord.Color.red()
+            )
+        await ctx.send(embed=embed)
+    except Exception as e:
+        print(f"Error in shiny_clear: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
+
+
 
 # Run Bot safely from environment variables
 bot.run(os.getenv("DISCORD_TOKEN"))
