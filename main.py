@@ -346,10 +346,10 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
         elif sub_clean == "clear": GlobalDatabase.reserve_data.clear(); save_data(); await ctx.send("🗑 Wiped server reserves.")
     except Exception as e: print(f"R Fault: {e}")
 
-@bot.listen("on_message")
+@bot.listen("on_message")   
+async def poketwo_image_scanner(message):
     import starboard
     await starboard.process_starboard_message(message)
-async def poketwo_image_scanner(message):
     try:
         if message.author.bot and (message.author.name == "Pokétwo" or message.author.id == 716390085896962058) and message.embeds:
             for emb in message.embeds:
