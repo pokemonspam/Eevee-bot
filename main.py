@@ -46,6 +46,57 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name="A!sh | A!cl | A!r"))
 
 
+# --- Interactive Pagination View ---
+class CollectionPaginationView(discord.ui.View):
+    def __init__(self, user_id, all_pokemon, per_page=20):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.all_pokemon = all_pokemon
+        self.per_page = per_page
+        self.current_page = 1
+        self.total_pages = (len(all_pokemon) + per_page - 1) // per_page
+
+    def get_embed(self):
+        start_idx = (self.current_page - 1) * self.per_page
+        end_idx = start_idx + self.per_page
+        current_mons = self.all_pokemon[start_idx:end_idx]
+
+        # Formatted with bullet points • instead of numbers
+        lines = [f"• {mon}" for mon in current_mons]
+
+        embed = discord.Embed(
+            title=f"📦 Your Collection (Page {self.current_page}/{self.total_pages})",
+            description="\n".join(lines),
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text=f"Total Pokémon: {len(self.all_pokemon)}")
+        return embed
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary, custom_id="prev_page")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
+            return
+
+        if self.current_page > 1:
+            self.current_page -= 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary, custom_id="next_page")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
+            return
+
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+
 # ==========================================
 # 📦 COLLECTION COMMANDS (A!cl)
 # Strictly personal (No user lookup allowed)
@@ -67,6 +118,8 @@ async def collection_group(ctx):
     await ctx.send(embed=embed)
 
 
+() for m in mons.split(",") if m.strip()]
+
 @collection_group.command(name="list")
 async def collection_list(ctx, page: int = 1):
     user_doc = await collections_col.find_one({"user_id": ctx.author.id})
@@ -79,26 +132,16 @@ async def collection_list(ctx, page: int = 1):
         return
 
     all_pokemon = user_doc["pokemon"]
-    per_page = 20
-    total_pages = (len(all_pokemon) + per_page - 1) // per_page
-
-    if page < 1 or page > total_pages:
-        page = 1
-
-    start_idx = (page - 1) * per_page
-    end_idx = start_idx + per_page
-    current_page_mons = all_pokemon[start_idx:end_idx]
-
-    # Format as vertical list with numbers
-    lines = [f"{start_idx + i + 1}. {mon}" for i, mon in enumerate(current_page_mons)]
+    view = CollectionPaginationView(ctx.author.id, all_pokemon)
     
-    embed = discord.Embed(
-        title=f"📦 Your Collection (Page {page}/{total_pages})",
-        description="\n".join(lines),
-        color=discord.Color.blue()
-    )
-    embed.set_footer(text=f"Total Pokémon: {len(all_pokemon)}")
-    await ctx.send(embed=embed)
+    if page >= 1 and page <= view.total_pages:
+        view.current_page = page
+
+    # Only show buttons if there are multiple pages
+    if view.total_pages > 1:
+        await ctx.send(embed=view.get_embed(), view=view)
+    else:
+        await ctx.send(embed=view.get_embed())
 
 
 @collection_group.command(name="add")
@@ -127,29 +170,30 @@ async def collection_add(ctx, *, mons: str = None):
         else:
             invalid_items.append(item)
 
+    # Add valid Pokémon to database immediately
+    if final_mons:
+        unique_mons = list(dict.fromkeys(final_mons))
+        await collections_col.update_one(
+            {"user_id": ctx.author.id},
+            {"$addToSet": {"pokemon": {"$each": unique_mons}}},
+            upsert=True
+        )
+        added_str = ", ".join(unique_mons)
+        embed = discord.Embed(
+            description=f"✅ Added to your collection: **{added_str}**",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+
+    # Notify user about invalid names
     if invalid_items:
         bad_words = ", ".join([f'"{w}"' for w in invalid_items])
         embed = discord.Embed(
-            description=f"❌ {bad_words} is not a valid Pokémon or form.",
-            color=discord.Color.red()
+            description=f"⚠️ {bad_words} is not a valid Pokémon or form.",
+            color=discord.Color.gold()
         )
         await ctx.send(embed=embed)
-        return
 
-    unique_mons = list(dict.fromkeys(final_mons))
-
-    await collections_col.update_one(
-        {"user_id": ctx.author.id},
-        {"$addToSet": {"pokemon": {"$each": unique_mons}}},
-        upsert=True
-    )
-
-    added_str = ", ".join(unique_mons)
-    embed = discord.Embed(
-        description=f"✅ Added to your collection: **{added_str}**",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
 
 
 @collection_group.command(name="remove")
@@ -178,28 +222,29 @@ async def collection_remove(ctx, *, mons: str = None):
         else:
             invalid_items.append(item)
 
+    # Remove valid Pokémon from database immediately
+    if final_mons:
+        unique_mons = list(dict.fromkeys(final_mons))
+        await collections_col.update_one(
+            {"user_id": ctx.author.id},
+            {"$pull": {"pokemon": {"$in": unique_mons}}}
+        )
+        removed_str = ", ".join(unique_mons)
+        embed = discord.Embed(
+            description=f"✅ Removed from your collection: **{removed_str}**",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+
+    # Notify user about invalid names
     if invalid_items:
         bad_words = ", ".join([f'"{w}"' for w in invalid_items])
         embed = discord.Embed(
-            description=f"❌ {bad_words} is not a valid Pokémon or form.",
-            color=discord.Color.red()
+            description=f"⚠️ {bad_words} is not a valid Pokémon or form.",
+            color=discord.Color.gold()
         )
         await ctx.send(embed=embed)
-        return
 
-    unique_mons = list(dict.fromkeys(final_mons))
-
-    await collections_col.update_one(
-        {"user_id": ctx.author.id},
-        {"$pull": {"pokemon": {"$in": unique_mons}}}
-    )
-
-    removed_str = ", ".join(unique_mons)
-    embed = discord.Embed(
-        description=f"✅ Removed from your collection: **{removed_str}**",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
 
 
 @collection_group.command(name="clear")
