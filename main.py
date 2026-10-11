@@ -104,6 +104,51 @@ class CollectionPaginationView(discord.ui.View):
 # 📦 COLLECTION COMMANDS (A!cl)
 # Strictly personal (No user lookup allowed)
 # ==========================================
+class ReservePaginationView(discord.ui.View):
+    def __init__(self, author_id, formatted_lines, per_page=20):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.formatted_lines = formatted_lines
+        self.per_page = per_page
+        self.current_page = 1
+        self.total_pages = max(1, (len(formatted_lines) + per_page - 1) // per_page)
+
+    def get_embed(self):
+        start_idx = (self.current_page - 1) * self.per_page
+        end_idx = start_idx + self.per_page
+        current_lines = self.formatted_lines[start_idx:end_idx]
+
+        embed = discord.Embed(
+            title=f"📋 Server Reserves (Page {self.current_page}/{self.total_pages})",
+            description="\n".join(current_lines) if current_lines else "No active reserves.",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Total Reserved Entries: {len(self.formatted_lines)}")
+        return embed
+
+    @discord.ui.button(label="  ◀️  ", style=discord.ButtonStyle.primary, custom_id="reserve_prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
+            return
+
+        if self.current_page > 1:
+            self.current_page -= 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="  ▶️  ", style=discord.ButtonStyle.primary, custom_id="reserve_next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
+            return
+
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
 
 @bot.group(name="cl", invoke_without_command=True)
 async def collection_group(ctx):
@@ -121,29 +166,53 @@ async def collection_group(ctx):
     await ctx.send(embed=embed)
 
 
+@reserve_group.command(name="list")
+async def reserve_list(ctx, page: int = 1):
+    try:
+        cursor = reserves_col.find({"guild_id": ctx.guild.id})
+        reserves = await cursor.to_list(length=1000)
 
-@collection_group.command(name="list")
-async def collection_list(ctx, page: int = 1):
-    user_doc = await collections_col.find_one({"user_id": ctx.author.id})
-    if not user_doc or not user_doc.get("pokemon"):
-        embed = discord.Embed(
-            description="❌ Your collection is currently empty.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+        if not reserves:
+            embed = discord.Embed(
+                description="🔍 No active reserves found for this server.",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    all_pokemon = user_doc["pokemon"]
-    view = CollectionPaginationView(ctx.author.id, all_pokemon)
-    
-    if page >= 1 and page <= view.total_pages:
-        view.current_page = page
+        # Map each Pokémon/Form to a list of user mentions
+        mon_to_users = {}
+        for doc in reserves:
+            user_id = doc["user_id"]
+            member = ctx.guild.get_member(user_id)
+            user_mention = member.mention if member else f"<@{user_id}>"
+            
+            for mon in doc.get("pokemon", []):
+                formatted_mon = format_pokemon_name(mon)
+                if formatted_mon not in mon_to_users:
+                    mon_to_users[formatted_mon] = []
+                if user_mention not in mon_to_users[formatted_mon]:
+                    mon_to_users[formatted_mon].append(user_mention)
 
-    # Only show buttons if there are multiple pages
-    if view.total_pages > 1:
-        await ctx.send(embed=view.get_embed(), view=view)
-    else:
-        await ctx.send(embed=view.get_embed())
+        # Build formatted lines: • Pokémon - @user, @user
+        formatted_lines = [
+            f"• **{mon}** - {', '.join(users)}"
+            for mon, users in sorted(mon_to_users.items())
+        ]
+
+        view = ReservePaginationView(ctx.author.id, formatted_lines, per_page=20)
+        if 1 <= page <= view.total_pages:
+            view.current_page = page
+
+        if view.total_pages > 1:
+            await ctx.send(embed=view.get_embed(), view=view)
+        else:
+            await ctx.send(embed=view.get_embed())
+
+    except Exception as e:
+        print(f"Error in reserve_list: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
+
 
 
 @collection_group.command(name="add")
@@ -294,6 +363,100 @@ async def collection_clear(ctx):
 # ==========================================
 # 📋 RESERVE COMMANDS (A!r)
 # ==========================================
+class ReservePaginationView(discord.ui.View):
+    def __init__(self, author_id, formatted_lines, title="📋 Server Reserves", per_page=20):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.formatted_lines = formatted_lines
+        self.title = title
+        self.per_page = per_page
+        self.current_page = 1
+        self.total_pages = max(1, (len(formatted_lines) + per_page - 1) // per_page)
+
+    def get_embed(self):
+        start_idx = (self.current_page - 1) * self.per_page
+        end_idx = start_idx + self.per_page
+        current_lines = self.formatted_lines[start_idx:end_idx]
+
+        embed = discord.Embed(
+            title=f"{self.title} (Page {self.current_page}/{self.total_pages})",
+            description="\n".join(current_lines) if current_lines else "No active reserves.",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Total Reserved Entries: {len(self.formatted_lines)}")
+        return embed
+
+    @discord.ui.button(label="  ◀️  ", style=discord.ButtonStyle.primary, custom_id="reserve_prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
+            return
+
+        if self.current_page > 1:
+            self.current_page -= 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="  ▶️  ", style=discord.ButtonStyle.primary, custom_id="reserve_next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
+            return
+
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+class ClearConfirmView(discord.ui.View):
+    def __init__(self, author_id, target_user=None, guild_id=None):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+        self.target_user = target_user
+        self.guild_id = guild_id
+        self.confirmed = None
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger, custom_id="clear_yes")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+
+        if self.target_user:
+            await reserves_col.delete_one({"guild_id": self.guild_id, "user_id": self.target_user.id})
+            embed = discord.Embed(
+                description=f"✅ Cleared all reserves for {self.target_user.mention}.",
+                color=discord.Color.green()
+            )
+        else:
+            await reserves_col.delete_many({"guild_id": self.guild_id})
+            embed = discord.Embed(
+                description="✅ Cleared all reserves across the entire server.",
+                color=discord.Color.green()
+            )
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, custom_id="clear_no")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+
+        embed = discord.Embed(
+            description="❌ Reserve clear action canceled.",
+            color=discord.Color.red()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
 
 @bot.group(name="r", invoke_without_command=True)
 async def reserve_group(ctx, target: discord.Member = None):
@@ -633,65 +796,133 @@ async def reserve_remove(ctx, *, args: str = None):
 
 @reserve_group.command(name="search")
 async def reserve_search(ctx, *, mon: str = None):
-    if not mon:
+    try:
+        if not mon:
+            embed = discord.Embed(
+                description="❌ Please specify a Pokémon to search.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        is_all = mon.startswith("all ")
+        clean_mon = mon[4:].strip() if is_all else mon.strip()
+
+        # Determine which names/forms to look up
+        if is_all and clean_mon in POKEMON_FORMS:
+            target_mons = POKEMON_FORMS[clean_mon]
+        elif clean_mon in REGIONAL_FORMS:
+            target_mons = [REGIONAL_FORMS[clean_mon]]
+        elif clean_mon in POKEMON_FORMS:
+            target_mons = [POKEMON_FORMS[clean_mon][0]]
+        else:
+            target_mons = [format_pokemon_name(clean_mon)]
+
+        # Fetch all reserves in this server
+        cursor = reserves_col.find({"guild_id": ctx.guild.id})
+        all_reserves = await cursor.to_list(length=1000)
+
+        mon_to_users = {}
+
+        for doc in all_reserves:
+            user_id = doc["user_id"]
+            member = ctx.guild.get_member(user_id)
+            user_mention = member.mention if member else f"<@{user_id}>"
+
+            user_pokemon = [format_pokemon_name(p) for p in doc.get("pokemon", [])]
+
+            for target in target_mons:
+                formatted_target = format_pokemon_name(target)
+                if formatted_target in user_pokemon:
+                    if formatted_target not in mon_to_users:
+                        mon_to_users[formatted_target] = []
+                    if user_mention not in mon_to_users[formatted_target]:
+                        mon_to_users[formatted_target].append(user_mention)
+
+        if not mon_to_users:
+            searched_name = f"All {format_pokemon_name(clean_mon)}" if is_all else format_pokemon_name(clean_mon)
+            embed = discord.Embed(
+                description=f"🔍 No user has reserved **{searched_name}**.",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        formatted_lines = [
+            f"• **{pokemon}** - {', '.join(users)}"
+            for pokemon, users in sorted(mon_to_users.items())
+        ]
+
         embed = discord.Embed(
-            description="❌ Please specify a Pokémon to search.",
-            color=discord.Color.red()
+            title=f"🔍 Reserve Search Results",
+            description="\n".join(formatted_lines),
+            color=discord.Color.gold()
         )
         await ctx.send(embed=embed)
-        return
 
-    formatted_mon = format_pokemon_name(mon)
-    cursor = reserves_col.find({
-        "guild_id": ctx.guild.id, 
-        "pokemon": {"$regex": f"^{formatted_mon}$", "$options": "i"}
-    })
-    results = await cursor.to_list(length=50)
+    except Exception as e:
+        print(f"Error in reserve_search: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
 
-    if not results:
+
+
+@reserve_group.command(name="user")
+async def reserve_user(ctx, target: discord.Member = None, page: int = 1):
+    if not target:
+        target = ctx.author
+
+    user_doc = await reserves_col.find_one({"guild_id": ctx.guild.id, "user_id": target.id})
+    if not user_doc or not user_doc.get("pokemon"):
         embed = discord.Embed(
-            description=f"🔍 No user has **{formatted_mon}** reserved.",
+            description=f"🔍 {target.mention} has no reserved Pokémon.",
             color=discord.Color.gold()
         )
         await ctx.send(embed=embed)
         return
 
-    users = []
-    for doc in results:
-        member = ctx.guild.get_member(doc["user_id"])
-        users.append(member.mention if member else f"User ID {doc['user_id']}")
+    all_pokemon = user_doc["pokemon"]
+    formatted_lines = [f"• {mon}" for mon in all_pokemon]
 
-    embed = discord.Embed(
-        title=f"🔍 Reserve Search: {formatted_mon}",
-        description="**Reserved by:**\n" + "\n".join(users),
-        color=discord.Color.gold()
-    )
-    await ctx.send(embed=embed)
+    title = f"📋 Reserves for {target.display_name}"
+    view = ReservePaginationView(ctx.author.id, formatted_lines, title=title, per_page=20)
+    
+    if 1 <= page <= view.total_pages:
+        view.current_page = page
+
+    if view.total_pages > 1:
+        await ctx.send(embed=view.get_embed(), view=view)
+    else:
+        await ctx.send(embed=view.get_embed())
+
 
 
 @reserve_group.command(name="clear")
 async def reserve_clear(ctx, target: discord.Member = None):
-    if not await is_staff(ctx):
-        embed = discord.Embed(
-            description="❌ You do not have permission to use staff commands.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+    try:
+        if not await is_staff(ctx):
+            embed = discord.Embed(
+                description="❌ You do not have permission to use staff commands.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    if target:
-        await reserves_col.delete_one({"guild_id": ctx.guild.id, "user_id": target.id})
+        if target:
+            prompt_text = f"⚠️ Are you sure you want to clear all reserves for {target.mention}?"
+        else:
+            prompt_text = "⚠️ Are you sure you want to **clear ALL reserves** across the entire server?"
+
         embed = discord.Embed(
-            description=f"✅ Cleared all reserves for {target.mention}.",
-            color=discord.Color.green()
+            description=prompt_text,
+            color=discord.Color.gold()
         )
-    else:
-        await reserves_col.delete_many({"guild_id": ctx.guild.id})
-        embed = discord.Embed(
-            description="✅ Cleared all reserves across the entire server.",
-            color=discord.Color.green()
-        )
-    await ctx.send(embed=embed)
+        view = ClearConfirmView(author_id=ctx.author.id, target_user=target, guild_id=ctx.guild.id)
+        await ctx.send(embed=embed, view=view)
+
+    except Exception as e:
+        print(f"Error in reserve_clear: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
+
 
 
 # --- Reserve Staff Role Management Subgroup ---
