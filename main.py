@@ -61,7 +61,6 @@ class CollectionPaginationView(discord.ui.View):
         end_idx = start_idx + self.per_page
         current_mons = self.all_pokemon[start_idx:end_idx]
 
-        # Formatted with bullet points • instead of numbers
         lines = [f"• {mon}" for mon in current_mons]
 
         embed = discord.Embed(
@@ -72,7 +71,7 @@ class CollectionPaginationView(discord.ui.View):
         embed.set_footer(text=f"Total Pokémon: {len(self.all_pokemon)}")
         return embed
 
-    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary, custom_id="prev_page")
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.primary, custom_id="prev_page")
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
@@ -84,7 +83,7 @@ class CollectionPaginationView(discord.ui.View):
         else:
             await interaction.response.defer()
 
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary, custom_id="next_page")
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.primary, custom_id="next_page")
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
@@ -95,6 +94,7 @@ class CollectionPaginationView(discord.ui.View):
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
         else:
             await interaction.response.defer()
+
 
 
 # ==========================================
@@ -155,36 +155,39 @@ async def collection_add(ctx, *, mons: str = None):
 
     raw_list = [m.strip().lower() for m in mons.split(",") if m.strip()]
     final_mons = []
+    display_names = []
     invalid_items = []
 
     for item in raw_list:
         clean_item = item.replace("all ", "").strip()
         
-        if validate_species(clean_item):
+        if validate_species(clean_item) or validate_species(item):
             if clean_item in POKEMON_FORMS or item.startswith("all "):
                 forms = get_evolution_family(clean_item)
                 final_mons.extend(forms)
+                display_names.append(f"All {format_pokemon_name(clean_item)}")
             else:
-                final_mons.append(format_pokemon_name(clean_item))
+                formatted_name = format_pokemon_name(item if validate_species(item) else clean_item)
+                final_mons.append(formatted_name)
+                display_names.append(formatted_name)
         else:
             invalid_items.append(item)
 
-    # Add valid Pokémon to database immediately
     if final_mons:
         unique_mons = list(dict.fromkeys(final_mons))
+        unique_display = list(dict.fromkeys(display_names))
         await collections_col.update_one(
             {"user_id": ctx.author.id},
             {"$addToSet": {"pokemon": {"$each": unique_mons}}},
             upsert=True
         )
-        added_str = ", ".join(unique_mons)
+        added_str = ", ".join(unique_display)
         embed = discord.Embed(
             description=f"✅ Added to your collection: **{added_str}**",
             color=discord.Color.green()
         )
         await ctx.send(embed=embed)
 
-    # Notify user about invalid names
     if invalid_items:
         bad_words = ", ".join([f'"{w}"' for w in invalid_items])
         embed = discord.Embed(
@@ -192,6 +195,7 @@ async def collection_add(ctx, *, mons: str = None):
             color=discord.Color.gold()
         )
         await ctx.send(embed=embed)
+
 
 
 
@@ -207,35 +211,38 @@ async def collection_remove(ctx, *, mons: str = None):
 
     raw_list = [m.strip().lower() for m in mons.split(",") if m.strip()]
     final_mons = []
+    display_names = []
     invalid_items = []
 
     for item in raw_list:
         clean_item = item.replace("all ", "").strip()
         
-        if validate_species(clean_item):
+        if validate_species(clean_item) or validate_species(item):
             if clean_item in POKEMON_FORMS or item.startswith("all "):
                 forms = get_evolution_family(clean_item)
                 final_mons.extend(forms)
+                display_names.append(f"All {format_pokemon_name(clean_item)}")
             else:
-                final_mons.append(format_pokemon_name(clean_item))
+                formatted_name = format_pokemon_name(item if validate_species(item) else clean_item)
+                final_mons.append(formatted_name)
+                display_names.append(formatted_name)
         else:
             invalid_items.append(item)
 
-    # Remove valid Pokémon from database immediately
     if final_mons:
         unique_mons = list(dict.fromkeys(final_mons))
+        unique_display = list(dict.fromkeys(display_names))
         await collections_col.update_one(
             {"user_id": ctx.author.id},
             {"$pull": {"pokemon": {"$in": unique_mons}}}
         )
-        removed_str = ", ".join(unique_mons)
+        removed_str = ", ".join(unique_display)
         embed = discord.Embed(
             description=f"✅ Removed from your collection: **{removed_str}**",
             color=discord.Color.green()
         )
         await ctx.send(embed=embed)
 
-    # Notify user about invalid names
     if invalid_items:
         bad_words = ", ".join([f'"{w}"' for w in invalid_items])
         embed = discord.Embed(
@@ -243,6 +250,7 @@ async def collection_remove(ctx, *, mons: str = None):
             color=discord.Color.gold()
         )
         await ctx.send(embed=embed)
+
 
 
 
