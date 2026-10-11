@@ -6,3 +6,5 @@ pymongo[srv]
 dnspython
 python-levenshtein
 aiohttp
+motor
+pymongo
