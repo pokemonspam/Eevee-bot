@@ -466,117 +466,169 @@ async def reserve_exchange(ctx, main_user: discord.Member = None):
 
 @reserve_group.command(name="add")
 async def reserve_add(ctx, *, args: str = None):
-    if not await is_staff(ctx):
-        embed = discord.Embed(
-            description="❌ You do not have permission to modify reserves.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+    try:
+        if not await is_staff(ctx):
+            embed = discord.Embed(
+                description="❌ You do not have permission to modify reserves.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    if not args:
-        embed = discord.Embed(
-            description="❌ Please specify Pokémon to reserve (e.g. `A!r add Charmander @User`).",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+        if not args:
+            embed = discord.Embed(
+                description="❌ Please specify Pokémon to reserve (e.g. `A!r add Charmander @User`).",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    target_user = ctx.author
-    if ctx.message.mentions:
-        target_user = ctx.message.mentions[0]
-        for mention in ctx.message.mentions:
-            args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
+        target_user = ctx.author
+        if ctx.message.mentions:
+            target_user = ctx.message.mentions[0]
+            for mention in ctx.message.mentions:
+                args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
 
-    raw_list = [m.strip().lower() for m in args.split(",") if m.strip()]
-    final_mons = []
-    invalid_items = []
+        raw_list = parse_pokemon_list(args)
+        final_mons = []
+        display_names = []
+        invalid_items = []
 
-    for item in raw_list:
-        clean_item = item.replace("all ", "").strip()
-        if validate_species(clean_item):
-            if clean_item in POKEMON_FORMS or item.startswith("all "):
-                forms = get_evolution_family(clean_item)
-                final_mons.extend(forms)
+        for item in raw_list:
+            is_all = item.startswith("all ")
+            clean_item = item[4:].strip() if is_all else item.strip()
+            
+            if validate_species(clean_item) or validate_species(item):
+                if is_all and clean_item in POKEMON_FORMS:
+                    forms = POKEMON_FORMS[clean_item]
+                    final_mons.extend(forms)
+                    display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in REGIONAL_FORMS:
+                    formatted_name = REGIONAL_FORMS[clean_item]
+                    final_mons.append(formatted_name)
+                    display_names.append(formatted_name)
+                elif clean_item in POKEMON_FORMS:
+                    base_name = POKEMON_FORMS[clean_item][0]
+                    final_mons.append(base_name)
+                    display_names.append(base_name)
+                else:
+                    formatted_name = format_pokemon_name(clean_item)
+                    final_mons.append(formatted_name)
+                    display_names.append(formatted_name)
             else:
-                final_mons.append(format_pokemon_name(clean_item))
-        else:
-            invalid_items.append(item)
+                invalid_items.append(item)
 
-    if invalid_items:
-        bad_words = ", ".join([f'"{w}"' for w in invalid_items])
-        embed = discord.Embed(
-            description=f"❌ {bad_words} is not a valid Pokémon or form.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+        if final_mons:
+            unique_mons = list(dict.fromkeys(final_mons))
+            unique_display = list(dict.fromkeys(display_names))
+            
+            await reserves_col.update_one(
+                {"guild_id": ctx.guild.id, "user_id": target_user.id},
+                {"$addToSet": {"pokemon": {"$each": unique_mons}}},
+                upsert=True
+            )
+            added_str = ", ".join(unique_display)
+            embed = discord.Embed(
+                description=f"✅ Added to reserves for {target_user.mention}: **{added_str}**",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
 
-    unique_mons = list(dict.fromkeys(final_mons))
+        if invalid_items:
+            bad_words = ", ".join([f'"{w}"' for w in invalid_items])
+            embed = discord.Embed(
+                description=f"⚠️ Added valid Pokémon, but ignored unknown items: {bad_words}",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
 
-    await reserves_col.update_one(
-        {"guild_id": ctx.guild.id, "user_id": target_user.id},
-        {"$addToSet": {"pokemon": {"$each": unique_mons}}},
-        upsert=True
-    )
-
-    added_str = ", ".join(unique_mons)
-    embed = discord.Embed(
-        description=f"✅ Added to reserves for {target_user.mention}: **{added_str}**",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
+    except Exception as e:
+        print(f"Error in reserve_add: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
 
 
 @reserve_group.command(name="remove")
 async def reserve_remove(ctx, *, args: str = None):
-    if not await is_staff(ctx):
-        embed = discord.Embed(
-            description="❌ You do not have permission to modify reserves.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+    try:
+        if not await is_staff(ctx):
+            embed = discord.Embed(
+                description="❌ You do not have permission to modify reserves.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    if not args:
-        embed = discord.Embed(
-            description="❌ Please specify Pokémon to remove from reserves.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+        if not args:
+            embed = discord.Embed(
+                description="❌ Please specify Pokémon to remove from reserves.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    target_user = ctx.author
-    if ctx.message.mentions:
-        target_user = ctx.message.mentions[0]
-        for mention in ctx.message.mentions:
-            args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
+        target_user = ctx.author
+        if ctx.message.mentions:
+            target_user = ctx.message.mentions[0]
+            for mention in ctx.message.mentions:
+                args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
 
-    raw_list = [m.strip().lower() for m in args.split(",") if m.strip()]
-    final_mons = []
+        raw_list = parse_pokemon_list(args)
+        final_mons = []
+        display_names = []
+        invalid_items = []
 
-    for item in raw_list:
-        clean_item = item.replace("all ", "").strip()
-        if validate_species(clean_item):
-            if clean_item in POKEMON_FORMS or item.startswith("all "):
-                forms = get_evolution_family(clean_item)
-                final_mons.extend(forms)
+        for item in raw_list:
+            is_all = item.startswith("all ")
+            clean_item = item[4:].strip() if is_all else item.strip()
+            
+            if validate_species(clean_item) or validate_species(item):
+                if is_all and clean_item in POKEMON_FORMS:
+                    forms = POKEMON_FORMS[clean_item]
+                    final_mons.extend(forms)
+                    display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in REGIONAL_FORMS:
+                    formatted_name = REGIONAL_FORMS[clean_item]
+                    final_mons.append(formatted_name)
+                    display_names.append(formatted_name)
+                elif clean_item in POKEMON_FORMS:
+                    base_name = POKEMON_FORMS[clean_item][0]
+                    final_mons.append(base_name)
+                    display_names.append(base_name)
+                else:
+                    formatted_name = format_pokemon_name(clean_item)
+                    final_mons.append(formatted_name)
+                    display_names.append(formatted_name)
             else:
-                final_mons.append(format_pokemon_name(clean_item))
+                invalid_items.append(item)
 
-    unique_mons = list(dict.fromkeys(final_mons))
+        if final_mons:
+            unique_mons = list(dict.fromkeys(final_mons))
+            unique_display = list(dict.fromkeys(display_names))
+            
+            await reserves_col.update_one(
+                {"guild_id": ctx.guild.id, "user_id": target_user.id},
+                {"$pull": {"pokemon": {"$in": unique_mons}}}
+            )
+            removed_str = ", ".join(unique_display)
+            embed = discord.Embed(
+                description=f"✅ Removed from reserves for {target_user.mention}: **{removed_str}**",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
 
-    await reserves_col.update_one(
-        {"guild_id": ctx.guild.id, "user_id": target_user.id},
-        {"$pull": {"pokemon": {"$in": unique_mons}}}
-    )
+        if invalid_items:
+            bad_words = ", ".join([f'"{w}"' for w in invalid_items])
+            embed = discord.Embed(
+                description=f"⚠️ Removed valid Pokémon, but ignored unknown items: {bad_words}",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
 
-    removed_str = ", ".join(unique_mons)
-    embed = discord.Embed(
-        description=f"✅ Removed from reserves for {target_user.mention}: **{removed_str}**",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
+    except Exception as e:
+        print(f"Error in reserve_remove: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
+
+
 
 
 @reserve_group.command(name="search")
