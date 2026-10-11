@@ -1,141 +1,125 @@
+import json
 import os
-import motor.motor_asyncio
-from pymongo.errors import ConnectionFailure
 
-# MongoDB Connection Setup
-MONGO_URI = os.getenv("MONGO_URI")
-if not MONGO_URI:
-    raise ValueError("❌ MONGO_URI environment variable is missing! Please set it in Render.")
+# Complete Evolutionary & Family Mappings
+EVOLUTION_FAMILIES = {
+    # Kanto Families
+    "bulbasaur": ["bulbasaur", "ivysaur", "venusaur"],
+    "charmander": ["charmander", "charmeleon", "charizard"],
+    "squirtle": ["squirtle", "wartortle", "blastoise"],
+    "pidgey": ["pidgey", "pidgeotto", "pidgeot"],
+    "rattata": ["rattata", "raticate"],
+    "pikachu": ["pichu", "pikachu", "raichu"],
+    "sandshrew": ["sandshrew", "sandslash"],
+    "vulpix": ["vulpix", "ninetales"],
+    "jigglypuff": ["igglybuff", "jigglypuff", "wigglytuff"],
+    "meowth": ["meowth", "persian", "perrserker"],
+    "psyduck": ["psyduck", "golduck"],
+    "growlithe": ["growlithe", "arcanine"],
+    "abra": ["abra", "kadabra", "alakazam"],
+    "machop": ["machop", "machoke", "machamp"],
+    "geodude": ["geodude", "graveler", "golem"],
+    "gastly": ["gastly", "haunter", "gengar"],
+    "onix": ["onix", "steelix"],
+    "eevee": ["eevee", "vaporeon", "jolteon", "flareon", "espeon", "umbreon", "leafeon", "glaceon", "sylveon"],
+    "dratini": ["dratini", "dragonair", "dragonite"],
+    "mewtwo": ["mewtwo"],
+    
+    # Regional & Special Lines
+    "zigzagoon": ["zigzagoon", "linoone", "obstagoon"],
+    "slowpoke": ["slowpoke", "slowbro", "slowking"],
+    "farfetchd": ["farfetchd", "sirfetchd"],
+    "corsola": ["corsola", "cursola"],
+    "darumaka": ["darumaka", "darmanitan"],
+    "yamask": ["yamask", "cofagrigus", "runerigus"]
+}
 
-client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-db = client.pokemon_bot_db
+# Regional Forms Registry
+REGIONAL_FORMS = {
+    "galarian": ["zigzagoon", "linoone", "meowth", "ponyta", "rapidash", "slowpoke", "slowbro", "slowking", "farfetchd", "corsola", "darumaka", "darmanitan", "yamask", "articuno", "zapdos", "moltres"],
+    "alolan": ["rattata", "raticate", "raichu", "sandshrew", "sandslash", "vulpix", "ninetales", "diglett", "dugtrio", "meowth", "persian", "geodude", "graveler", "golem", "grimer", "muk", "exeggutor", "marowak"],
+    "hisuian": ["growlithe", "arcanine", "voltorb", "electrode", "typhlosion", "qwilfish", "sneasel", "samurott", "lilligant", "zorua", "zoroark", "braviary", "sliggoo", "goodra", "avalugg", "decidueye"]
+}
 
-# Collections
-collections_col = db.collections          # user_id, guild_id, pokemon_list
-shiny_hunts_col = db.shiny_hunts          # user_id, guild_id, pokemon
-reserves_col = db.reserves                # guild_id, pokemon, user_id (one doc per reservation or grouped)
-guild_settings_col = db.guild_settings    # guild_id, allowed_roles (list of role IDs)
+# Gigantamax Eligible Pokémon
+GMAX_SPECIES = [
+    "venusaur", "charizard", "blastoise", "butterfree", "pikachu", "meowth",
+    "machamp", "gengar", "kingler", "lapras", "eevee", "snorlax", "garbodor",
+    "melmetal", "rillaboom", "cinderace", "inteleon", "corviknight", "orbeetle",
+    "drednaw", "coalossal", "flapple", "appletun", "sandaconda", "toxtricity",
+    "centiskorch", "hatterene", "grimmsnarl", "alcremie", "copperajah", "duraludon", "urshifu"
+]
 
-
-async def test_db_connection():
-    try:
-        await client.admin.command('ping')
-        print("✅ Successfully connected to MongoDB Atlas!")
-    except ConnectionFailure as e:
-        print(f"❌ Failed to connect to MongoDB: {e}")
-        raise e
-
-
-# --- Guild Role Settings ---
-async def get_allowed_roles(guild_id: int) -> list:
-    doc = await guild_settings_col.find_one({"guild_id": guild_id})
-    return doc.get("allowed_roles", []) if doc else []
-
-async def add_allowed_role(guild_id: int, role_id: int):
-    roles = await get_allowed_roles(guild_id)
-    if role_id not in roles:
-        roles.append(role_id)
-        await guild_settings_col.update_one(
-            {"guild_id": guild_id},
-            {"$set": {"allowed_roles": roles}},
-            upsert=True
-        )
-
-async def remove_allowed_role(guild_id: int, role_id: int):
-    roles = await get_allowed_roles(guild_id)
-    if role_id in roles:
-        roles.remove(role_id)
-        await guild_settings_col.update_one(
-            {"guild_id": guild_id},
-            {"$set": {"allowed_roles": roles}},
-            upsert=True
-        )
-
-
-# --- Shiny Hunt Database Operations ---
-async def set_shiny_hunt(user_id: int, guild_id: int, pokemon: str):
-    await shiny_hunts_col.update_one(
-        {"user_id": user_id, "guild_id": guild_id},
-        {"$set": {"pokemon": pokemon.lower().strip()}},
-        upsert=True
-    )
-
-async def get_shiny_hunt(user_id: int, guild_id: int):
-    doc = await shiny_hunts_col.find_one({"user_id": user_id, "guild_id": guild_id})
-    return doc.get("pokemon") if doc else None
-
-async def remove_shiny_hunt(user_id: int, guild_id: int):
-    await shiny_hunts_col.delete_one({"user_id": user_id, "guild_id": guild_id})
+POKEMON_DATASET = {}
 
 
-# --- Collection Database Operations ---
-async def get_collection(user_id: int, guild_id: int) -> list:
-    doc = await collections_col.find_one({"user_id": user_id, "guild_id": guild_id})
-    return doc.get("pokemon_list", []) if doc else []
-
-async def add_to_collection(user_id: int, guild_id: int, mons: list):
-    current = set(await get_collection(user_id, guild_id))
-    for m in mons:
-        current.add(m.lower().strip())
-    await collections_col.update_one(
-        {"user_id": user_id, "guild_id": guild_id},
-        {"$set": {"pokemon_list": list(current)}},
-        upsert=True
-    )
-
-async def remove_from_collection(user_id: int, guild_id: int, mons: list):
-    current = set(await get_collection(user_id, guild_id))
-    for m in mons:
-        current.discard(m.lower().strip())
-    await collections_col.update_one(
-        {"user_id": user_id, "guild_id": guild_id},
-        {"$set": {"pokemon_list": list(current)}},
-        upsert=True
-    )
+def load_dataset(file_path: str = "pokemon_data.json"):
+    """Loads external JSON dataset if available, otherwise relies on internal maps."""
+    global POKEMON_DATASET
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                POKEMON_DATASET = json.load(f)
+            print(f"✅ Loaded {len(POKEMON_DATASET)} Pokémon from external JSON file.")
+        except Exception as e:
+            print(f"⚠️ Error reading {file_path}: {e}")
+            POKEMON_DATASET = {}
+    else:
+        print("ℹ️ External pokemon_data.json not found. Using built-in evolution & regional mapping rules.")
 
 
-# --- Reserve Database Operations ---
-async def add_reserve(guild_id: int, pokemon: str, user_id: int):
-    pokemon = pokemon.lower().strip()
-    await reserves_col.update_one(
-        {"guild_id": guild_id, "pokemon": pokemon, "user_id": user_id},
-        {"$set": {"guild_id": guild_id, "pokemon": pokemon, "user_id": user_id}},
-        upsert=True
-    )
+def normalize_name(name: str) -> str:
+    """Standardizes names for matching."""
+    return name.strip().lower()
 
-async def remove_reserve(guild_id: int, pokemon: str, user_id: int):
-    pokemon = pokemon.lower().strip()
-    await reserves_col.delete_one({"guild_id": guild_id, "pokemon": pokemon, "user_id": user_id})
 
-async def remove_global_reserve(guild_id: int, pokemon: str):
-    pokemon = pokemon.lower().strip()
-    await reserves_col.delete_many({"guild_id": guild_id, "pokemon": pokemon})
+def format_pokemon_name(name: str) -> str:
+    """Formats Pokémon names cleanly for embeds."""
+    cleaned = name.strip().lower()
+    
+    # Preserve GMax indicators
+    if cleaned.startswith("gmax ") or cleaned.endswith(" gmax"):
+        core = cleaned.replace("gmax", "").strip().title()
+        return f"⚡ G-Max {core}"
+        
+    return cleaned.title()
 
-async def clear_user_reserves(guild_id: int, user_id: int):
-    await reserves_col.delete_many({"guild_id": guild_id, "user_id": user_id})
 
-async def clear_all_reserves(guild_id: int):
-    await reserves_col.delete_many({"guild_id": guild_id})
+def parse_pokemon_list(input_str: str) -> list[str]:
+    """Parses comma-separated inputs into clean, title-cased names."""
+    if not input_str:
+        return []
+    raw_list = input_str.split(",")
+    cleaned = [format_pokemon_name(m) for m in raw_list if m.strip()]
+    return list(dict.fromkeys(cleaned))
 
-async def get_user_reserves(guild_id: int, user_id: int) -> list:
-    cursor = reserves_col.find({"guild_id": guild_id, "user_id": user_id})
-    return [doc["pokemon"] async for doc in cursor]
 
-async def get_all_reserves(guild_id: int) -> dict:
-    # Returns {pokemon: [user_ids]}
-    cursor = reserves_col.find({"guild_id": guild_id})
-    mapping = {}
-    async for doc in cursor:
-        mon = doc["pokemon"]
-        uid = doc["user_id"]
-        mapping.setdefault(mon, []).set_default if False else None
-        if mon not in mapping:
-            mapping[mon] = []
-        if uid not in mapping[mon]:
-            mapping[mon].append(uid)
-    return mapping
+def get_evolution_family(species: str) -> list[str]:
+    """Returns the full evolutionary line for a given species name."""
+    norm = normalize_name(species)
+    for family, members in EVOLUTION_FAMILIES.items():
+        if norm in members or norm == family:
+            return [m.title() for m in members]
+    return [species.strip().title()]
 
-async def get_reserves_for_pokemon(guild_id: int, pokemon: str) -> list:
-    pokemon = pokemon.lower().strip()
-    cursor = reserves_col.find({"guild_id": guild_id, "pokemon": pokemon})
-    return [doc["user_id"] async for doc in cursor]
+
+def is_gmax_eligible(species: str) -> bool:
+    """Checks if a species is capable of Gigantamaxing."""
+    norm = normalize_name(species).replace("g-max", "").replace("gmax", "").strip()
+    return norm in GMAX_SPECIES
+
+
+def validate_species(name: str) -> bool:
+    """Validates if a species exists in local maps or JSON dataset."""
+    norm = normalize_name(name)
+    if POKEMON_DATASET:
+        return norm in POKEMON_DATASET
+    
+    # Fallback to local keys
+    if norm in EVOLUTION_FAMILIES or any(norm in line for line in EVOLUTION_FAMILIES.values()):
+        return True
+    return True
+
+
+# Auto-load dataset on module import
+load_dataset()
