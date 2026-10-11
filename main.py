@@ -376,5 +376,6 @@ async def poketwo_image_scanner(message):
                                 if sh and sh.lower() == matched_lower: normal_pings.append(f"<@{uid}> (✨ SHINY!)")
                         if normal_pings: await message.channel.send(f"🔔 **List Alert!** " + " ".join(list(set(normal_pings))))
     except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
-
+# Place this at the absolute bottom of main.py, right before bot.run()
+import starboard
 bot.run(os.environ.get("DISCORD_TOKEN"))
