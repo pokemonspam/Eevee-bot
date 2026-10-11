@@ -71,7 +71,7 @@ class CollectionPaginationView(discord.ui.View):
         embed.set_footer(text=f"Total Pokémon: {len(self.all_pokemon)}")
         return embed
 
-    @discord.ui.button(label=" ◀️ ", style=discord.ButtonStyle.primary, custom_id="prev_page")
+    @discord.ui.button(label="  ◀️  ", style=discord.ButtonStyle.primary, custom_id="prev_page")
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
@@ -84,7 +84,7 @@ class CollectionPaginationView(discord.ui.View):
             await interaction.response.defer()
 
     
-    @discord.ui.button(label=" ▶️ ", style=discord.ButtonStyle.primary, custom_id="next_page")
+    @discord.ui.button(label="  ▶️  ", style=discord.ButtonStyle.primary, custom_id="next_page")
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
