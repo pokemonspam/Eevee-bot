@@ -28,7 +28,6 @@ try:
             GlobalDatabase.reserve_data = db_data.get("reserve_data", {})
 except Exception as e:
     print(f"[CRITICAL] Storage Initialization Error: {e}")
-
 def save_data():
     try:
         temp_file = COLLECTION_FILE + ".tmp"
@@ -41,6 +40,39 @@ def save_data():
         os.replace(temp_file, COLLECTION_FILE)
     except Exception as e: 
         print(f"[ERROR] Failed to save database layer: {e}")
+
+class DynamicListPaginator(discord.ui.View):
+    def __init__(self, data_list, card_title, chunk_size=20):
+        super().__init__(timeout=180)
+        self.data_list = data_list
+        self.card_title = card_title
+        self.chunk_size = chunk_size
+        self.current_page = 0
+        self.total_pages = max(1, (len(data_list) - 1) // chunk_size + 1)
+    def get_page_embed(self):
+        start = self.current_page * self.chunk_size
+        end = start + self.chunk_size
+        chunk = self.data_list[start:end]
+        embed = discord.Embed(title=f"{self.card_title} ({len(self.data_list)} Total)", color=discord.Color.red())
+        embed.description = "\n".join(chunk)
+        embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
+        return embed
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.grey)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
+        else: 
+            await interaction.response.defer()
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.grey)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
+        else: 
+            await interaction.response.defer()
 SPECIES_FORM_MATRIX = {
     "furfrou": ["Furfrou", "Heart Trim Furfrou", "Star Trim Furfrou", "Diamond Trim Furfrou", "Debutante Trim Furfrou", "Matron Trim Furfrou", "Dandy Trim Furfrou", "La Reine Trim Furfrou", "Kabuki Trim Furfrou", "Pharaoh Trim Furfrou"],
     "alcremie": ["Alcremie", "Strawberry Sweet Alcremie", "Berry Sweet Alcremie", "Love Sweet Alcremie", "Star Sweet Alcremie", "Clover Sweet Alcremie", "Flower Sweet Alcremie", "Ribbon Sweet Alcremie", "Vanilla Cream Alcremie", "Ruby Cream Alcremie", "Matcha Cream Alcremie", "Mint Cream Alcremie", "Lemon Cream Alcremie", "Salted Cream Alcremie", "Ruby Swirl Alcremie", "Caramel Swirl Alcremie", "Rainbow Swirl Alcremie"],
@@ -102,7 +134,6 @@ def strict_pokemon_check(input_name):
         if d.get("name", "").lower().replace("é", "e") == clean_search:
             return True, d["name"]
     return False, None
-
 def get_all_variant_forms(base_pokemon_name):
     clean_base = base_pokemon_name.strip().lower().replace("-", " ")
     if clean_base in SPECIES_FORM_MATRIX:
@@ -114,39 +145,6 @@ def get_all_variant_forms(base_pokemon_name):
                 continue
             discovered.append(f_name)
     return list(set(discovered))
-class DynamicListPaginator(discord.ui.View):
-    def __init__(self, data_list, card_title, chunk_size=20):
-        super().__init__(timeout=180)
-        self.data_list = data_list
-        self.card_title = card_title
-        self.chunk_size = chunk_size
-        self.current_page = 0
-        self.total_pages = max(1, (len(data_list) - 1) // chunk_size + 1)
-
-    def get_page_embed(self):
-        start = self.current_page * self.chunk_size
-        end = start + self.chunk_size
-        chunk = self.data_list[start:end]
-        embed = discord.Embed(title=f"{self.card_title} ({len(self.data_list)} Total)", color=discord.Color.red())
-        embed.description = "\n".join(chunk)
-        embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
-        return embed
-
-    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.grey)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.current_page > 0:
-            self.current_page -= 1
-            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-        else: 
-            await interaction.response.defer()
-
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.grey)
-    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-        else: 
-            await interaction.response.defer()
 
 @bot.event
 async def on_ready():
@@ -172,7 +170,6 @@ async def tags_command(ctx, *, search_name: str = None):
         embed.description = "\n".join(active_hunters); embed.set_footer(text="Eevee Tracker Framework")
         await ctx.send(embed=embed)
     except Exception as e: await ctx.send(f"❌ Error handling command: {e}")
-
 @bot.command(name="cl", aliases=["A!cl"])
 async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
     try:
@@ -213,18 +210,19 @@ async def cl_base_router(ctx, subcommand: str = None, *, arguments: str = None):
                     if matched_name not in GlobalDatabase.user_collections[uid]: GlobalDatabase.user_collections[uid].append(matched_name); added.append(matched_name)
                     else: duplicate.append(matched_name)
                 else: 
-                    # CRITICAL FIX: If name doesn't match standard database, treat it as a custom unverified base name directly
                     title_name = " ".join([w.capitalize() for w in raw.split()])
+                    if "mega" in title_name.lower() or "gmax" in title_name.lower():
+                        broken.append(f"{title_name} (Uncatchable Form)")
+                        continue
                     if title_name not in GlobalDatabase.user_collections[uid]:
                         GlobalDatabase.user_collections[uid].append(title_name)
                         added.append(title_name)
-                    else:
-                        duplicate.append(title_name)
+                    else: duplicate.append(title_name)
             if added or duplicate or broken: save_data()
             res = ""
             if added: res += f"✅ Added: **{', '.join(added)}**\n"
             if duplicate: res += f"⚠️ Already tracked: **{', '.join(duplicate)}**\n"
-            if broken: res += f"❌ **{', '.join(broken)}** is uncatchable! Blocked.\n"
+            if broken: res += f"❌ **{', '.join(broken)}** Blocked.\n"
             await ctx.send(res)
         elif sub_clean in ["remove", "del"]:
             if not arguments: return await ctx.send("⚠️ Please specify a Pokémon to drop!")
@@ -299,7 +297,7 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
 
         if sub_clean == "add":
             if not args: return await ctx.send("⚠️ Format: `a!r add Pikachu @user` or `a!r add all furfrou @user`")
-            mention_match = re.search(r'<@!?(\d+)>', args); raise_err = not mention_match
+            mention_match = re.search(r'<@!?(\d+)>', args)
             if not mention_match: return await ctx.send("⚠️ Please mention a user!")
             tid = str(mention_match.group(1)); raw_names = re.sub(r'<@!?\d+>', '', args).strip()
             if tid not in GlobalDatabase.reserve_data: GlobalDatabase.reserve_data[tid] = []
@@ -321,7 +319,9 @@ async def r_base_router(ctx, subcommand: str = None, *, args: str = None):
             await ctx.send(f"📦 Added to reserves for <@{tid}>: **{', '.join(added)}**")
             
         elif sub_clean in ["remove", "del"]:
-            mention_match = re.search(r'<@!?(\d+)>', args); if not mention_match: return await ctx.send("⚠️ Mention a user!")
+            if not args: return await ctx.send("⚠️ Format: `a!r remove Pikachu @user` or `a!r remove @user`")
+            mention_match = re.search(r'<@!?(\d+)>', args)
+            if not mention_match: return await ctx.send("⚠️ Mention a user!")
             tid = str(mention_match.group(1)); raw_input = re.sub(r'<@!?\d+>', '', args).strip()
             if not raw_input:
                 GlobalDatabase.reserve_data[tid] = []; save_data(); return await ctx.send(f"🗑️ Wiped reserves for <@{tid}>!")
