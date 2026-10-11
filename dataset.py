@@ -1,6 +1,52 @@
 import json
 import os
-import urllib.request# Multi-Form Registries (Refined Form Set)
+import urllib.request
+
+# 1. Regional Form Registry Mapping
+REGIONAL_FORMS = {
+    # Alolan Forms
+    "alolan ninetales": "Alolan Ninetales", "alolan vulpix": "Alolan Vulpix",
+    "alolan geodude": "Alolan Geodude", "alolan graveler": "Alolan Graveler",
+    "alolan raticate": "Alolan Raticate", "alolan rattata": "Alolan Rattata",
+    "alolan persian": "Alolan Persian", "alolan meowth": "Alolan Meowth",
+    "alolan exeggutor": "Alolan Exeggutor", "alolan dugtrio": "Alolan Dugtrio",
+    "alolan diglett": "Alolan Diglett", "alolan grimer": "Alolan Grimer",
+    "alolan golem": "Alolan Golem", "alolan sandshrew": "Alolan Sandshrew",
+    "alolan sandslash": "Alolan Sandslash", "alolan marowak": "Alolan Marowak",
+    "alolan raichu": "Alolan Raichu", "alolan muk": "Alolan Muk",
+
+    # Galarian Forms & Evolutions
+    "galarian linoone": "Galarian Linoone", "galarian yamask": "Galarian Yamask",
+    "galarian slowpoke": "Galarian Slowpoke", "galarian slowbro": "Galarian Slowbro",
+    "galarian slowking": "Galarian Slowking", "galarian farfetch'd": "Galarian Farfetch'd",
+    "galarian farfetchd": "Galarian Farfetch'd", "galarian rapidash": "Galarian Rapidash",
+    "galarian ponyta": "Galarian Ponyta", "galarian mr. mime": "Galarian Mr. Mime",
+    "galarian weezing": "Galarian Weezing", "galarian zigzagoon": "Galarian Zigzagoon",
+    "galarian corsola": "Galarian Corsola", "galarian darumaka": "Galarian Darumaka",
+    "galarian stunfisk": "Galarian Stunfisk", "galarian darmanitan": "Galarian Darmanitan",
+    "galarian zen darmanitan": "Galarian Zen Darmanitan", "obstagoon": "Obstagoon",
+    "sirfetch'd": "Sirfetch'd", "sirfetchd": "Sirfetch'd", "cursola": "Cursola",
+    "runerigus": "Runerigus", "mr. rime": "Mr. Rime", "perrserker": "Perrserker",
+    "galarian moltres": "Galarian Moltres", "galarian articuno": "Galarian Articuno",
+    "galarian zapdos": "Galarian Zapdos",
+
+    # Hisuian Forms & Evolutions
+    "hisuian growlithe": "Hisuian Growlithe", "hisuian arcanine": "Hisuian Arcanine",
+    "hisuian electrode": "Hisuian Electrode", "hisuian voltorb": "Hisuian Voltorb",
+    "hisuian typhlosion": "Hisuian Typhlosion", "hisuian lilligant": "Hisuian Lilligant",
+    "hisuian samurott": "Hisuian Samurott", "hisuian sneasel": "Hisuian Sneasel",
+    "hisuian decidueye": "Hisuian Decidueye", "hisuian qwilfish": "Hisuian Qwilfish",
+    "hisuian braviary": "Hisuian Braviary", "hisuian avalugg": "Hisuian Avalugg",
+    "hisuian zoroark": "Hisuian Zoroark", "hisuian zorua": "Hisuian Zorua",
+    "hisuian sliggoo": "Hisuian Sliggoo", "hisuian goodra": "Hisuian Goodra",
+    "basculegion": "Basculegion", "sneasler": "Sneasler", "overqwil": "Overqwil",
+
+    # Paldean Forms & Breeds
+    "paldean wooper": "Paldean Wooper", "combat breed tauros": "Combat Breed Tauros",
+    "blaze breed tauros": "Blaze Breed Tauros", "aqua breed tauros": "Aqua Breed Tauros"
+}
+
+# 2. Multi-Form Registries
 POKEMON_FORMS = {
     # Generation 1 & Kanto Forms
     "pikachu": ["Pikachu", "Partner Pikachu"],
