@@ -166,53 +166,28 @@ async def collection_group(ctx):
     await ctx.send(embed=embed)
 
 
-@reserve_group.command(name="list")
-async def reserve_list(ctx, page: int = 1):
-    try:
-        cursor = reserves_col.find({"guild_id": ctx.guild.id})
-        reserves = await cursor.to_list(length=1000)
+@collection_group.command(name="list")
+async def collection_list(ctx, page: int = 1):
+    user_doc = await collections_col.find_one({"user_id": ctx.author.id})
+    if not user_doc or not user_doc.get("pokemon"):
+        embed = discord.Embed(
+            description="❌ Your collection is currently empty.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
 
-        if not reserves:
-            embed = discord.Embed(
-                description="🔍 No active reserves found for this server.",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
-            return
+    all_pokemon = user_doc["pokemon"]
+    view = CollectionPaginationView(ctx.author.id, all_pokemon)
+    
+    if page >= 1 and page <= view.total_pages:
+        view.current_page = page
 
-        # Map each Pokémon/Form to a list of user mentions
-        mon_to_users = {}
-        for doc in reserves:
-            user_id = doc["user_id"]
-            member = ctx.guild.get_member(user_id)
-            user_mention = member.mention if member else f"<@{user_id}>"
-            
-            for mon in doc.get("pokemon", []):
-                formatted_mon = format_pokemon_name(mon)
-                if formatted_mon not in mon_to_users:
-                    mon_to_users[formatted_mon] = []
-                if user_mention not in mon_to_users[formatted_mon]:
-                    mon_to_users[formatted_mon].append(user_mention)
-
-        # Build formatted lines: • Pokémon - @user, @user
-        formatted_lines = [
-            f"• **{mon}** - {', '.join(users)}"
-            for mon, users in sorted(mon_to_users.items())
-        ]
-
-        view = ReservePaginationView(ctx.author.id, formatted_lines, per_page=20)
-        if 1 <= page <= view.total_pages:
-            view.current_page = page
-
-        if view.total_pages > 1:
-            await ctx.send(embed=view.get_embed(), view=view)
-        else:
-            await ctx.send(embed=view.get_embed())
-
-    except Exception as e:
-        print(f"Error in reserve_list: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
+    # Only show buttons if there are multiple pages
+    if view.total_pages > 1:
+        await ctx.send(embed=view.get_embed(), view=view)
+    else:
+        await ctx.send(embed=view.get_embed())
 
 
 @collection_group.command(name="add")
@@ -457,7 +432,6 @@ class ClearConfirmView(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-
 @bot.group(name="r", invoke_without_command=True)
 async def reserve_group(ctx, target: discord.Member = None):
     # If a user mention or ID is provided directly after A!r
@@ -507,31 +481,52 @@ async def reserve_group(ctx, target: discord.Member = None):
 
 
 @reserve_group.command(name="list")
-async def reserve_list(ctx):
-    cursor = reserves_col.find({"guild_id": ctx.guild.id})
-    reserves = await cursor.to_list(length=100)
+async def reserve_list(ctx, page: int = 1):
+    try:
+        cursor = reserves_col.find({"guild_id": ctx.guild.id})
+        reserves = await cursor.to_list(length=1000)
 
-    if not reserves:
-        embed = discord.Embed(
-            description="🔍 No active reserves found for this server.",
-            color=discord.Color.gold()
-        )
-        await ctx.send(embed=embed)
-        return
+        if not reserves:
+            embed = discord.Embed(
+                description="🔍 No active reserves found for this server.",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    lines = []
-    for doc in reserves:
-        member = ctx.guild.get_member(doc["user_id"])
-        name = member.mention if member else f"User ID {doc['user_id']}"
-        mons = ", ".join(doc.get("pokemon", []))
-        lines.append(f"{name}: {mons}")
+        # Map each Pokémon/Form to a list of user mentions
+        mon_to_users = {}
+        for doc in reserves:
+            user_id = doc["user_id"]
+            member = ctx.guild.get_member(user_id)
+            user_mention = member.mention if member else f"<@{user_id}>"
+            
+            for mon in doc.get("pokemon", []):
+                formatted_mon = format_pokemon_name(mon)
+                if formatted_mon not in mon_to_users:
+                    mon_to_users[formatted_mon] = []
+                if user_mention not in mon_to_users[formatted_mon]:
+                    mon_to_users[formatted_mon].append(user_mention)
 
-    embed = discord.Embed(
-        title="📋 Server Reserves",
-        description="\n".join(lines),
-        color=discord.Color.gold()
-    )
-    await ctx.send(embed=embed)
+        # Build formatted lines: • Pokémon - @user, @user
+        formatted_lines = [
+            f"• **{mon}** - {', '.join(users)}"
+            for mon, users in sorted(mon_to_users.items())
+        ]
+
+        view = ReservePaginationView(ctx.author.id, formatted_lines, per_page=20)
+        if 1 <= page <= view.total_pages:
+            view.current_page = page
+
+        if view.total_pages > 1:
+            await ctx.send(embed=view.get_embed(), view=view)
+        else:
+            await ctx.send(embed=view.get_embed())
+
+    except Exception as e:
+        print(f"Error in reserve_list: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
+
 
 
 @reserve_group.command(name="e")
