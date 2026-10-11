@@ -59,6 +59,7 @@ async def collection_group(ctx):
             "**`A!cl list`** - View your personal collection list.\n"
             "**`A!cl add <mons>`** - Add Pokémon to your collection.\n"
             "**`A!cl remove <mons>`** - Remove Pokémon from your collection."
+            "**`A!cl clear`** - Clear your entire collection."
         ),
         color=discord.Color.blue()
     )
@@ -129,6 +130,24 @@ async def collection_remove(ctx, *, mons: str):
         color=discord.Color.green()
     )
     await ctx.send(embed=embed)
+
+
+@collection_group.command(name="clear")
+async def collection_clear(ctx):
+    # Clears the author's entire collection
+    result = await collections_col.delete_one({"user_id": ctx.author.id})
+    if result.deleted_count > 0:
+        embed = discord.Embed(
+            description="✅ Your collection has been completely cleared.",
+            color=discord.Color.green()
+        )
+    else:
+        embed = discord.Embed(
+            description="❌ Your collection is already empty.",
+            color=discord.Color.red()
+        )
+    await ctx.send(embed=embed)
+
 
 
 # ==========================================
