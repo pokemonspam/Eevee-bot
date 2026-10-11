@@ -118,7 +118,6 @@ async def collection_group(ctx):
     await ctx.send(embed=embed)
 
 
-() for m in mons.split(",") if m.strip()]
 
 @collection_group.command(name="list")
 async def collection_list(ctx, page: int = 1):
