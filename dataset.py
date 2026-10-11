@@ -132,19 +132,22 @@ def get_evolution_family(species: str) -> list[str]:
 
 def validate_species(name: str) -> bool:
     norm = normalize_name(name)
+    # Also check hyphenated version for regional forms (e.g. "alolan vulpix" -> "alolan-vulpix")
+    hyphenated = norm.replace(" ", "-")
     
     # 1. Check API dataset (~1025+ base mons)
-    if norm in POKEMON_DATASET:
+    if norm in POKEMON_DATASET or hyphenated in POKEMON_DATASET:
         return True
     
     # 2. Check form group keys
-    if norm in POKEMON_FORMS:
+    if norm in POKEMON_FORMS or hyphenated in POKEMON_FORMS:
         return True
         
     # 3. Check individual form variant names
     for forms in POKEMON_FORMS.values():
-        if any(norm == f.lower() for f in forms):
+        if any(norm == f.lower() or hyphenated == f.lower() for f in forms):
             return True
+
             
     return False
 
