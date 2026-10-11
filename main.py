@@ -376,6 +376,38 @@ async def poketwo_image_scanner(message):
                                 if sh and sh.lower() == matched_lower: normal_pings.append(f"<@{uid}> (✨ SHINY!)")
                         if normal_pings: await message.channel.send(f"🔔 **List Alert!** " + " ".join(list(set(normal_pings))))
     except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
-# Place this at the absolute bottom of main.py, right before bot.run()
-import starboard
+# Place this at the absolute bottom of main.py, right above bot.run()
+@bot.command(name="starboard")
+@commands.has_permissions(manage_channels=True)
+async def main_starboard_config_router(ctx, action: str = None, category: str = None, channel_arg: discord.TextChannel = None):
+    try:
+        import starboard
+        valid_cats = ["low_iv", "high_iv", "gmax", "shiny", "regional", "rare"]
+        
+        if not action or action.lower() != "set" or not category or category.lower() not in valid_cats:
+            embed = discord.Embed(title="📋 Starboard Configuration Commands List", color=discord.Color.red())
+            embed.description = (
+                "Link any category to any channel from anywhere using this syntax:\n"
+                "`a!starboard set <category> <#channel_mention or channel_id>`\n\n"
+                "**Available Categories:**\n"
+                "• `shiny` - Shiny catches\n"
+                "• `rare` - Legends, Mythicals, Paradox, Gmax Rares\n"
+                "• `high_iv` - High IV catches (>= 90%)\n"
+                "• `low_iv` - Low IV catches (< 10%)\n"
+                "• `regional` - Regional variant catches\n"
+                "• `gmax` - Standard Gigantamax catches\n\n"
+                "**Examples:**\n"
+                "`a!starboard set shiny #shiny-starboard`\n"
+                "`a!starboard set rare 123456789012345678`"
+            )
+            return await ctx.send(embed=embed)
+        
+        target_channel = channel_arg if channel_arg else ctx.channel
+        cat_clean = category.lower().strip()
+        
+        starboard.starboard_channels[cat_clean] = target_channel.id
+        starboard.save_config()
+        await ctx.send(f"✅ **Redirect Successful!** Catches for **{cat_clean}** will now automatically post into {target_channel.mention}.")
+    except Exception as e:
+        await ctx.send(f"❌ Setup error: {e}")
 bot.run(os.environ.get("DISCORD_TOKEN"))
