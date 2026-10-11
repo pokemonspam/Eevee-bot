@@ -118,7 +118,7 @@ def validate_species(name: str) -> bool:
     # Fallback to local keys
     if norm in EVOLUTION_FAMILIES or any(norm in line for line in EVOLUTION_FAMILIES.values()):
         return True
-    return True
+    return False
 
 
 # Auto-load dataset on module import
