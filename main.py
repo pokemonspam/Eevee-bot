@@ -87,22 +87,31 @@ async def collection_list(ctx):
     await ctx.send(embed=embed)
 
 
+
 @collection_group.command(name="add")
-async def collection_add(ctx, *, mons: str):
-    raw_list = mons.split(",")
+async def collection_add(ctx, *, mons: str = None):
+    if not mons:
+        embed = discord.Embed(
+            description="❌ Please specify at least one Pokémon to add.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    raw_list = [m.strip().lower() for m in mons.split(",") if m.strip()]
     final_mons = []
 
     for item in raw_list:
-        clean_item = item.strip().lower()
-        if clean_item.startswith("all "):
-            target = clean_item.replace("all ", "").strip()
-            # Fetches all forms for multi-form Pokémon from dataset.py
-            forms = get_pokemon_forms(target)
-            final_mons.extend(forms if forms else [target])
+        if item.startswith("all "):
+            target = item.replace("all ", "").strip()
+            forms = get_evolution_family(target)
+            if forms:
+                final_mons.extend(forms)
+            else:
+                final_mons.append(target)
         else:
-            final_mons.append(clean_item)
+            final_mons.append(item)
 
-    # Deduplicate and validate against dataset.py rules
     unique_mons = list(dict.fromkeys(final_mons))
     valid_mons = [format_pokemon_name(m) for m in unique_mons if validate_species(m)]
 
@@ -128,23 +137,30 @@ async def collection_add(ctx, *, mons: str):
     await ctx.send(embed=embed)
 
 
-
 @collection_group.command(name="remove")
-async def collection_remove(ctx, *, mons: str):
-    raw_list = mons.split(",")
+async def collection_remove(ctx, *, mons: str = None):
+    if not mons:
+        embed = discord.Embed(
+            description="❌ Please specify at least one Pokémon to remove.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    raw_list = [m.strip().lower() for m in mons.split(",") if m.strip()]
     final_mons = []
 
     for item in raw_list:
-        clean_item = item.strip().lower()
-        if clean_item.startswith("all "):
-            target = clean_item.replace("all ", "").strip()
-            # Fetches all forms for multi-form Pokémon from dataset.py
-            forms = get_pokemon_forms(target)
-            final_mons.extend(forms if forms else [target])
+        if item.startswith("all "):
+            target = item.replace("all ", "").strip()
+            forms = get_evolution_family(target)
+            if forms:
+                final_mons.extend(forms)
+            else:
+                final_mons.append(target)
         else:
-            final_mons.append(clean_item)
+            final_mons.append(item)
 
-    # Deduplicate and validate against dataset.py rules
     unique_mons = list(dict.fromkeys(final_mons))
     valid_mons = [format_pokemon_name(m) for m in unique_mons if validate_species(m)]
 
@@ -167,6 +183,7 @@ async def collection_remove(ctx, *, mons: str):
         color=discord.Color.green()
     )
     await ctx.send(embed=embed)
+
 
 
 
