@@ -377,6 +377,20 @@ async def poketwo_image_scanner(message):
                         if normal_pings: await message.channel.send(f"🔔 **List Alert!** " + " ".join(list(set(normal_pings))))
     except Exception as e: print(f"[SCANNER FAULT] Safely handled: {e}")
 # Place this at the absolute bottom of main.py, right above bot.run()
+@bot.event
+async def on_connect():
+    # Safe data loading synced strictly with discord's native gateway connection event
+    try:
+        import starboard
+        CONFIG_FILE = "starboard_config.json"
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for k in starboard.starboard_channels:
+                    starboard.starboard_channels[k] = data.get(k)
+    except Exception as e:
+        print(f"Safe connect file load error handled: {e}")
+
 @bot.command(name="starboard")
 @commands.has_permissions(manage_channels=True)
 async def main_starboard_config_router(ctx, action: str = None, category: str = None, channel_arg: discord.TextChannel = None):
@@ -406,7 +420,14 @@ async def main_starboard_config_router(ctx, action: str = None, category: str = 
         cat_clean = category.lower().strip()
         
         starboard.starboard_channels[cat_clean] = target_channel.id
-        starboard.save_config()
+        
+        # Safe save execution loop handles IO cleanly inside the main engine context
+        try:
+            with open("starboard_config.json", "w", encoding="utf-8") as f:
+                json.dump(starboard.starboard_channels, f, indent=4)
+        except Exception as io_err:
+            print(f"Config write error context safely processed: {io_err}")
+            
         await ctx.send(f"✅ **Redirect Successful!** Catches for **{cat_clean}** will now automatically post into {target_channel.mention}.")
     except Exception as e:
         await ctx.send(f"❌ Setup error: {e}")
