@@ -130,7 +130,6 @@ async def collection_add(ctx, *, mons: str):
 
 
 @collection_group.command(name="remove")
-@collection_group.command(name="remove")
 async def collection_remove(ctx, *, mons: str):
     raw_list = mons.split(",")
     final_mons = []
