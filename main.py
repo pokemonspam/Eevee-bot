@@ -6,6 +6,7 @@ from discord.ext import commands
 from pymongo import MongoClient
 import Levenshtein
 
+# Master Pokémon name dataset
 VALID_POKEMON = [
     "pikachu", "charizard", "eevee", "vaporeon", "jolteon", "flareon", "espeon", 
     "umbreon", "leafeon", "glaceon", "sylveon", "ditto", "furfrou", "lucario",
@@ -18,32 +19,43 @@ FURFROU_FORMS = [
     "furfrou kabuki", "furfrou pharaoh"
 ]
 
+# Discord Bot Setup
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix=["A!", "a!"], intents=intents, case_insensitive=True)
 
+# MongoDB Connection
 MONGO_URI = os.getenv("MONGO_URI", "")
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["discord_pokemon_bot"]
 
-# Attach db to bot so cogs can use it easily
+# Attach db to bot so Cogs can access it globally
 bot.db = db
 
+# Collections
 col_shiny = db["shiny_hunts"]
 col_collection = db["collections"]
 col_reserves = db["reserves"]
 
+# Remove default help command to prevent duplicate responses
 bot.remove_command("help")
 
+
+# --- Helper Functions ---
 def validate_pokemon_name(name_input: str):
+    """Validates name or offers a fuzzy match suggestion."""
     clean_name = name_input.strip().lower()
+    
     if clean_name in VALID_POKEMON or "furfrou" in clean_name:
         return True, clean_name, None
+
+    # Block Mega or Gmax
     if "mega" in clean_name or "gmax" in clean_name or "gigantamax" in clean_name:
         return False, None, "❌ Cannot add Mega or Gigantamax forms."
 
+    # Fuzzy match check
     closest_match = None
     best_distance = float("inf")
     for mon in VALID_POKEMON:
@@ -54,8 +66,11 @@ def validate_pokemon_name(name_input: str):
 
     if closest_match:
         return False, None, f"❓ **Did you mean *{closest_match.capitalize()}*?**"
+    
     return False, None, f'❌ **"{name_input}" is not a valid Pokémon.**'
 
+
+# --- Interactive UI Views ---
 class ConfirmationView(discord.ui.View):
     def __init__(self, author_id, timeout=30):
         super().__init__(timeout=timeout)
@@ -76,6 +91,7 @@ class ConfirmationView(discord.ui.View):
         self.value = False
         self.stop()
         await interaction.response.defer()
+
 
 class CollectionPaginatorView(discord.ui.View):
     def __init__(self, author_id, pages):
@@ -112,43 +128,89 @@ class CollectionPaginatorView(discord.ui.View):
                 button.disabled = True
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
+
+# --- Commands Group: Shiny Hunt (A!sh) ---
 @bot.group(name="sh", invoke_without_command=True)
 async def shiny_group(ctx, *, target: str = None):
+    # Prevent double execution
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # 1. If user just typed "A!sh" (no arguments)
     if target is None:
         data = col_shiny.find_one({"user_id": ctx.author.id})
         if data and data.get("target"):
-            embed = discord.Embed(title="✨ Active Shiny Hunt", description=f"You are currently hunting: **{data['target'].capitalize()}** ✨", color=0xFFD700)
+            embed = discord.Embed(
+                title="✨ Active Shiny Hunt",
+                description=f"You are currently hunting: **{data['target'].capitalize()}** ✨",
+                color=0xFFD700
+            )
         else:
-            embed = discord.Embed(title="✨ Active Shiny Hunt", description="You do not have an active shiny hunt set! Use `A!sh <pokemon>` to set one.", color=0xFFD700)
+            embed = discord.Embed(
+                title="✨ Active Shiny Hunt",
+                description="You do not have an active shiny hunt set! Use `A!sh <pokemon>` to set one.",
+                color=0xFFD700
+            )
         await ctx.send(embed=embed)
         return
 
+    # 2. Clear target command: "A!sh clear"
     if target.lower() == "clear":
         col_shiny.delete_one({"user_id": ctx.author.id})
         await ctx.send(embed=discord.Embed(title="✨ Shiny Target Cleared!", color=0xFFD700))
         return
 
+    # 3. Validate name input
     valid, clean_name, err_msg = validate_pokemon_name(target)
     if not valid:
         await ctx.send(err_msg)
         return
 
+    # 4. Check existing database record
     existing = col_shiny.find_one({"user_id": ctx.author.id})
+
     if existing and existing.get("target"):
+        current_target = existing.get("target")
+
+        # If already hunting the exact same Pokémon
+        if current_target == clean_name:
+            await ctx.send(embed=discord.Embed(
+                title="✨ Already Hunting!",
+                description=f"You are already hunting **{clean_name.capitalize()}**!",
+                color=0xFFD700
+            ))
+            return
+
+        # If hunting a DIFFERENT Pokémon, ask to switch
         view = ConfirmationView(ctx.author.id)
-        msg = await ctx.send(f"⚠️ You are currently hunting **{existing['target'].capitalize()}**. Do you want to switch to **{clean_name.capitalize()}**?", view=view)
+        msg = await ctx.send(
+            f"⚠️ You are currently hunting **{current_target.capitalize()}**. Do you want to switch to **{clean_name.capitalize()}**?",
+            view=view
+        )
         await view.wait()
+
         if view.value is True:
             col_shiny.update_one({"user_id": ctx.author.id}, {"$set": {"target": clean_name}}, upsert=True)
             await msg.edit(content=f"✅ Changed shiny hunt target to **{clean_name.capitalize()}**! ✨", view=None)
         else:
             await msg.edit(content="❌ Switch cancelled.", view=None)
-    else:
-        col_shiny.update_one({"user_id": ctx.author.id}, {"$set": {"target": clean_name}}, upsert=True)
-        await ctx.send(embed=discord.Embed(title="✨ Shiny Target Set!", description=f"Now hunting: **{clean_name.capitalize()}**", color=0xFFD700))
 
+    else:
+        # NO active hunt set before -> Set immediately without asking to switch!
+        col_shiny.update_one({"user_id": ctx.author.id}, {"$set": {"target": clean_name}}, upsert=True)
+        await ctx.send(embed=discord.Embed(
+            title="✨ Shiny Target Set!",
+            description=f"Now hunting: **{clean_name.capitalize()}**",
+            color=0xFFD700
+        ))
+
+
+# --- Commands Group: Collection List (A!cl) ---
 @bot.group(name="cl", invoke_without_command=True)
 async def collection_group(ctx):
+    if ctx.invoked_subcommand is not None:
+        return
+
     embed = discord.Embed(
         title="📦 Collection Commands List",
         description=(
@@ -216,8 +278,13 @@ async def cl_list(ctx):
         view = CollectionPaginatorView(ctx.author.id, pages)
         await ctx.send(embed=view.get_embed(), view=view)
 
+
+# --- Commands Group: Reserve System (A!r) ---
 @bot.group(name="r", invoke_without_command=True)
 async def reserve_group(ctx, member: discord.Member = None):
+    if ctx.invoked_subcommand is not None:
+        return
+
     if member:
         data = col_reserves.find_one({"guild_id": ctx.guild.id}) or {}
         reserves = data.get("reserves", {})
@@ -312,6 +379,8 @@ async def r_exchange(ctx, mainuser: discord.Member):
     col_reserves.update_one({"guild_id": ctx.guild.id}, {"$set": {"reserves": reserves}}, upsert=True)
     await ctx.send("🔄 Exchange completed successfully!\n" + "\n".join([f"• {x}" for x in exchanged]))
 
+
+# --- Event Listener: Priority Spawn Pings ---
 @bot.event
 async def on_message(message):
     if message.author.bot and message.author.id != 716390085896962058:
@@ -345,6 +414,8 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+
+# --- Startup & Cog Loader ---
 async def main():
     async with bot:
         await bot.load_extension("starboard")
