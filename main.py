@@ -6,7 +6,7 @@ from discord.ext import commands
 from pymongo import MongoClient
 import Levenshtein
 
-# Master Pokémon name dataset (Truncated for readability, add full list as needed)
+# Master Pokémon name dataset
 VALID_POKEMON = [
     "pikachu", "charizard", "eevee", "vaporeon", "jolteon", "flareon", "espeon", 
     "umbreon", "leafeon", "glaceon", "sylveon", "ditto", "furfrou", "lucario",
@@ -24,6 +24,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+# case_insensitive=True automatically supports A!sh, A!SH, a!sh, A!Sh, etc.
 bot = commands.Bot(command_prefix=["A!", "a!"], intents=intents, case_insensitive=True)
 
 # MongoDB Connection
@@ -36,7 +37,7 @@ col_shiny = db["shiny_hunts"]
 col_collection = db["collections"]
 col_reserves = db["reserves"]
 
-# Remove default help command to avoid double embed issues
+# Remove default help command
 bot.remove_command("help")
 
 
@@ -128,10 +129,9 @@ class CollectionPaginatorView(discord.ui.View):
 
 
 # --- Commands Group: Shiny Hunt (A!sh) ---
-@bot.group(name="sh", aliases=["SH"], invoke_without_command=True)
+@bot.group(name="sh", invoke_without_command=True)
 async def shiny_group(ctx, *, target: str = None):
     if target is None:
-        # Show active hunt
         data = col_shiny.find_one({"user_id": ctx.author.id})
         if data and data.get("target"):
             embed = discord.Embed(
@@ -148,13 +148,11 @@ async def shiny_group(ctx, *, target: str = None):
         await ctx.send(embed=embed)
         return
 
-    # Check for subcommands
     if target.lower() == "clear":
         col_shiny.delete_one({"user_id": ctx.author.id})
         await ctx.send(embed=discord.Embed(title="✨ Shiny Target Cleared!", color=0xFFD700))
         return
 
-    # Set new shiny hunt target
     valid, clean_name, err_msg = validate_pokemon_name(target)
     if not valid:
         await ctx.send(err_msg)
@@ -162,7 +160,6 @@ async def shiny_group(ctx, *, target: str = None):
 
     existing = col_shiny.find_one({"user_id": ctx.author.id})
     if existing and existing.get("target"):
-        # Confirm switch target
         view = ConfirmationView(ctx.author.id)
         msg = await ctx.send(
             f"⚠️ You are currently hunting **{existing['target'].capitalize()}**. Do you want to switch to **{clean_name.capitalize()}**?",
@@ -180,7 +177,7 @@ async def shiny_group(ctx, *, target: str = None):
 
 
 # --- Commands Group: Collection List (A!cl) ---
-@bot.group(name="cl", aliases=["CL"], invoke_without_command=True)
+@bot.group(name="cl", invoke_without_command=True)
 async def collection_group(ctx):
     embed = discord.Embed(
         title="📦 Collection Commands List",
@@ -224,7 +221,7 @@ async def cl_add(ctx, *, mons: str):
 async def cl_remove(ctx, *, mons: str):
     items = [m.strip().lower() for m in mons.split(",")]
     col_collection.update_one({"user_id": ctx.author.id}, {"$pull": {"list": {"$in": items}}})
-    await ctx.send(f"🗑️ Removed specified Pokémon from your collection list.")
+    await ctx.send("🗑️ Removed specified Pokémon from your collection list.")
 
 @collection_group.command(name="clear")
 async def cl_clear(ctx):
@@ -245,7 +242,6 @@ async def cl_list(ctx):
         return
 
     mon_list = data["list"]
-    # Chunk list into groups of 20 per page
     pages = [mon_list[i:i + 20] for i in range(0, len(mon_list), 20)]
 
     if len(pages) == 1:
@@ -257,16 +253,13 @@ async def cl_list(ctx):
         await ctx.send(embed=embed)
     else:
         view = CollectionPaginatorView(ctx.author.id, pages)
-        if len(pages) == 1:
-            view.next_page.disabled = True
         await ctx.send(embed=view.get_embed(), view=view)
 
 
 # --- Commands Group: Reserve System (A!r) ---
-@bot.group(name="r", aliases=["R"], invoke_without_command=True)
+@bot.group(name="r", invoke_without_command=True)
 async def reserve_group(ctx, member: discord.Member = None):
     if member:
-        # Show specific user reserves
         data = col_reserves.find_one({"guild_id": ctx.guild.id}) or {}
         reserves = data.get("reserves", {})
         user_mons = [mon for mon, users in reserves.items() if member.id in users]
@@ -286,7 +279,6 @@ async def reserve_group(ctx, member: discord.Member = None):
         await ctx.send(embed=embed)
         return
 
-    # Help embed
     embed = discord.Embed(
         title="📑 Reserve Commands List",
         description=(
@@ -368,7 +360,6 @@ async def r_exchange(ctx, mainuser: discord.Member):
     data = col_reserves.find_one({"guild_id": ctx.guild.id}) or {"guild_id": ctx.guild.id, "reserves": {}}
     reserves = data.get("reserves", {})
 
-    # Parse reply message format: @user - mon1, mon2
     lines = content.split("\n")
     exchanged = []
 
@@ -381,10 +372,8 @@ async def r_exchange(ctx, mainuser: discord.Member):
                 mons = [m.strip().lower() for m in parts[1].split(",") if m.strip()]
                 
                 for mon in mons:
-                    # Remove from mainuser
                     if mon in reserves and mainuser.id in reserves[mon]:
                         reserves[mon].remove(mainuser.id)
-                    # Add to recipient
                     if mon not in reserves:
                         reserves[mon] = []
                     if recipient_id not in reserves[mon]:
@@ -392,22 +381,19 @@ async def r_exchange(ctx, mainuser: discord.Member):
                     exchanged.append(f"{mon.capitalize()} -> <@{recipient_id}>")
 
     col_reserves.update_one({"guild_id": ctx.guild.id}, {"$set": {"reserves": reserves}}, upsert=True)
-    await ctx.send(f"🔄 Exchange completed successfully!\n" + "\n".join([f"• {x}" for x in exchanged]))
+    await ctx.send("🔄 Exchange completed successfully!\n" + "\n".join([f"• {x}" for x in exchanged]))
 
 
 # --- Event Listener: Priority Spawn Pings ---
 @bot.event
 async def on_message(message):
-    if message.author.bot and message.author.id != 716390085896962058:  # Pokétwo ID
+    if message.author.bot and message.author.id != 716390085896962058:
         await bot.process_commands(message)
         return
 
-    # Process Pokétwo Spawns
     if message.author.id == 716390085896962058 and "A wild pokémon has appeared!" in message.content:
-        # Example extracted spawned Pokémon name
-        spawned_pokemon = "ditto"  # Dynamic extraction logic applies here
+        spawned_pokemon = "ditto"
 
-        # 1. Priority Check: Reserve Pings
         res_data = col_reserves.find_one({"guild_id": message.guild.id}) or {}
         reserves = res_data.get("reserves", {})
         reserved_users = reserves.get(spawned_pokemon, [])
@@ -420,9 +406,8 @@ async def on_message(message):
                 f"**Copy-Command:** `<@716390085896962058> c {spawned_pokemon}`"
             )
             await bot.process_commands(message)
-            return  # Override active: suppress Shiny & Collection pings
+            return
 
-        # 2. Unreserved Check: Shiny & Collection Pings
         shiny_users = [
             doc["user_id"] for doc in col_shiny.find({"target": spawned_pokemon})
         ]
@@ -448,7 +433,6 @@ async def on_message(message):
 async def main():
     async with bot:
         await bot.load_extension("starboard")
-        # Read token from environment variable to ensure secure deployment on Render/Railway
         TOKEN = os.getenv("DISCORD_TOKEN")
         if not TOKEN:
             raise ValueError("DISCORD_TOKEN environment variable is not set!")
