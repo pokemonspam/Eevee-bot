@@ -271,6 +271,24 @@ async def collection_remove(ctx, *, mons: str = None):
         print(f"Error in collection_remove: {e}")
         await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
 
+@collection_group.command(name="clear")
+async def collection_clear(ctx):
+    try:
+        result = await collections_col.delete_one({"user_id": ctx.author.id})
+        if result.deleted_count > 0:
+            embed = discord.Embed(
+                description="✅ Your collection has been completely cleared.",
+                color=discord.Color.green()
+            )
+        else:
+            embed = discord.Embed(
+                description="❌ Your collection is already empty.",
+                color=discord.Color.red()
+            )
+        await ctx.send(embed=embed)
+    except Exception as e:
+        print(f"Error in collection_clear: {e}")
+        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
 
 
 # ==========================================
