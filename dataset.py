@@ -1,100 +1,120 @@
 import json
 import os
-import urllib.request
-
-# Multi-Form Registries (Excluding 'Normal' variants, Chest Gimmighoul, and specified Terapagos forms)
+import urllib.request# Multi-Form Registries (Refined Form Set)
 POKEMON_FORMS = {
+    # Generation 1 & Kanto Forms
+    "pikachu": ["Pikachu", "Partner Pikachu"],
+    "meowth": ["Meowth", "Alolan Meowth", "Galarian Meowth"],
+    "ponyta": ["Ponyta", "Galarian Ponyta"],
+    "rapidash": ["Rapidash", "Galarian Rapidash"],
+    "slowpoke": ["Slowpoke", "Galarian Slowpoke"],
+    "slowbro": ["Slowbro", "Galarian Slowbro"],
+    "farfetch'd": ["Farfetch'd", "Galarian Farfetch'd"],
+    "farfetchd": ["Farfetch'd", "Galarian Farfetch'd"],
+    "marowak": ["Marowak", "Alolan Marowak"],
+    "weezing": ["Weezing", "Galarian Weezing"],
+    "eevee": ["Eevee", "Partner Eevee"],
+    "articuno": ["Articuno", "Galarian Articuno"],
+    "zapdos": ["Zapdos", "Galarian Zapdos"],
+    "moltres": ["Moltres", "Galarian Moltres"],
+
+    # Generation 2 & Johto Forms
+    "pichu": ["Pichu", "Spiky-eared Pichu"],
+    "unown": [
+        "Unown", "Unown A", "Unown B", "Unown C", "Unown D", "Unown E", "Unown F", "Unown G", 
+        "Unown H", "Unown I", "Unown J", "Unown K", "Unown L", "Unown M", "Unown N", "Unown O", 
+        "Unown P", "Unown Q", "Unown R", "Unown S", "Unown T", "Unown U", "Unown V", "Unown W", 
+        "Unown X", "Unown Y", "Unown Z", "Unown Exclamation", "Unown Question"
+    ],
+    "corsola": ["Corsola", "Galarian Corsola"],
+
+    # Generation 3 & Hoenn Forms
+    "castform": ["Castform", "Sunny Castform", "Rainy Castform", "Snowy Castform"],
+    "deoxys": ["Deoxys", "Attack Deoxys", "Defense Deoxys", "Speed Deoxys"],
+
+    # Generation 4 & Sinnoh Forms
+    "burmy": ["Burmy", "Sandy Burmy", "Trash Burmy"],
+    "wormadam": ["Wormadam", "Sandy Wormadam", "Trash Wormadam"],
+    "cherrim": ["Cherrim", "Sunshine Cherrim"],
     "rotom": [
         "Rotom", "Heat Rotom", "Wash Rotom", "Frost Rotom", "Fan Rotom", 
         "Mow Rotom", "DJ Rotom", "Rotom Pokédex", "Rotom Phone", "Rotom Drone"
     ],
-    "burmy": ["Burmy", "Sandy Burmy", "Trash Burmy"],
-    "castform": ["Castform", "Sunny Castform", "Rainy Castform", "Snowy Castform"],
-    "lycanroc": ["Lycanroc", "Midnight Lycanroc", "Dusk Lycanroc"],
-    "flabébé": [
-        "Flabébé", "Yellow Flower Flabébé", "Orange Flower Flabébé", 
-        "Blue Flower Flabébé", "White Flower Flabébé"
+    "arceus": [
+        "Arceus", "Bug Arceus", "Dark Arceus", "Dragon Arceus", "Electric Arceus", 
+        "Fighting Arceus", "Fire Arceus", "Flying Arceus", "Ghost Arceus", "Grass Arceus", 
+        "Ground Arceus", "Ice Arceus", "Poison Arceus", "Psychic Arceus", "Rock Arceus", 
+        "Steel Arceus", "Water Arceus", "Fairy Arceus"
     ],
-    "flabebe": [
-        "Flabébé", "Yellow Flower Flabébé", "Orange Flower Flabébé", 
-        "Blue Flower Flabébé", "White Flower Flabébé"
-    ],
-    "floette": [
-        "Floette", "Yellow Flower Floette", "Orange Flower Floette", 
-        "Blue Flower Floette", "White Flower Floette"
-    ],
-    "vivillon": [
-        "Vivillon", "Icy Snow Vivillon", "Polar Vivillon", "Tundra Vivillon", 
-        "Continental Vivillon", "Garden Vivillon", "Elegant Vivillon", 
-        "Modern Vivillon", "Marine Vivillon", "Archipelago Vivillon", 
-        "High Plain Vivillon", "Sandstorm Vivillon", "River Vivillon", 
-        "Monsoon Vivillon", "Savanna Vivillon", "Sun Vivillon", "Ocean Vivillon", 
-        "Jungle Vivillon", "Fancy Vivillon", "Poké Ball Vivillon"
-    ],
+
+    # Generation 5 & Unova Forms
+    "darmanitan": ["Darmanitan", "Zen Darmanitan"],
+    "basculin": ["Basculin", "White-Striped Basculin"],
+    "kyurem": ["Kyurem", "White Kyurem", "Black Kyurem"],
+    "meloetta": ["Meloetta", "Pirouette Forme Meloetta"],
+    "genesect": ["Genesect", "High-speed Flight Configuration Genesect"],
+
+    # Generation 6 & Kalos Forms
+    "greninja": ["Greninja", "Ash-Greninja"],
+    "flabébé": ["Flabébé", "Yellow Flower Flabébé", "Orange Flower Flabébé", "Blue Flower Flabébé", "White Flower Flabébé"],
+    "flabebe": ["Flabébé", "Yellow Flower Flabébé", "Orange Flower Flabébé", "Blue Flower Flabébé", "White Flower Flabébé"],
+    "floette": ["Floette", "Yellow Flower Floette", "Orange Flower Floette", "Blue Flower Floette", "White Flower Floette", "Eternal Flower Floette"],
+    "florges": ["Florges", "Yellow Flower Florges", "Orange Flower Florges", "Blue Flower Florges", "White Flower Florges"],
     "furfrou": [
         "Furfrou", "Heart Trim Furfrou", "Star Trim Furfrou", "Diamond Trim Furfrou", 
         "Debutante Trim Furfrou", "Matron Trim Furfrou", "Dandy Trim Furfrou", 
         "La Reine Trim Furfrou", "Kabuki Trim Furfrou", "Pharaoh Trim Furfrou"
     ],
-    "unown": [
-        "Unown", "Unown A", "Unown B", "Unown C", "Unown D", "Unown E", "Unown G", 
-        "Unown H", "Unown I", "Unown J", "Unown K", "Unown L", "Unown M", "Unown N", 
-        "Unown O", "Unown P", "Unown Q", "Unown R", "Unown S", "Unown T", "Unown U", 
-        "Unown V", "Unown W", "Unown X", "Unown Y", "Unown Z", "Unown Exclamation", 
-        "Unown Question"
-    ],
-    "oricorio": ["Oricorio", "Pom-pom Oricorio", "Pa'u Oricorio", "Sensu Oricorio"],
-    "eiscue": ["Eiscue", "Noice Face Eiscue"],
-    "cramorant": ["Cramorant", "Gulping Cramorant", "Gorging Cramorant"],
-    "florges": [
-        "Florges", "Yellow Flower Florges", "Orange Flower Florges", 
-        "Blue Flower Florges", "White Flower Florges"
-    ],
-    "wormadam": ["Wormadam", "Sandy Wormadam", "Trash Wormadam"],
-    "arceus": [
-        "Arceus", "Bug Arceus", "Dark Arceus", "Dragon Arceus", "Electric Arceus", 
-        "Fighting Arceus", "Fire Arceus", "Flying Arceus", "Ghost Arceus", 
-        "Grass Arceus", "Ground Arceus", "Ice Arceus", "Poison Arceus", 
-        "Psychic Arceus", "Rock Arceus", "Steel Arceus", "Water Arceus", "Fairy Arceus"
-    ],
-    "silvally": [
-        "Silvally", "Bug Silvally", "Dark Silvally", "Dragon Silvally", 
-        "Electric Silvally", "Fighting Silvally", "Fire Silvally", "Flying Silvally", 
-        "Ghost Silvally", "Grass Silvally", "Ground Silvally", "Ice Silvally", 
-        "Poison Silvally", "Psychic Silvally", "Rock Silvally", "Steel Silvally", 
-        "Water Silvally", "Fairy Silvally"
-    ],
-    "deoxys": ["Deoxys", "Attack Deoxys", "Defense Deoxys", "Speed Deoxys"],
-    "zygarde": ["Zygarde", "10% Zygarde", "Complete Zygarde", "Zygarde Cell", "Zygarde Core"],
+    "meowstic": ["Meowstic", "Female Meowstic"],
+    "pumpkaboo": ["Pumpkaboo", "Small Size Pumpkaboo", "Large Size Pumpkaboo", "Super Size Pumpkaboo"],
     "xerneas": ["Xerneas", "Neutral Xerneas"],
-    "urshifu": ["Urshifu", "Rapid Strike Urshifu"],
-    "koraidon": ["Koraidon", "Sprinting Build Koraidon", "Gliding Build Koraidon"],
-    "miraidon": ["Miraidon", "Drive Mode Miraidon", "Glide Mode Miraidon"],
-    "terapagos": ["Terapagos", "Terastal Form Terapagos"],
+    "zygarde": ["Zygarde", "10% Zygarde", "Complete Zygarde", "Zygarde Cell", "Zygarde Core"],
+
+    # Generation 7 & Alola Forms
+    "oricorio": ["Oricorio", "Pom-pom Oricorio", "Pa'u Oricorio", "Sensu Oricorio"],
+    "lycanroc": ["Lycanroc", "Midnight Lycanroc", "Dusk Lycanroc"],
+    "wishiwashi": ["Wishiwashi", "School Forme Wishiwashi"],
+    "silvally": [
+        "Silvally", "Bug Silvally", "Dark Silvally", "Dragon Silvally", "Electric Silvally", 
+        "Fighting Silvally", "Fire Silvally", "Flying Silvally", "Ghost Silvally", "Grass Silvally", 
+        "Ground Silvally", "Ice Silvally", "Poison Silvally", "Psychic Silvally", "Rock Silvally", 
+        "Steel Silvally", "Water Silvally", "Fairy Silvally"
+    ],
+
+    # Generation 8 & Galar Forms
+    "cramorant": ["Cramorant", "Gulping Cramorant", "Gorging Cramorant"],
+    "toxtricity": ["Toxtricity", "Low Key Toxtricity"],
     "alcremie": [
         "Alcremie", "Berry Sweet Alcremie", "Love Sweet Alcremie", "Star Sweet Alcremie", 
         "Clover Sweet Alcremie", "Flower Sweet Alcremie", "Ribbon Sweet Alcremie"
     ],
-    "maushold": ["Maushold", "Family of Three Maushold", "Family of Four Maushold"],
-    "tatsugiri": ["Tatsugiri", "Curly Tatsugiri", "Droopy Tatsugiri", "Stretchy Tatsugiri"],
-    "squawkabilly": ["Squawkabilly", "Green Squawkabilly", "Blue Squawkabilly", "Yellow Squawkabilly", "White Squawkabilly"],
-    "palafin": ["Palafin", "Zero Palafin", "Hero Palafin"],
-    "dudunsparce": ["Dudunsparce", "Two-Segment Dudunsparce", "Three-Segment Dudunsparce"],
-    "gimmighoul": ["Gimmighoul", "Roaming Gimmighoul"]
+    "eiscue": ["Eiscue", "Noice Face Eiscue"],
+    "morpeko": ["Morpeko", "Hangry Mode Morpeko"],
+    "zamazenta": ["Zamazenta", "Crowned Shield Zamazenta"],
+    "urshifu": ["Urshifu", "Rapid Strike Urshifu"],
+    "zarude": ["Zarude", "Dada Zarude"],
+
+    # Generation 9 & Paldea Forms
+    "maushold": ["Maushold", "Family of Three Maushold"],
+    "squawkabilly": ["Squawkabilly", "Blue Squawkabilly", "Yellow Squawkabilly", "White Squawkabilly"],
+    "palafin": ["Palafin", "Hero Palafin"],
+    "tatsugiri": ["Tatsugiri", "Droopy Tatsugiri", "Stretchy Tatsugiri"],
+    "dudunsparce": ["Dudunsparce", "Three-Segment Dudunsparce"],
+    "gimmighoul": ["Gimmighoul", "Roaming Gimmighoul"],
+    "oinkologne": ["Oinkologne", "Female Oinkologne"],
+    "terapagos": ["Terapagos", "Terastal Form Terapagos"]
 }
 
 POKEMON_DATASET = set()
 
 
 def load_dataset():
-    """Loads or auto-fetches all official Pokémon species so you don't need manual terminal commands."""
     global POKEMON_DATASET
     file_path = "pokemon_data.json"
     
-    # If the file doesn't exist yet, fetch it automatically on startup
     if not os.path.exists(file_path):
         try:
-            print("⏳ Fetching complete Pokémon species list...")
+            print("⏳ Fetching complete Pokémon list...")
             url = "https://pokeapi.co/api/v2/pokemon-species?limit=2000"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req) as response:
@@ -103,9 +123,8 @@ def load_dataset():
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(species_list, f)
         except Exception as e:
-            print(f"⚠️ Could not auto-fetch pokemon_data.json: {e}")
+            print(f"⚠️ Error fetching dataset: {e}")
 
-    # Load into a set for lightning-fast lookups
     if os.path.exists(file_path):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -120,6 +139,9 @@ def normalize_name(name: str) -> str:
 
 
 def format_pokemon_name(name: str) -> str:
+    norm = normalize_name(name)
+    if norm in REGIONAL_FORMS:
+        return REGIONAL_FORMS[norm]
     return name.strip().title()
 
 
@@ -127,37 +149,27 @@ def get_evolution_family(species: str) -> list[str]:
     norm = normalize_name(species).replace("all ", "").strip()
     if norm in POKEMON_FORMS:
         return POKEMON_FORMS[norm]
+    if norm in REGIONAL_FORMS:
+        return [REGIONAL_FORMS[norm]]
     return [format_pokemon_name(species)]
 
 
 def validate_species(name: str) -> bool:
     norm = normalize_name(name)
-    # Also check hyphenated version for regional forms (e.g. "alolan vulpix" -> "alolan-vulpix")
-    hyphenated = norm.replace(" ", "-")
+    clean_norm = norm.replace("all ", "").strip()
     
-    # 1. Check API dataset (~1025+ base mons)
-    if norm in POKEMON_DATASET or hyphenated in POKEMON_DATASET:
+    if norm in REGIONAL_FORMS or clean_norm in REGIONAL_FORMS:
         return True
-    
-    # 2. Check form group keys
-    if norm in POKEMON_FORMS or hyphenated in POKEMON_FORMS:
+    if norm in POKEMON_DATASET or clean_norm in POKEMON_DATASET:
+        return True
+    if norm in POKEMON_FORMS or clean_norm in POKEMON_FORMS:
         return True
         
-    # 3. Check individual form variant names
     for forms in POKEMON_FORMS.values():
-        if any(norm == f.lower() or hyphenated == f.lower() for f in forms):
+        if any(norm == f.lower() or clean_norm == f.lower() for f in forms):
             return True
-
             
     return False
 
-def parse_pokemon_list(raw_text: str) -> list[str]:
-    """Helper to parse a raw string of comma-separated Pokémon names."""
-    if not raw_text:
-        return []
-    return [m.strip().lower() for m in raw_text.split(",") if m.strip()]
 
-
-
-# Initialize on import
 load_dataset()
