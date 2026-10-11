@@ -3,13 +3,13 @@ from discord.ext import commands
 import re
 
 class Starboard(commands.Cog):
-    def __init__(self, bot, db):
+    def __init__(self, bot):
         self.bot = bot
-        self.db = db
+        # Grabs db automatically from bot instance attached in main.py
+        self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
-        """Generates category-specific aesthetic embeds based on catch details."""
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         gender = f" {data['gender']}" if data.get("gender") else ""
@@ -18,40 +18,17 @@ class Starboard(commands.Cog):
         iv = data.get("iv", "N/A")
         chain = data.get("chain", None)
 
-        # Base layout configurations for each category
         category_themes = {
-            "shiny": {
-                "title": "✨ Shiny Catch Detected! ✨",
-                "color": 0xFFD700  # Gold
-            },
-            "rare": {
-                "title": "🦅 Rare Catch Detected 🦅",
-                "color": 0x9B59B6  # Purple
-            },
-            "regional": {
-                "title": "🌍 Regional Catch Detected 🌍",
-                "color": 0x1ABC9C  # Turquoise
-            },
-            "gmax": {
-                "title": "⚔️ Gmax Catch Detected ⚔️",
-                "color": 0xE74C3C  # Red
-            },
-            "high_iv": {
-                "title": "📈 High IV Catch Detected 📈",
-                "color": 0x2ECC71  # Green
-            },
-            "low_iv": {
-                "title": "📉 Low IV Catch Detected 📉",
-                "color": 0x3498DB  # Blue
-            }
+            "shiny": {"title": "✨ Shiny Catch Detected! ✨", "color": 0xFFD700},
+            "rare": {"title": "🦅 Rare Catch Detected 🦅", "color": 0x9B59B6},
+            "regional": {"title": "🌍 Regional Catch Detected 🌍", "color": 0x1ABC9C},
+            "gmax": {"title": "⚔️ Gmax Catch Detected ⚔️", "color": 0xE74C3C},
+            "high_iv": {"title": "📈 High IV Catch Detected 📈", "color": 0x2ECC71},
+            "low_iv": {"title": "📉 Low IV Catch Detected 📉", "color": 0x3498DB}
         }
 
         theme = category_themes.get(category_key, {"title": "🌟 Starboard Catch Detected!", "color": 0x7289DA})
-        
-        embed = discord.Embed(
-            title=theme["title"],
-            color=theme["color"]
-        )
+        embed = discord.Embed(title=theme["title"], color=theme["color"])
 
         description_lines = [
             f"**Trainer:** {trainer_mention}",
@@ -59,37 +36,26 @@ class Starboard(commands.Cog):
             f"**Level:** {level}",
             f"**IV:** {iv}%"
         ]
-        
         if chain is not None:
             description_lines.append(f"**Chain:** {chain}")
 
         embed.description = "\n".join(description_lines)
-        
         if data.get("sprite_url"):
             embed.set_thumbnail(url=data["sprite_url"])
-
         embed.set_footer(text="Catch Detection System")
         return embed
 
     @commands.group(name="starboard", invoke_without_command=True)
     async def starboard_group(self, ctx):
-
-        """Displays help configuration menu if no subcommand is passed."""
         embed = discord.Embed(
             title="📋 Starboard Configuration Commands List",
             description=(
-                "Link any category to any channel from anywhere using this syntax:\n"
-                "```a!starboard set <category> <#channel_mention or channel_id>```\n\n"
+                "Link any category to any channel:\n"
+                "```a!starboard set <category> <#channel>```\n\n"
                 "**Available Categories:**\n"
-                "• `shiny` - Shiny catches\n"
-                "• `rare` - Legends, Mythicals, Paradox, Gmax Rares\n"
-                "• `high_iv` - High IV catches (>= 90%)\n"
-                "• `low_iv` - Low IV catches (< 10%)\n"
-                "• `regional` - Regional variant catches\n"
-                "• `gmax` - Standard Gigantamax catches\n\n"
-                "**Examples:**\n"
-                "```a!starboard set shiny #shiny-starboard\n"
-                "a!starboard set rare 123456789012345678```"
+                "• `shiny`, `rare`, `high_iv`, `low_iv`, `regional`, `gmax`\n\n"
+                "**Check Current Mappings:**\n"
+                "```a!starboard channel```"
             ),
             color=0x2B2D31
         )
@@ -97,7 +63,6 @@ class Starboard(commands.Cog):
 
     @starboard_group.command(name="set")
     async def set_category_channel(self, ctx, category: str, channel: discord.TextChannel):
-        """Maps a category to a specific server channel."""
         valid_categories = ["shiny", "rare", "high_iv", "low_iv", "regional", "gmax"]
         cat_clean = category.lower()
 
@@ -120,7 +85,6 @@ class Starboard(commands.Cog):
 
     @starboard_group.command(name="channel", aliases=["channels"])
     async def show_channel_mappings(self, ctx):
-        """Shows which starboard categories are set to which channels."""
         config = self.starboard_config.find_one({"guild_id": ctx.guild.id}) or {}
         categories = config.get("categories", {})
 
@@ -152,24 +116,19 @@ class Starboard(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Processes Pokétwo catch confirmation messages for Starboard routing."""
-        if message.author.id != 716390085896962058:  # Pokétwo Bot ID
+        if message.author.id != 716390085896962058:
             return
 
-        # Ensures message contains catch text pattern
         if "Congratulations" not in message.content and "You caught a" not in message.content:
             return
 
-        # Parsing logic for catch details
         content = message.content
         config = self.starboard_config.find_one({"guild_id": message.guild.id}) or {}
         categories = config.get("categories", {})
 
-        # Extract trainer from mention or prompt
         trainer_match = re.search(r"<@!?(\d+)>", content)
         trainer_mention = trainer_match.group(0) if trainer_match else "Trainer"
 
-        # Dynamically extract sprite image URL from embed thumbnail/image
         sprite_url = None
         if message.embeds:
             embed_obj = message.embeds[0]
@@ -178,7 +137,6 @@ class Starboard(commands.Cog):
             elif embed_obj.image:
                 sprite_url = embed_obj.image.url
 
-        # Dummy parse dictionary example (Extend regex parsing according to Pokétwo formats)
         data = {
             "trainer_mention": trainer_mention,
             "pokemon": "Charizard",
@@ -190,12 +148,8 @@ class Starboard(commands.Cog):
             "sprite_url": sprite_url
         }
 
-        # Check conditions to decide category (e.g. shiny)
         is_shiny = "✨" in content or "shiny" in content.lower()
-        
-        target_category = None
-        if is_shiny:
-            target_category = "shiny"
+        target_category = "shiny" if is_shiny else None
 
         if target_category and target_category in categories:
             target_channel_id = categories[target_category]
@@ -203,12 +157,9 @@ class Starboard(commands.Cog):
 
             if target_channel:
                 embed = self.get_category_embed(target_category, data, message.jump_url)
-                
-                # Interactive Jump to Catch button
                 view = discord.ui.View()
                 view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=message.jump_url))
-                
                 await target_channel.send(embed=embed, view=view)
 
-async def setup(bot, db):
-    await bot.add_cog(Starboard(bot, db))
+async def setup(bot):
+    await bot.add_cog(Starboard(bot))
