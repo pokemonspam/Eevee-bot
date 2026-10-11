@@ -131,18 +131,18 @@ class CollectionPaginatorView(discord.ui.View):
 
 # --- Commands Group: Shiny Hunt (A!sh) ---
 @bot.group(name="sh", invoke_without_command=True)
-async def shiny_group(ctx, *, target: str = None):
+async def shiny_group(ctx, *, hunt: str = None):
     # Prevent double execution
     if ctx.invoked_subcommand is not None:
         return
 
     # 1. If user just typed "A!sh" (no arguments)
-    if target is None:
+    if hunt is None:
         data = col_shiny.find_one({"user_id": ctx.author.id})
-        if data and data.get("target"):
+        if data and data.get("hunt"):
             embed = discord.Embed(
                 title="✨ Active Shiny Hunt",
-                description=f"You are currently hunting: **{data['target'].capitalize()}** ✨",
+                description=f"You are currently hunting: **{data['hunt'].capitalize()}** ✨",
                 color=0xFFD700
             )
         else:
@@ -154,26 +154,32 @@ async def shiny_group(ctx, *, target: str = None):
         await ctx.send(embed=embed)
         return
 
-    # 2. Clear target command: "A!sh clear"
-    if target.lower() == "clear":
+    # 2. Clear hunt command: "A!sh clear"
+    if hunt.lower() == "clear":
         col_shiny.delete_one({"user_id": ctx.author.id})
-        await ctx.send(embed=discord.Embed(title="✨ Shiny Target Cleared!", color=0xFFD700))
+        await ctx.send(embed=discord.Embed(title="✨ Shiny Hunt Cleared!", color=0xFFD700))
         return
 
-    # 3. Validate name input
-    valid, clean_name, err_msg = validate_pokemon_name(target)
+    # 3. Block Mega or Gmax specifically for shiny hunts
+    clean_input = hunt.strip().lower()
+    if "mega" in clean_input or "gmax" in clean_input or "gigantamax" in clean_input:
+        await ctx.send("❌ Cannot set Mega or Gigantamax forms for shiny hunts.")
+        return
+
+    # 4. Validate name input
+    valid, clean_name, err_msg = validate_pokemon_name(hunt)
     if not valid:
         await ctx.send(err_msg)
         return
 
-    # 4. Check existing database record
+    # 5. Check existing database record
     existing = col_shiny.find_one({"user_id": ctx.author.id})
 
-    if existing and existing.get("target"):
-        current_target = existing.get("target")
+    if existing and existing.get("hunt"):
+        current_hunt = existing.get("hunt")
 
         # If already hunting the exact same Pokémon
-        if current_target == clean_name:
+        if current_hunt == clean_name:
             await ctx.send(embed=discord.Embed(
                 title="✨ Already Hunting!",
                 description=f"You are already hunting **{clean_name.capitalize()}**!",
@@ -184,22 +190,22 @@ async def shiny_group(ctx, *, target: str = None):
         # If hunting a DIFFERENT Pokémon, ask to switch
         view = ConfirmationView(ctx.author.id)
         msg = await ctx.send(
-            f"⚠️ You are currently hunting **{current_target.capitalize()}**. Do you want to switch to **{clean_name.capitalize()}**?",
+            f"⚠️ You are currently hunting **{current_hunt.capitalize()}**. Do you want to switch to **{clean_name.capitalize()}**?",
             view=view
         )
         await view.wait()
 
         if view.value is True:
-            col_shiny.update_one({"user_id": ctx.author.id}, {"$set": {"target": clean_name}}, upsert=True)
-            await msg.edit(content=f"✅ Changed shiny hunt target to **{clean_name.capitalize()}**! ✨", view=None)
+            col_shiny.update_one({"user_id": ctx.author.id}, {"$set": {"hunt": clean_name}}, upsert=True)
+            await msg.edit(content=f"✅ Changed shiny hunt to **{clean_name.capitalize()}**! ✨", view=None)
         else:
             await msg.edit(content="❌ Switch cancelled.", view=None)
 
     else:
         # NO active hunt set before -> Set immediately without asking to switch!
-        col_shiny.update_one({"user_id": ctx.author.id}, {"$set": {"target": clean_name}}, upsert=True)
+        col_shiny.update_one({"user_id": ctx.author.id}, {"$set": {"hunt": clean_name}}, upsert=True)
         await ctx.send(embed=discord.Embed(
-            title="✨ Shiny Target Set!",
+            title="✨ Shiny Hunt Set!",
             description=f"Now hunting: **{clean_name.capitalize()}**",
             color=0xFFD700
         ))
@@ -383,10 +389,11 @@ async def r_exchange(ctx, mainuser: discord.Member):
 # --- Event Listener: Priority Spawn Pings ---
 @bot.event
 async def on_message(message):
+    # Ignore messages from other bots (except Pokétwo ID: 716390085896962058)
     if message.author.bot and message.author.id != 716390085896962058:
-        await bot.process_commands(message)
         return
 
+    # Pokétwo spawn detection logic
     if message.author.id == 716390085896962058 and "A wild pokémon has appeared!" in message.content:
         spawned_pokemon = "ditto"
         res_data = col_reserves.find_one({"guild_id": message.guild.id}) or {}
@@ -399,10 +406,9 @@ async def on_message(message):
                 f"**Reserve Pings:** {user_mentions}\n"
                 f"**Copy-Command:** `<@716390085896962058> c {spawned_pokemon}`"
             )
-            await bot.process_commands(message)
             return
 
-        shiny_users = [doc["user_id"] for doc in col_shiny.find({"target": spawned_pokemon})]
+        shiny_users = [doc["user_id"] for doc in col_shiny.find({"hunt": spawned_pokemon})]
         collection_users = [doc["user_id"] for doc in col_collection.find({"list": spawned_pokemon})]
         ping_lines = []
         if shiny_users:
@@ -412,6 +418,7 @@ async def on_message(message):
         if ping_lines:
             await message.channel.send("\n".join(ping_lines))
 
+    # Process prefix commands exactly ONCE naturally
     await bot.process_commands(message)
 
 
