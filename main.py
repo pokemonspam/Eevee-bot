@@ -432,27 +432,12 @@ class ClearConfirmView(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-@bot.group(name="r", invoke_without_command=True)
-async def reserve_group(ctx, target: discord.Member = None):
-    # If a user mention or ID is provided directly after A!r
-    if target:
-        user_doc = await reserves_col.find_one({"guild_id": ctx.guild.id, "user_id": target.id})
-        if not user_doc or not user_doc.get("pokemon"):
-            embed = discord.Embed(
-                description=f"🔍 {target.mention} has no reserved Pokémon.",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
-            return
 
-        mons = ", ".join(user_doc["pokemon"])
-        embed = discord.Embed(
-            title=f"📋 Reserves for {target.display_name}",
-            description=f"**Reserved:** {mons}",
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text=f"Total Reserved: {len(user_doc['pokemon'])}")
-        await ctx.send(embed=embed)
+@bot.group(name="r", invoke_without_command=True)
+async def reserve_group(ctx, target: discord.Member = None, page: int = 1):
+    # If a user mention is passed directly after A!r, call reserve_user!
+    if target:
+        await reserve_user(ctx, target=target, page=page)
         return
 
     # Default Help Menu
@@ -478,6 +463,7 @@ async def reserve_group(ctx, target: discord.Member = None):
         color=discord.Color.gold()
     )
     await ctx.send(embed=embed)
+
 
 
 @reserve_group.command(name="list")
@@ -876,7 +862,8 @@ async def reserve_user(ctx, target: discord.Member = None, page: int = 1):
         return
 
     all_pokemon = user_doc["pokemon"]
-    formatted_lines = [f"• {format_pokemon_name(mon)}" for mon in all_pokemon]
+    # Formats vertically with bullet points
+    formatted_lines = [f"• {format_pokemon_name(mon)}" for mon in sorted(all_pokemon)]
 
     title = f"📋 Reserves for {target.display_name}"
     view = ReservePaginationView(ctx.author.id, formatted_lines, title=title, per_page=20)
