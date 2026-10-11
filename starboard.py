@@ -1,6 +1,6 @@
 import discord
 
-# Starboard channel ID mappings (stored dynamically in memory and MongoDB)
+# Starboard channel ID mappings (loaded dynamically from MongoDB)
 starboard_channels = {
     "shiny": None,
     "rare": None,
@@ -20,19 +20,19 @@ class StarboardManager:
         if category in starboard_channels:
             starboard_channels[category] = channel_id
             
-            # Import main inside the function to avoid circular import issues
+            # Import main inside function to avoid circular imports
             import main
             main.GlobalDatabase.save_starboard_config()
 
     @staticmethod
     async def process_starboard(message: discord.Message, category: str):
         """
-        Processes and sends starboard notifications directly to Discord.
+        Formats and sends starboard embeds directly to Discord.
         """
         category = category.lower().strip()
         channel_id = starboard_channels.get(category)
         
-        # If no channel is set for this category, do nothing
+        # Skip if no starboard channel is set for this category
         if not channel_id:
             return
             
@@ -40,31 +40,34 @@ class StarboardManager:
         if not target_channel:
             return
 
-        # Category display title & color formatting
-        category_titles = {
-            "shiny": "✨ Shiny Starboard Alert",
-            "rare": "🌟 Rare Pokémon Catch",
-            "gmax": "💥 Gigantamax Catch",
-            "regional": "🗺️ Regional Variant Catch",
-            "high_iv": "⚡ High IV Catch (90%+)",
-            "low_iv": "💀 Low IV Catch (0%)"
+        # Titles and Embed Colors per category
+        category_metadata = {
+            "shiny": ("✨ Shiny Starboard Alert", discord.Color.gold()),
+            "rare": ("🌟 Rare Pokémon Catch", discord.Color.purple()),
+            "gmax": ("💥 Gigantamax Starboard Alert", discord.Color.red()),
+            "regional": ("🗺️ Regional Form Catch", discord.Color.teal()),
+            "high_iv": ("⚡ High IV Catch (90%+)", discord.Color.green()),
+            "low_iv": ("💀 0% IV Catch", discord.Color.dark_gray())
         }
 
-        embed_title = category_titles.get(category, f"⭐ Starboard Alert: {category.upper()}")
+        title, color = category_metadata.get(
+            category, 
+            (f"⭐ Starboard Alert: {category.upper()}", discord.Color.blue())
+        )
 
         # Build notification embed
         embed = discord.Embed(
-            title=embed_title,
+            title=title,
             description=f"{message.content}\n\n🔗 [Jump to Message]({message.jump_url})",
-            color=discord.Color.gold()
+            color=color
         )
-        embed.set_footer(text=f"Server: {message.guild.name} • Starboard Category: {category}")
+        embed.set_footer(text=f"Server: {message.guild.name} • Category: {category.upper()}")
 
-        # Attach image if Pokétwo provided a sprite attachment
+        # Attach Pokémon image if Pokétwo provided attachments or embeds
         if message.attachments:
             embed.set_image(url=message.attachments[0].url)
         elif message.embeds and message.embeds[0].image:
             embed.set_image(url=message.embeds[0].image.url)
 
-        # Send directly to the designated starboard channel
+        # Post directly to the configured starboard channel
         await target_channel.send(embed=embed)
