@@ -508,10 +508,10 @@ async def reserve_list(ctx, page: int = 1):
                 if user_mention not in mon_to_users[formatted_mon]:
                     mon_to_users[formatted_mon].append(user_mention)
 
-        # Build formatted lines: • Pokémon - @user, @user
+        # Build formatted lines: • Pokémon - @user, @user (Sorted A-Z)
         formatted_lines = [
             f"• **{mon}** - {', '.join(users)}"
-            for mon, users in sorted(mon_to_users.items())
+            for mon, users in sorted(mon_to_users.items(), key=lambda item: item[0].lower())
         ]
 
         view = ReservePaginationView(ctx.author.id, formatted_lines, per_page=20)
@@ -876,7 +876,7 @@ async def reserve_user(ctx, target: discord.Member = None, page: int = 1):
         return
 
     all_pokemon = user_doc["pokemon"]
-    formatted_lines = [f"• {mon}" for mon in all_pokemon]
+    formatted_lines = [f"• {format_pokemon_name(mon)}" for mon in all_pokemon]
 
     title = f"📋 Reserves for {target.display_name}"
     view = ReservePaginationView(ctx.author.id, formatted_lines, title=title, per_page=20)
