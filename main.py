@@ -18,7 +18,7 @@ from dataset import (
 # Setup Bot Client
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix= ("A!","a!") , intents=intents)
+bot = commands.Bot(command_prefix= ("E!","e!") , intents=intents)
 
 # Setup MongoDB
 mongo_url = os.getenv("MONGO_URI")
