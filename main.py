@@ -516,96 +516,141 @@ async def reserve_list(ctx, page: int = 1):
 
 
 @reserve_group.command(name="e")
-async def reserve_exchange(ctx, main_user: discord.Member = None):
-    if not await is_staff(ctx):
+async def reserve_exchange(ctx):
+    # 1. Check if the message is a reply
+    if not ctx.message.reference:
         embed = discord.Embed(
-            description="❌ You do not have permission to exchange reserves.",
+            description="❌ Please reply to a message containing the user list (e.g., `@user - all furfrou, alolan vulpix, pikachu`).",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
         return
 
-    if not main_user:
-        embed = discord.Embed(
-            description="❌ Please specify the main user to exchange reserves with (e.g., `A!r e @User`).",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    if not ctx.message.reference or not ctx.message.reference.message_id:
-        embed = discord.Embed(
-            description="❌ Please **reply to a message** containing the Pokémon list while running this command.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
+    # 2. Fetch the replied message
     try:
         replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
     except Exception:
+        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
+        return
+
+    giver_id = ctx.author.id
+
+    # 3. Check Giver's database entry to see what they actually have reserved
+    giver_doc = await reserves_col.find_one({"guild_id": ctx.guild.id, "user_id": giver_id})
+    giver_pokemon = set(giver_doc.get("pokemon", [])) if giver_doc else set()
+
+    if not giver_pokemon:
         embed = discord.Embed(
-            description="❌ Could not fetch the replied message.",
+            description="❌ You don't have any Pokémon in your reserves to give away.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
         return
 
-    raw_content = replied_msg.content
-    if not raw_content and replied_msg.embeds:
-        raw_content = replied_msg.embeds[0].description or ""
+    # Keep a working copy of the giver's pool so multi-user operations don't double-dip
+    current_giver_pool = set(giver_pokemon)
 
-    if not raw_content:
+    lines = replied_msg.content.split("\n")
+    
+    transfers_made = 0
+    error_report = []
+    total_pulled_mons = [] 
+
+    for line in lines:
+        if not line.strip():
+            continue
+        
+        # Check if line contains user mentions
+        mentioned_users = [m for m in replied_msg.mentions if str(m.id) in line or m.mention in line]
+        if not mentioned_users:
+            continue
+
+        # Extract Pokémon part after the hyphen/colon
+        parts = line.split("-") if "-" in line else line.split(":")
+        if len(parts) < 2:
+            continue
+        
+        pokemon_raw_text = parts[1].strip()
+
+        # Split multiple criteria by commas (e.g., "all furfrou, alolan vulpix, pikachu")
+        criteria_list = [c.strip() for c in pokemon_raw_text.split(",") if c.strip()]
+
+        for user in mentioned_users:
+            user_valid_mons = []
+
+            for criterion in criteria_list:
+                crit_lower = criterion.lower()
+
+                # ✨ Check if item starts with "all " (e.g., "all furfrou")
+                if crit_lower.startswith("all "):
+                    target_species = crit_lower[4:].strip()
+                    matching_mons = [
+                        mon for mon in current_giver_pool 
+                        if target_species in mon.lower() or mon.lower().startswith(target_species)
+                    ]
+                    
+                    if matching_mons:
+                        user_valid_mons.extend(matching_mons)
+                        for m in matching_mons:
+                            current_giver_pool.remove(m)
+                    else:
+                        error_report.append(f"`{criterion}` (for {user.display_name}) - No matching Pokémon found in your reserves")
+                
+                else:
+                    # Regular individual Pokémon or form (e.g., "alolan vulpix", "pikachu")
+                    formatted_mon = format_pokemon_name(criterion)
+                    
+                    if formatted_mon in current_giver_pool:
+                        user_valid_mons.append(formatted_mon)
+                        current_giver_pool.remove(formatted_mon)
+                    elif criterion in current_giver_pool:
+                        user_valid_mons.append(criterion)
+                        current_giver_pool.remove(criterion)
+                    else:
+                        error_report.append(f"`{criterion}` (for {user.display_name}) - Not in your reserves or typed wrong")
+
+            if user_valid_mons:
+                # Add to Receiver DB
+                await reserves_col.update_one(
+                    {"guild_id": ctx.guild.id, "user_id": user.id},
+                    {"$addToSet": {"pokemon": {"$each": user_valid_mons}}},
+                    upsert=True
+                )
+                transfers_made += len(user_valid_mons)
+                total_pulled_mons.extend(user_valid_mons)
+
+    # 4. Perform single bulk remove from Giver if any transfers occurred
+    if total_pulled_mons:
+        await reserves_col.update_one(
+            {"guild_id": ctx.guild.id, "user_id": giver_id},
+            {"$pull": {"pokemon": {"$in": total_pulled_mons}}}
+        )
+
+    # 5. Send final status response showing only what went wrong
+    if transfers_made > 0 and not error_report:
         embed = discord.Embed(
-            description="❌ The replied message contains no text or readable Pokémon.",
+            description=f"✅ Exchange successful! Successfully distributed **{transfers_made}** Pokémon from your reserves.",
+            color=discord.Color.green()
+        )
+    elif transfers_made > 0 and error_report:
+        embed = discord.Embed(
+            description=(
+                f"⚠️ Distributed valid Pokémon (**{transfers_made}** transferred), but encountered some issues:\n\n"
+                f"❌ **What went wrong:**\n• " + "\n• ".join(error_report)
+            ),
+            color=discord.Color.gold()
+        )
+    else:
+        embed = discord.Embed(
+            description=(
+                f"❌ Exchange failed. None of the specified Pokémon could be transferred.\n\n"
+                f"❌ **What went wrong:**\n• " + ("\n• ".join(error_report) if error_report else "No valid entries found in the replied message.")
+            ),
             color=discord.Color.red()
         )
-        await ctx.send(embed=embed)
-        return
 
-    raw_list = [m.strip().lower() for m in raw_content.replace("\n", ",").split(",") if m.strip()]
-    final_mons = []
-
-    for item in raw_list:
-        clean_item = item.replace("all ", "").strip()
-        if validate_species(clean_item):
-            if clean_item in POKEMON_FORMS or item.startswith("all "):
-                forms = get_evolution_family(clean_item)
-                final_mons.extend(forms)
-            else:
-                final_mons.append(format_pokemon_name(clean_item))
-
-    if not final_mons:
-        embed = discord.Embed(
-            description="❌ No valid Pokémon species or forms found in the replied message.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    unique_mons = list(dict.fromkeys(final_mons))
-
-    await reserves_col.update_one(
-        {"guild_id": ctx.guild.id, "user_id": main_user.id},
-        {"$pull": {"pokemon": {"$in": unique_mons}}}
-    )
-
-    await reserves_col.update_one(
-        {"guild_id": ctx.guild.id, "user_id": ctx.author.id},
-        {"$addToSet": {"pokemon": {"$each": unique_mons}}},
-        upsert=True
-    )
-
-    exchanged_str = ", ".join(unique_mons)
-    embed = discord.Embed(
-        title="🔄 Reserve Exchange Successful",
-        description=(
-            f"Transferred **{len(unique_mons)}** Pokémon from {main_user.mention} to {ctx.author.mention}.\n\n"
-            f"**Exchanged Pokémon:**\n{exchanged_str}"
-        ),
-        color=discord.Color.green()
-    )
     await ctx.send(embed=embed)
+
 
 
 @reserve_group.command(name="add")
