@@ -106,12 +106,14 @@ class Starboard(commands.Cog):
         embed = discord.Embed(
             title="📋 Starboard Configuration Commands List",
             description=(
-                "Link any category to any channel:\n"
-                "```a!starboard set <category> <#channel>```\n\n"
+                "**Link category to channel:**\n"
+                "```A!starboard set <category> <#channel>```\n"
+                "**Unlink/Clear a category:**\n"
+                "```A!starboard clear <category>```\n\n"
                 "**Available Categories:**\n"
                 "• `shiny`, `rare`, `high_iv`, `low_iv`, `regional`, `gmax`\n\n"
                 "**Check Current Mappings:**\n"
-                "```a!starboard channel```"
+                "```A!starboard channel```"
             ),
             color=0x2B2D31
         )
@@ -126,7 +128,7 @@ class Starboard(commands.Cog):
             await ctx.send(f"❌ **Invalid Category.** Valid options are: `{', '.join(valid_categories)}`")
             return
 
-        self.starboard_config.update_one(
+        await self.starboard_config.update_one(
             {"guild_id": ctx.guild.id},
             {"$set": {f"categories.{cat_clean}": channel.id}},
             upsert=True
@@ -139,9 +141,31 @@ class Starboard(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    # 🟢 ADDED: Clear / Remove Command
+    @starboard_group.command(name="clear", aliases=["remove", "unset", "delete"])
+    async def clear_category_channel(self, ctx, category: str):
+        valid_categories = ["shiny", "rare", "high_iv", "low_iv", "regional", "gmax"]
+        cat_clean = category.lower()
+
+        if cat_clean not in valid_categories:
+            await ctx.send(f"❌ **Invalid Category.** Valid options are: `{', '.join(valid_categories)}`")
+            return
+
+        await self.starboard_config.update_one(
+            {"guild_id": ctx.guild.id},
+            {"$unset": {f"categories.{cat_clean}": ""}}
+        )
+
+        embed = discord.Embed(
+            title="🗑️ Starboard Category Cleared",
+            description=f"Successfully unlinked and removed **`{cat_clean}`**!",
+            color=0xED4245
+        )
+        await ctx.send(embed=embed)
+
     @starboard_group.command(name="channel", aliases=["channels"])
     async def show_channel_mappings(self, ctx):
-        config = self.starboard_config.find_one({"guild_id": ctx.guild.id}) or {}
+        config = await self.starboard_config.find_one({"guild_id": ctx.guild.id}) or {}
         categories = config.get("categories", {})
 
         category_labels = {
@@ -172,14 +196,14 @@ class Starboard(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.id != 716390085896962058:
+        if not message.guild or message.author.id != 716390085896962058:
             return
 
         if "Congratulations" not in message.content and "You caught a" not in message.content:
             return
 
         content = message.content
-        config = self.starboard_config.find_one({"guild_id": message.guild.id}) or {}
+        config = await self.starboard_config.find_one({"guild_id": message.guild.id}) or {}
         categories = config.get("categories", {})
 
         trainer_match = re.search(r"<@!?(\d+)>", content)
