@@ -9,6 +9,62 @@ class Starboard(commands.Cog):
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
+        # 🦅 Rare Pokémon List (Normalized lowercase for exact/partial matching)
+        self.rare_pokemon = {
+            "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", 
+            "lugia", "ho-oh", "celebi", "regirock", "regice", "registeel", "latias", "latios", 
+            "kyogre", "groudon", "rayquaza", "jirachi", "deoxys", "attack deoxys", "defense deoxys", 
+            "speed deoxys", "uxie", "mesprit", "azelf", "dialga", "palkia", "heatran", "regigigas", 
+            "giratina", "cresselia", "phione", "manaphy", "darkrai", "shaymin", "victini", "cobalion", 
+            "terrakion", "virizion", "tornadus", "thundurus", "reshiram", "zekrom", "landorus", 
+            "kyurem", "keldeo", "meloetta", "pirouette meloetta", "genesect", "yveltal", "diancie", 
+            "hoopa", "volcanion", "type: null", "tapu koko", "tapu lele", "tapu bulu", "tapu fini", 
+            "cosmog", "cosmoem", "solgaleo", "lunala", "nihilego", "buzzwole", "pheromosa", "xurkitree", 
+            "celesteela", "kartana", "guzzlord", "necrozma", "magearna", "marshadow", "poipole", 
+            "naganadel", "stakataka", "blacephalon", "zeraora", "meltan", "kubfu", "zarude", "dada zarude", 
+            "regieleki", "regidrago", "glastrier", "spectrier", "calyrex", "enamorus", "wo-chien", 
+            "chien-pao", "ting-lu", "chi-yu", "okidogi", "munkidori", "feandipiti", "terapagos", 
+            "pecharunt", "zacian", "zamazenta", "eternatus", "melmetal", "galarian articuno", 
+            "galarian moltres", "galarian zapdos"
+        }
+
+        # 🦅 Special "All <Species>" Rare Families
+        self.rare_families = {
+            "arceus", "ogerpon", "xerneas", "zygarde", "silvally", "urshifu", "koraidon", "miraidon"
+        }
+
+        # 🌍 Regional Pokémon List
+        self.regional_pokemon = {
+            # Alolan
+            "alolan ninetales", "alolan vulpix", "alolan geodude", "alolan graveler", "alolan raticate", 
+            "alolan rattata", "alolan persian", "alolan meowth", "alolan exeggutor", "alolan dugtrio", 
+            "alolan diglett", "alolan grimer", "alolan golem", "alolan sandshrew", "alolan sandslash", 
+            "alolan marowak", "alolan raichu", "alolan muk",
+            # Galarian
+            "galarian linoone", "galarian yamask", "galarian slowpoke", "galarian slowbro", "galarian slowking", 
+            "galarian farfetch'd", "galarian rapidash", "galarian ponyta", "galarian mr. mime", "galarian weezing", 
+            "galarian zigzagoon", "galarian corsola", "galarian meowth", "galarian darumaka", "galarian stunfisk", 
+            "galarian darmanitan", "galarian zen darmanitan", "obstagoon", "sirfetch'd", "cursola", 
+            "runerigus", "mr. rime", "perrserker",
+            # Hisuian
+            "hisuian growlithe", "hisuian arcanine", "hisuian electrode", "hisuian voltorb", "hisuian typhlosion", 
+            "hisuian lilligant", "hisuian samurott", "hisuian sneasel", "hisuian decidueye", "hisuian qwilfish", 
+            "hisuian braviary", "hisuian avalugg", "hisuian zoroark", "hisuian zorua", "hisuian sliggoo", 
+            "hisuian goodra", "basculegion", "sneasler", "overqwil",
+            # Paldean
+            "paldean wooper", "combat breed tauros", "blaze breed tauros", "aqua breed tauros"
+        }
+
+    def is_rare(self, pokemon_name: str) -> bool:
+        name_clean = pokemon_name.strip().lower()
+        if name_clean in self.rare_pokemon:
+            return True
+        return any(family in name_clean for family in self.rare_families)
+
+    def is_regional(self, pokemon_name: str) -> bool:
+        name_clean = pokemon_name.strip().lower()
+        return name_clean in self.regional_pokemon
+
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
@@ -137,29 +193,67 @@ class Starboard(commands.Cog):
             elif embed_obj.image:
                 sprite_url = embed_obj.image.url
 
+        # Parse IV % from catch text (e.g., "IV: 92.50%")
+        iv_value = None
+        iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
+        if iv_match:
+            try:
+                iv_value = float(iv_match.group(1))
+            except ValueError:
+                iv_value = None
+
+        # Parse Pokémon Name
+        pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
+        pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Charizard"
+
         data = {
             "trainer_mention": trainer_mention,
-            "pokemon": "Charizard",
+            "pokemon": pokemon_name,
             "gender": "♀",
-            "form": "Shiny Form",
+            "form": "",
             "level": "12",
-            "iv": "45.00",
+            "iv": f"{iv_value:.2f}" if iv_value is not None else "N/A",
             "chain": "506",
             "sprite_url": sprite_url
         }
 
-        is_shiny = "✨" in content or "shiny" in content.lower()
-        target_category = "shiny" if is_shiny else None
+        # Determine target categories
+        detected_categories = []
 
-        if target_category and target_category in categories:
-            target_channel_id = categories[target_category]
-            target_channel = message.guild.get_channel(target_channel_id)
+        # 1. Shiny Detection
+        if "These colors seem unusual..." in content or "✨" in content:
+            detected_categories.append("shiny")
 
-            if target_channel:
-                embed = self.get_category_embed(target_category, data, message.jump_url)
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=message.jump_url))
-                await target_channel.send(embed=embed, view=view)
+        # 2. Gmax Detection
+        if "Woah! It seems that this pokémon has the Gigantamax Factor..." in content:
+            detected_categories.append("gmax")
+
+        # 3. IV Detections
+        if iv_value is not None:
+            if iv_value >= 90.0:
+                detected_categories.append("high_iv")
+            elif iv_value < 10.0:
+                detected_categories.append("low_iv")
+
+        # 4. Regional Detection
+        if self.is_regional(pokemon_name):
+            detected_categories.append("regional")
+
+        # 5. Rare Detection
+        if self.is_rare(pokemon_name):
+            detected_categories.append("rare")
+
+        # Dispatch embeds to matching configured channels
+        for category_key in detected_categories:
+            if category_key in categories:
+                target_channel_id = categories[category_key]
+                target_channel = message.guild.get_channel(target_channel_id)
+
+                if target_channel:
+                    embed = self.get_category_embed(category_key, data, message.jump_url)
+                    view = discord.ui.View()
+                    view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=message.jump_url))
+                    await target_channel.send(embed=embed, view=view)
 
 async def setup(bot):
     await bot.add_cog(Starboard(bot))
