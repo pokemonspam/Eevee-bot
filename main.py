@@ -606,7 +606,7 @@ async def reserve_exchange(ctx, main_user: discord.Member = None):
     # 7. Send final status response showing transferred count and any issues
     if transfers_made > 0 and not error_report:
         embed = discord.Embed(
-            description=f"✅ Exchange successful! Successfully distributed **{transfers_made}** Pokémon from <@{giver_id}>'s reserves.",
+            description=f"✅ Exchange successful!\n Successfully distributed **{transfers_made}** Pokémon from <@{giver_id}>'s reserves.",
             color=discord.Color.green()
         )
     elif transfers_made > 0 and error_report:
