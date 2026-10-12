@@ -477,8 +477,17 @@ async def reserve_list(ctx, page: int = 1):
 
 
 @reserve_group.command(name="e")
-async def reserve_exchange(ctx):
-    # 1. Check if the message is a reply
+async def reserve_exchange(ctx, main_user: discord.Member = None):
+    # 1. Permission Check: Admin or Staff Role required
+    if not await is_staff(ctx):
+        embed = discord.Embed(
+            description="❌ You do not have permission to use staff exchange commands.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    # 2. Check if the message is a reply
     if not ctx.message.reference:
         embed = discord.Embed(
             description="❌ Please reply to a message containing the user list (e.g., `@user - all furfrou, alolan vulpix, pikachu`).",
@@ -487,22 +496,29 @@ async def reserve_exchange(ctx):
         await ctx.send(embed=embed)
         return
 
-    # 2. Fetch the replied message
+    # 3. Fetch the replied message
     try:
         replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
     except Exception:
         await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
         return
 
-    giver_id = ctx.author.id
+    # 4. Determine Giver: If @main_user is provided in command, use them; otherwise default to replied msg author
+    if main_user:
+        giver_id = main_user.id
+    elif replied_msg.author and not replied_msg.author.bot:
+        giver_id = replied_msg.author.id
+    else:
+        giver_id = ctx.author.id
 
-    # 3. Check Giver's database entry to see what they actually have reserved
+    # 5. Check Giver's database entry to see what they actually have reserved
     giver_doc = await reserves_col.find_one({"guild_id": ctx.guild.id, "user_id": giver_id})
     giver_pokemon = set(giver_doc.get("pokemon", [])) if giver_doc else set()
 
     if not giver_pokemon:
+        giver_mention = f"<@{giver_id}>"
         embed = discord.Embed(
-            description="❌ You don't have any Pokémon in your reserves to give away.",
+            description=f"❌ {giver_mention} has no Pokémon in their reserves to give away.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
@@ -533,7 +549,7 @@ async def reserve_exchange(ctx):
         
         pokemon_raw_text = parts[1].strip()
 
-        # Split multiple criteria by commas (e.g., "all furfrou, alolan vulpix, pikachu")
+        # Split multiple criteria by commas (e.g., "eevee, flareon, vaporeon")
         criteria_list = [c.strip() for c in pokemon_raw_text.split(",") if c.strip()]
 
         for user in mentioned_users:
@@ -542,7 +558,7 @@ async def reserve_exchange(ctx):
             for criterion in criteria_list:
                 crit_lower = criterion.lower()
 
-                # ✨ Check if item starts with "all " (e.g., "all furfrou")
+                # Check if item starts with "all " (e.g., "all eevee")
                 if crit_lower.startswith("all "):
                     target_species = crit_lower[4:].strip()
                     matching_mons = [
@@ -555,10 +571,10 @@ async def reserve_exchange(ctx):
                         for m in matching_mons:
                             current_giver_pool.remove(m)
                     else:
-                        error_report.append(f"`{criterion}` (for {user.display_name}) - No matching Pokémon found in your reserves")
+                        error_report.append(f"`{criterion}` (for {user.display_name}) - No matching Pokémon found in <@{giver_id}>'s reserves")
                 
                 else:
-                    # Regular individual Pokémon or form (e.g., "alolan vulpix", "pikachu")
+                    # Regular individual Pokémon or form (e.g., "flareon", "vaporeon")
                     formatted_mon = format_pokemon_name(criterion)
                     
                     if formatted_mon in current_giver_pool:
@@ -568,7 +584,7 @@ async def reserve_exchange(ctx):
                         user_valid_mons.append(criterion)
                         current_giver_pool.remove(criterion)
                     else:
-                        error_report.append(f"`{criterion}` (for {user.display_name}) - Not in your reserves or typed wrong")
+                        error_report.append(f"`{criterion}` (for {user.display_name}) - Not in <@{giver_id}>'s reserves or typed wrong")
 
             if user_valid_mons:
                 # Add to Receiver DB
@@ -580,23 +596,23 @@ async def reserve_exchange(ctx):
                 transfers_made += len(user_valid_mons)
                 total_pulled_mons.extend(user_valid_mons)
 
-    # 4. Perform single bulk remove from Giver if any transfers occurred
+    # 6. Perform single bulk remove from Giver if any transfers occurred
     if total_pulled_mons:
         await reserves_col.update_one(
             {"guild_id": ctx.guild.id, "user_id": giver_id},
             {"$pull": {"pokemon": {"$in": total_pulled_mons}}}
         )
 
-    # 5. Send final status response showing only what went wrong
+    # 7. Send final status response showing transferred count and any issues
     if transfers_made > 0 and not error_report:
         embed = discord.Embed(
-            description=f"✅ Exchange successful! Successfully distributed **{transfers_made}** Pokémon from your reserves.",
+            description=f"✅ Exchange successful! Successfully distributed **{transfers_made}** Pokémon from <@{giver_id}>'s reserves.",
             color=discord.Color.green()
         )
     elif transfers_made > 0 and error_report:
         embed = discord.Embed(
             description=(
-                f"⚠️ Distributed valid Pokémon (**{transfers_made}** transferred), but encountered some issues:\n\n"
+                f"⚠️ Distributed valid Pokémon (**{transfers_made}** transferred from <@{giver_id}>), but encountered some issues:\n\n"
                 f"❌ **What went wrong:**\n• " + "\n• ".join(error_report)
             ),
             color=discord.Color.gold()
@@ -611,6 +627,7 @@ async def reserve_exchange(ctx):
         )
 
     await ctx.send(embed=embed)
+
 
 
 
