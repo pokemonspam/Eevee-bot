@@ -23,7 +23,7 @@ class Starboard(commands.Cog):
             "celesteela", "kartana", "guzzlord", "necrozma", "magearna", "marshadow", "poipole", 
             "naganadel", "stakataka", "blacephalon", "zeraora", "meltan", "kubfu", "zarude", "dada zarude", 
             "regieleki", "regidrago", "glastrier", "spectrier", "calyrex", "enamorus", "wo-chien", 
-            "chien-pao", "ting-lu", "chi-yu", "okidogi", "munkidori", "feandipiti", "terapagos", 
+            "chien-pao", "ting-lu", "chi-yu", "okidogi", "munkidori", "fezandipiti", "terapagos", 
             "pecharunt", "zacian", "zamazenta", "eternatus", "melmetal", "galarian articuno", 
             "galarian moltres", "galarian zapdos"
         }
@@ -202,18 +202,34 @@ class Starboard(commands.Cog):
             except ValueError:
                 iv_value = None
 
+        # Parse Level
+        lvl_match = re.search(r"Level\s+(\d+)", content)
+        level_str = lvl_match.group(1) if lvl_match else "N/A"
+
         # Parse Pokémon Name
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
-        pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Charizard"
+        pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Unknown Pokémon"
+
+        # Parse Gender (♀ or ♂)
+        gender_match = re.search(r"([♀♂])", content)
+        gender_str = gender_match.group(1) if gender_match else ""
+
+        # Parse Form
+        form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
+        form_str = form_match.group(1).strip() if form_match else ""
+
+        # Parse Chain count
+        chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
+        chain_val = chain_match.group(1) if chain_match else None
 
         data = {
             "trainer_mention": trainer_mention,
             "pokemon": pokemon_name,
-            "gender": "♀",
-            "form": "",
-            "level": "12",
+            "gender": gender_str,
+            "form": form_str,
+            "level": level_str,
             "iv": f"{iv_value:.2f}" if iv_value is not None else "N/A",
-            "chain": "506",
+            "chain": chain_val,
             "sprite_url": sprite_url
         }
 
@@ -243,7 +259,7 @@ class Starboard(commands.Cog):
         if self.is_rare(pokemon_name):
             detected_categories.append("rare")
 
-        # Dispatch embeds to matching configured channels
+        # Dispatch embeds to matching configured channels in MongoDB
         for category_key in detected_categories:
             if category_key in categories:
                 target_channel_id = categories[category_key]
