@@ -24,6 +24,12 @@ bot = commands.Bot(command_prefix="A!", intents=intents)
 mongo_url = os.getenv("MONGO_URI")
 mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client["pokemon_bot"]
+bot.db = db
+
+@bot.event
+async def setup_hook():
+    await bot.load_extension("starboard")
+    print("✅ Loaded starboard extension successfully!")
 
 reserves_col = db["reserves"]
 collections_col = db["collections"]
