@@ -68,43 +68,45 @@ async def on_ready():
 
 
 # ==========================================
-# 💤 SLEEPY AI (Hugging Face Vision API Helper)
+# 🧠 HUGGING FACE VISION API HELPER (WITH DEBUGGING)
 # ==========================================
 HF_API_URL = "https://api-inference.huggingface.co/models/merve/pokemon-classifier"
 
 async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
-    """
-    Sleepy AI: Sends spawn image bytes to Hugging Face's serverless inference API.
-    Includes automatic retry logic to handle cold starts (503 model warming up).
-    """
     token = os.getenv("HF_TOKEN")
     if not token:
+        print("❌ ERROR: HF_TOKEN environment variable is missing!")
         return None
 
     headers = {
-        "Authorization": f"Bearer token {token}" if not token.startswith("Bearer ") else token
+        "Authorization": f"Bearer {token.strip()}"
     }
 
+    print(f"🚀 Sending image to Hugging Face API (Token starts with: {token[:6]}...)")
+
     async with aiohttp.ClientSession() as session:
-        for attempt in range(2):  # Try twice to wake up the model if sleeping
-            try:
-                async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=12) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, list) and len(result) > 0:
-                            top_pred = result[0]
-                            confidence = top_pred.get("score", 0.0)
-                            
-                            # Accept prediction if confidence is 40% or higher
-                            if confidence >= 0.40:
-                                raw_name = top_pred.get("label", "").lower()
-                                if validate_species(raw_name):
-                                    return raw_name
-                    elif response.status == 503:
-                        print(f"💤 Sleepy AI is waking up (Attempt {attempt + 1})... waiting 3s...")
-                        await asyncio.sleep(3) # Wait for model to load into memory
-            except Exception as e:
-                print(f"Sleepy AI Error: {e}")
+        try:
+            async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=15) as response:
+                response_text = await response.text()
+                print(f"📥 HF Response Status: {response.status}")
+                print(f"📥 HF Response Body: {response_text}")
+
+                if response.status == 200:
+                    result = await response.json()
+                    if isinstance(result, list) and len(result) > 0:
+                        top_pred = result[0]
+                        confidence = top_pred.get("score", 0.0)
+                        print(f"✅ Prediction: {top_pred.get('label')} ({confidence * 100:.2f}%)")
+                        if confidence >= 0.30:
+                            raw_name = top_pred.get("label", "").lower()
+                            if validate_species(raw_name):
+                                return raw_name
+                elif response.status == 503:
+                    print("💤 Hugging Face model is warming up (503)...")
+                else:
+                    print(f"⚠️ Hugging Face rejected request with status {response.status}")
+        except Exception as e:
+            print(f"❌ Exception during Hugging Face request: {e}")
 
     return None
 
@@ -162,10 +164,10 @@ async def on_message(message: discord.Message):
                                         # Cache for naming bots / catch listeners
                                         bot.recent_spawns[message.channel.id] = spawn_hash_str
 
-                                        # 1. TRY SLEEPY AI (Hugging Face) FIRST
+                                        # 1. TRY HUGGING FACE FIRST
                                         spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
-                                        # 2. If Sleepy AI misses, try modern URL filename parsing
+                                        # 2. If Hugging Face misses, try modern URL filename parsing
                                         if not spawned_pokemon:
                                             url_clean = embed.image.url.split("?")[0]
                                             filename = url_clean.split("/")[-1].lower()
@@ -315,10 +317,10 @@ async def test_spawn(ctx):
                         image_bytes = await resp.read()
                         spawn_hash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
                         
-                        # 1. TRY SLEEPY AI FIRST
+                        # 1. TRY HUGGING FACE FIRST
                         spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
-                        # 2. If Sleepy AI misses, try URL filename parsing
+                        # 2. If Hugging Face misses, try URL filename parsing
                         if not spawned_pokemon:
                             url_clean = embed.image.url.split("?")[0]
                             filename = url_clean.split("/")[-1].lower()
@@ -352,14 +354,14 @@ async def test_spawn(ctx):
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon from image URL, database, or Sleepy AI.",
+            description=f"❌ Could not identify Pokémon from image URL, database, or Hugging Face.",
             color=discord.Color.red()
         ))
         return
 
     formatted_target = format_pokemon_name(spawned_pokemon.lower())
     await ctx.send(embed=discord.Embed(
-        description=f"✅ **Successfully Identified by Sleepy AI!**\n**Pokémon:** {formatted_target}\n**Copy Command:** `@Pokétwo#8236 c {formatted_target.lower()}`",
+        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target}\n**Copy Command:** `@Pokétwo#8236 c {formatted_target.lower()}`",
         color=discord.Color.green()
     ))
 
