@@ -5,7 +5,7 @@ import aiohttp
 import asyncio
 import imagehash
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance
 import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -69,7 +69,7 @@ async def on_ready():
 
 
 # ==========================================
-# 🎨 VISUAL FEATURE EXTRACTOR (COLOR/GRID HISTOGRAM)
+# 🎨 VISUAL FEATURE EXTRACTOR & AUGMENTATION
 # ==========================================
 def extract_visual_features(img: Image.Image):
     img_resized = img.resize((32, 32)).convert("RGB")
@@ -98,6 +98,31 @@ def calculate_color_similarity(vec1, vec2):
     if norm_product == 0:
         return 0.0
     return float(dot_product / norm_product)
+
+def generate_augmented_variants(img: Image.Image):
+    """Generates flipped, brightness/contrast adjusted, and scale variations for robust matching."""
+    variants = []
+    
+    # Base image variant
+    variants.append(img.copy())
+    
+    # 1. Horizontal Flip (Pokétwo often flips sprites)
+    flipped = img.transpose(Image.FLIP_LEFT_RIGHT)
+    variants.append(flipped)
+    
+    # 2. Brightness & Contrast Shifts
+    enhancer_b = ImageEnhance.Brightness(img)
+    variants.append(enhancer_b.enhance(1.15)) # Brighter
+    variants.append(enhancer_b.enhance(0.85)) # Darker
+    
+    enhancer_c = ImageEnhance.Contrast(img)
+    variants.append(enhancer_c.enhance(1.15)) # High contrast
+    
+    # Flipped with brightness adjustment
+    enhancer_fb = ImageEnhance.Brightness(flipped)
+    variants.append(enhancer_fb.enhance(1.1))
+    
+    return variants
 
 
 # ==========================================
@@ -133,7 +158,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# 📚 DUAL-ENGINE EMBED LEARNER (E!learn)
+# 📚 DUAL-ENGINE EMBED LEARNER (E!learn) WITH AUGMENTATION
 # ==========================================
 @bot.command(name="learn")
 async def learn_embed(ctx):
@@ -179,7 +204,6 @@ async def learn_embed(ctx):
         if current_section == "types":
             if line_stripped:
                 types_list.append(line_stripped)
-                # Extract emojis from type line
                 found_emojis = re.findall(r"<a?:[a-zA-Z0-9\_]+:\d+>|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\u2600-\u27bf]", line_stripped)
                 type_emojis.extend(found_emojis)
         elif current_section == "names":
@@ -187,7 +211,6 @@ async def learn_embed(ctx):
                 parts = line_stripped.split()
                 if len(parts) >= 2:
                     alt_name = " ".join(parts[1:])
-                    # Filter out non-English / Japanese characters
                     if re.match(r"^[A-Za-z\s\.\'\-]+$", alt_name):
                         alt_names.append(alt_name)
                     if "🇬🇧" in line_stripped and re.match(r"^[A-Za-z\s\.\'\-]+$", alt_name):
@@ -205,9 +228,7 @@ async def learn_embed(ctx):
             async with session.get(embed.image.url) as resp:
                 if resp.status == 200:
                     image_bytes = await resp.read()
-                    img = Image.open(io.BytesIO(image_bytes))
-                    phash_str = str(imagehash.phash(img))
-                    visual_features = extract_visual_features(img)
+                    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
                 else:
                     await ctx.send(embed=discord.Embed(description="❌ Failed to download sprite image.", color=discord.Color.red()))
                     return
@@ -220,10 +241,17 @@ async def learn_embed(ctx):
         return
 
     formatted_name = format_pokemon_name(pokemon_name.lower())
-
-    # Determine shortest English name for copy command
     all_valid_names = [formatted_name] + alt_names
     shortest_copy_name = min(all_valid_names, key=len).lower()
+
+    # Generate augmented variants for instant robust matching
+    augmented_variants = generate_augmented_variants(img)
+    phashes = []
+    visual_features_list = []
+
+    for var_img in augmented_variants:
+        phashes.append(str(imagehash.phash(var_img)))
+        visual_features_list.append(extract_visual_features(var_img))
 
     await phash_col.update_one(
         {"pokemon": formatted_name.lower()},
@@ -234,31 +262,33 @@ async def learn_embed(ctx):
                 "types": types_list,
                 "type_emojis": list(dict.fromkeys(type_emojis)),
                 "shortest_name": shortest_copy_name,
-                "phash": phash_str,
-                "visual_features": visual_features
+                "phash": phashes[0], # Primary pHash
+                "phashes": phashes, # All augmented pHashes
+                "visual_features": visual_features_list[0], # Primary features
+                "visual_features_list": visual_features_list # All augmented features
             }
         },
         upsert=True
     )
 
     await ctx.send(embed=discord.Embed(
-        title="🧠 Dual-Engine Learning Successful!",
+        title="🧠 Augmented Dual-Engine Learning Successful!",
         description=(
             f"**Pokémon:** {formatted_name}\n"
             f"**Shortest Copy Name:** `{shortest_copy_name}`\n"
             f"**Type Emojis:** {' '.join(type_emojis) if type_emojis else 'None'}\n"
-            f"**pHash & Color Features:** Saved ✅"
+            f"**Augmented Variants Generated:** {len(augmented_variants)} variants (Flips, Brightness, Contrast) ✅"
         ),
         color=discord.Color.green()
     ))
 
 
 # ==========================================
-# ⚡ DUAL-ENGINE MATCHING ENGINE
+# ⚡ DUAL-ENGINE MATCHING ENGINE (WITH ACCURACY SCORE)
 # ==========================================
-async def identify_pokemon_dual_engine(image_bytes: bytes) -> dict:
+async def identify_pokemon_dual_engine(image_bytes: bytes):
     try:
-        spawn_img = Image.open(io.BytesIO(image_bytes))
+        spawn_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         spawn_phash = imagehash.phash(spawn_img)
         spawn_features = extract_visual_features(spawn_img)
 
@@ -269,29 +299,40 @@ async def identify_pokemon_dual_engine(image_bytes: bytes) -> dict:
         async for doc in cursor:
             score = 0.0
             
-            # 1. pHash Score Contribution
-            if "phash" in doc:
-                db_phash = imagehash.hex_to_hash(doc["phash"])
-                phash_dist = spawn_phash - db_phash
-                phash_score = max(0.0, 1.0 - (phash_dist / 20.0))
-                score += phash_score * 0.5
+            # Check against single phash or list of augmented phashes
+            db_phashes = doc.get("phashes", [doc.get("phash")] if "phash" in doc else [])
+            max_phash_score = 0.0
+            for p_str in db_phashes:
+                if p_str:
+                    db_phash = imagehash.hex_to_hash(p_str)
+                    phash_dist = spawn_phash - db_phash
+                    p_score = max(0.0, 1.0 - (phash_dist / 20.0))
+                    if p_score > max_phash_score:
+                        max_phash_score = p_score
+            score += max_phash_score * 0.5
 
-            # 2. Color/Grid Histogram Score Contribution
-            if "visual_features" in doc:
-                color_score = calculate_color_similarity(spawn_features, doc["visual_features"])
-                score += color_score * 0.5
+            # Check against single visual features or list of augmented features
+            db_vf_list = doc.get("visual_features_list", [doc.get("visual_features")] if "visual_features" in doc else [])
+            max_color_score = 0.0
+            for vf in db_vf_list:
+                if vf:
+                    c_score = calculate_color_similarity(spawn_features, vf)
+                    if c_score > max_color_score:
+                        max_color_score = c_score
+            score += max_color_score * 0.5
 
             if score > highest_score:
                 highest_score = score
                 best_doc = doc
 
         if best_doc and highest_score >= 0.10:
-            return best_doc
+            accuracy_pct = int(min(1.0, highest_score) * 100)
+            return best_doc, accuracy_pct
 
     except Exception as e:
         print(f"Dual-engine identification error: {e}")
 
-    return None
+    return None, 0
 
 
 # ==========================================
@@ -341,6 +382,7 @@ async def on_message(message: discord.Message):
                     spawned_pokemon = None
                     shortest_name = None
                     type_emojis = []
+                    accuracy_score = 0
 
                     if embed.image and embed.image.url:
                         try:
@@ -355,29 +397,20 @@ async def on_message(message: discord.Message):
                                             "features": extract_visual_features(spawn_img)
                                         }
 
-                                        # 1. DUAL-ENGINE LOCAL MATCH
-                                        matched_doc = await identify_pokemon_dual_engine(image_bytes)
+                                        # 1. DUAL-ENGINE LOCAL MATCH (No URL Fallback)
+                                        matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
                                         if matched_doc:
                                             spawned_pokemon = matched_doc.get("pokemon")
                                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                                             type_emojis = matched_doc.get("type_emojis", [])
 
-                                        # 2. URL Filename Fallback
+                                        # 2. Hugging Face Fallback if local match fails
                                         if not spawned_pokemon:
-                                            url_clean = embed.image.url.split("?")[0]
-                                            filename = url_clean.split("/")[-1].lower()
-                                            name_part = filename.split(".")[0]
-
-                                            if name_part.isdigit():
-                                                from dataset import get_pokemon_by_id
-                                                spawned_pokemon = get_pokemon_by_id(int(name_part))
-                                            else:
-                                                cleaned_name = name_part.replace("-", " ").replace("_", " ")
-                                                if validate_species(cleaned_name):
-                                                    spawned_pokemon = cleaned_name
-                            
-                            if spawned_pokemon and not shortest_name:
-                                shortest_name = spawned_pokemon.lower()
+                                            hf_result = await identify_pokemon_via_hf(image_bytes)
+                                            if hf_result:
+                                                spawned_pokemon = hf_result
+                                                shortest_name = hf_result.lower()
+                                                accuracy_score = 35 # Base HF confidence approximation
 
                         except Exception as hash_err:
                             print(f"Vision processing error: {hash_err}")
@@ -386,6 +419,8 @@ async def on_message(message: discord.Message):
                         guild_id = message.guild.id
                         target_clean = spawned_pokemon.lower()
                         formatted_target = format_pokemon_name(target_clean)
+                        if not shortest_name:
+                            shortest_name = formatted_target.lower()
 
                         sh_pings = []
                         col_pings = []
@@ -431,7 +466,7 @@ async def on_message(message: discord.Message):
                         only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
                         emojis_str = " ".join(type_emojis) if type_emojis else ""
-                        header_line = f"**{formatted_target}** {emojis_str}".strip()
+                        header_line = f"**{formatted_target}** {emojis_str} : {accuracy_score}%".strip()
 
                         output_lines = [header_line]
                         if sh_pings:
@@ -454,7 +489,7 @@ async def on_message(message: discord.Message):
 
         if message.author.id == VEGETAAAAA_BOT_ID and message.channel.id in bot.recent_spawns:
             content = message.content.strip()
-            match = re.match(r"^([A-Za-z0-9\-\.\'\s]+?)\s*(?:[\:\<]|[\u2600-\u27BF]|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff])", content)
+            match = re.match(r"^([A-Za-z0-9\-\.\'\s]+?)\s*(?:[\:\<]|[\u2600-\u27bf]|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff])", content)
             if match:
                 pokemon_name = match.group(1).strip().title()
             else:
@@ -511,6 +546,7 @@ async def test_spawn(ctx):
     spawned_pokemon = None
     shortest_name = None
     type_emojis = []
+    accuracy_score = 0
 
     if embed.image and embed.image.url:
         try:
@@ -519,24 +555,18 @@ async def test_spawn(ctx):
                     if resp.status == 200:
                         image_bytes = await resp.read()
                         
-                        matched_doc = await identify_pokemon_dual_engine(image_bytes)
+                        matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
                         if matched_doc:
                             spawned_pokemon = matched_doc.get("pokemon")
                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                             type_emojis = matched_doc.get("type_emojis", [])
 
                         if not spawned_pokemon:
-                            url_clean = embed.image.url.split("?")[0]
-                            filename = url_clean.split("/")[-1].lower()
-                            name_part = filename.split(".")[0]
-
-                            if name_part.isdigit():
-                                from dataset import get_pokemon_by_id
-                                spawned_pokemon = get_pokemon_by_id(int(name_part))
-                            else:
-                                cleaned_name = name_part.replace("-", " ").replace("_", " ")
-                                if validate_species(cleaned_name):
-                                    spawned_pokemon = cleaned_name
+                            hf_result = await identify_pokemon_via_hf(image_bytes)
+                            if hf_result:
+                                spawned_pokemon = hf_result
+                                shortest_name = hf_result.lower()
+                                accuracy_score = 35
 
                         if spawned_pokemon and not shortest_name:
                             shortest_name = spawned_pokemon.lower()
@@ -546,7 +576,7 @@ async def test_spawn(ctx):
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon from database or image URL.",
+            description=f"❌ Could not identify Pokémon from local database or Hugging Face.",
             color=discord.Color.red()
         ))
         return
@@ -554,7 +584,7 @@ async def test_spawn(ctx):
     formatted_target = format_pokemon_name(spawned_pokemon.lower())
     emojis_str = " ".join(type_emojis) if type_emojis else ""
     await ctx.send(embed=discord.Embed(
-        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target} {emojis_str}\n**Copy Command:** `@Pokétwo#8236 c {shortest_name}`",
+        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target} {emojis_str} : {accuracy_score}%\n**Copy Command:** `@Pokétwo#8236 c {shortest_name}`",
         color=discord.Color.green()
     ))
 
