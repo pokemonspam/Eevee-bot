@@ -9,6 +9,8 @@ from dataset import (
     parse_pokemon_list,
     format_pokemon_name,
     get_evolution_family,
+    get_pokemon_variants,
+    get_base_pokemon,
     validate_species,
     POKEMON_FORMS,
     REGIONAL_FORMS
@@ -60,74 +62,68 @@ async def on_ready():
 @bot.event
 async def on_message(message: discord.Message):
     # Ensure message is from Pokétwo (ID: 716390085896962058) and in a guild
-    if not message.guild or message.author.id != 716390085896962058:
-        return
+    if message.guild and message.author.id == 716390085896962058:
+        # Check if the message contains an embed for a wild Pokémon spawn
+        if message.embeds:
+            embed = message.embeds[0]
+            if embed.title and "wild pokémon has appeared" in embed.title.lower():
+                spawned_pokemon = None
 
-    # Check if the message contains an embed for a wild Pokémon spawn
-    if not message.embeds:
-        return
+                # 1. Try extracting from Pokétwo's image URL (e.g., .../images/6.png -> 6)
+                if embed.image and embed.image.url:
+                    match = re.search(r'/images/(\d+)\.png', embed.image.url)
+                    if match:
+                        from dataset import POKEMON_DATABASE 
+                        pass
 
-    embed = message.embeds[0]
-    if not embed.title or "wild pokémon has appeared" not in embed.title.lower():
-        return
+                # 2. Fallback / Direct check: Extract from embed description or footer text if Pokétwo layout includes text hints
+                if not spawned_pokemon and embed.description:
+                    pass
+                
+                if spawned_pokemon:
+                    guild_id = message.guild.id
+                    target_clean = spawned_pokemon.lower()
+                    formatted_target = format_pokemon_name(target_clean)
 
-    spawned_pokemon = None
+                    pings_to_send = []
 
-    # 1. Try extracting from Pokétwo's image URL (e.g., .../images/6.png -> 6)
-    if embed.image and embed.image.url:
-        match = re.search(r'/images/(\d+)\.png', embed.image.url)
-        if match:
-            from dataset import POKEMON_DATABASE 
-            pass
+                    # -------------------------------------------------------------
+                    # A. Check Shiny Hunt Pings (E!sh)
+                    # -------------------------------------------------------------
+                    sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                    sh_users = await sh_cursor.to_list(length=100)
+                    for doc in sh_users:
+                        member = message.guild.get_member(doc["user_id"])
+                        if member:
+                            pings_to_send.append(f"✨ {member.mention} (Shiny Hunt)")
 
-    # 2. Fallback / Direct check: Extract from embed description or footer text if Pokétwo layout includes text hints
-    if not spawned_pokemon and embed.description:
-        pass
-    
-    if not spawned_pokemon:
-        return
+                    # -------------------------------------------------------------
+                    # B. Check Collection Pings (E!cl)
+                    # -------------------------------------------------------------
+                    col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                    col_users = await col_cursor.to_list(length=100)
+                    for doc in col_users:
+                        member = message.guild.get_member(doc["user_id"])
+                        if member:
+                            pings_to_send.append(f"📦 {member.mention} (Collection)")
 
-    guild_id = message.guild.id
-    target_clean = spawned_pokemon.lower()
-    formatted_target = format_pokemon_name(target_clean)
+                    # -------------------------------------------------------------
+                    # C. Check Reserves Pings (E!r)
+                    # -------------------------------------------------------------
+                    res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                    res_users = await res_cursor.to_list(length=100)
+                    for doc in res_users:
+                        member = message.guild.get_member(doc["user_id"])
+                        if member:
+                            pings_to_send.append(f"🔒 {member.mention} (Reserved)")
 
-    pings_to_send = []
+                    # Dispatch the pings into the spawn channel if any matches were found
+                    if pings_to_send:
+                        ping_content = f"**Spawn Alert:** `{formatted_target}`\n" + " | ".join(pings_to_send)
+                        await message.channel.send(ping_content)
 
-
-    # -------------------------------------------------------------
-    # A. Check Shiny Hunt Pings (E!sh)
-    # -------------------------------------------------------------
-    sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-    sh_users = await sh_cursor.to_list(length=100)
-    for doc in sh_users:
-        member = message.guild.get_member(doc["user_id"])
-        if member:
-            pings_to_send.append(f"✨ {member.mention} (Shiny Hunt)")
-
-    # -------------------------------------------------------------
-    # B. Check Collection Pings (E!cl)
-    # -------------------------------------------------------------
-    col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-    col_users = await col_cursor.to_list(length=100)
-    for doc in col_users:
-        member = message.guild.get_member(doc["user_id"])
-        if member:
-            pings_to_send.append(f"📦 {member.mention} (Collection)")
-
-    # -------------------------------------------------------------
-    # C. Check Reserves Pings (E!r)
-    # -------------------------------------------------------------
-    res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-    res_users = await res_cursor.to_list(length=100)
-    for doc in res_users:
-        member = message.guild.get_member(doc["user_id"])
-        if member:
-            pings_to_send.append(f"🔒 {member.mention} (Reserved)")
-
-    # Dispatch the pings into the spawn channel if any matches were found
-    if pings_to_send:
-        ping_content = f"**Spawn Alert:** `{formatted_target}`\n" + " | ".join(pings_to_send)
-        await message.channel.send(ping_content)
+    # CRITICAL: Ensures commands like E!sh, E!cl, E!r are processed even with on_message active
+    await bot.process_commands(message)
 
 # --- Interactive Pagination View ---
 class CollectionPaginationView(discord.ui.View):
@@ -329,13 +325,18 @@ async def collection_add(ctx, *, mons: str = None):
         invalid_items = []
 
         for item in raw_list:
-            clean_item = item.replace("all ", "").strip()
+            is_all = item.startswith("all ")
+            clean_item = item[4:].strip() if is_all else item.strip()
             
             if validate_species(clean_item) or validate_species(item):
-                if clean_item in POKEMON_FORMS or item.startswith("all "):
-                    forms = get_evolution_family(clean_item)
+                if is_all:
+                    forms = get_pokemon_variants(clean_item)
                     final_mons.extend(forms)
                     display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in POKEMON_FORMS:
+                    base_name = get_base_pokemon(clean_item)
+                    final_mons.append(base_name)
+                    display_names.append(base_name)
                 elif clean_item in REGIONAL_FORMS:
                     formatted_name = REGIONAL_FORMS[clean_item]
                     final_mons.append(formatted_name)
@@ -392,13 +393,18 @@ async def collection_remove(ctx, *, mons: str = None):
         invalid_items = []
 
         for item in raw_list:
-            clean_item = item.replace("all ", "").strip()
+            is_all = item.startswith("all ")
+            clean_item = item[4:].strip() if is_all else item.strip()
             
             if validate_species(clean_item) or validate_species(item):
-                if clean_item in POKEMON_FORMS or item.startswith("all "):
-                    forms = get_evolution_family(clean_item)
+                if is_all:
+                    forms = get_pokemon_variants(clean_item)
                     final_mons.extend(forms)
                     display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in POKEMON_FORMS:
+                    base_name = get_base_pokemon(clean_item)
+                    final_mons.append(base_name)
+                    display_names.append(base_name)
                 elif clean_item in REGIONAL_FORMS:
                     formatted_name = REGIONAL_FORMS[clean_item]
                     final_mons.append(formatted_name)
@@ -712,18 +718,18 @@ async def reserve_add(ctx, *, args: str = None):
             clean_item = item[4:].strip() if is_all else item.strip()
             
             if validate_species(clean_item) or validate_species(item):
-                if is_all and clean_item in POKEMON_FORMS:
-                    forms = POKEMON_FORMS[clean_item]
+                if is_all:
+                    forms = get_pokemon_variants(clean_item)
                     final_mons.extend(forms)
                     display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in POKEMON_FORMS:
+                    base_name = get_base_pokemon(clean_item)
+                    final_mons.append(base_name)
+                    display_names.append(base_name)
                 elif clean_item in REGIONAL_FORMS:
                     formatted_name = REGIONAL_FORMS[clean_item]
                     final_mons.append(formatted_name)
                     display_names.append(formatted_name)
-                elif clean_item in POKEMON_FORMS:
-                    base_name = POKEMON_FORMS[clean_item][0]
-                    final_mons.append(base_name)
-                    display_names.append(base_name)
                 else:
                     formatted_name = format_pokemon_name(clean_item)
                     final_mons.append(formatted_name)
@@ -795,18 +801,18 @@ async def reserve_remove(ctx, *, args: str = None):
             clean_item = item[4:].strip() if is_all else item.strip()
             
             if validate_species(clean_item) or validate_species(item):
-                if is_all and clean_item in POKEMON_FORMS:
-                    forms = POKEMON_FORMS[clean_item]
+                if is_all:
+                    forms = get_pokemon_variants(clean_item)
                     final_mons.extend(forms)
                     display_names.append(f"All {format_pokemon_name(clean_item)}")
+                elif clean_item in POKEMON_FORMS:
+                    base_name = get_base_pokemon(clean_item)
+                    final_mons.append(base_name)
+                    display_names.append(base_name)
                 elif clean_item in REGIONAL_FORMS:
                     formatted_name = REGIONAL_FORMS[clean_item]
                     final_mons.append(formatted_name)
                     display_names.append(formatted_name)
-                elif clean_item in POKEMON_FORMS:
-                    base_name = POKEMON_FORMS[clean_item][0]
-                    final_mons.append(base_name)
-                    display_names.append(base_name)
                 else:
                     formatted_name = format_pokemon_name(clean_item)
                     final_mons.append(formatted_name)
@@ -858,12 +864,12 @@ async def reserve_search(ctx, *, mon: str = None):
         is_all = mon.startswith("all ")
         clean_mon = mon[4:].strip() if is_all else mon.strip()
 
-        if is_all and clean_mon in POKEMON_FORMS:
-            target_mons = POKEMON_FORMS[clean_mon]
+        if is_all:
+            target_mons = get_pokemon_variants(clean_mon)
+        elif clean_mon in POKEMON_FORMS:
+            target_mons = [get_base_pokemon(clean_mon)]
         elif clean_mon in REGIONAL_FORMS:
             target_mons = [REGIONAL_FORMS[clean_mon]]
-        elif clean_mon in POKEMON_FORMS:
-            target_mons = [POKEMON_FORMS[clean_mon][0]]
         else:
             target_mons = [format_pokemon_name(clean_mon)]
 
