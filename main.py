@@ -1,5 +1,9 @@
 import os
 import re
+import io
+import aiohttp
+import imagehash
+from PIL import Image
 import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -28,6 +32,9 @@ mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client["pokemon_bot"]
 bot.db = db
 
+# Memory cache for active channel spawns to map to naming bot outputs
+bot.recent_spawns = {}
+
 @bot.event
 async def setup_hook():
     await bot.load_extension("starboard")
@@ -38,6 +45,7 @@ collections_col = db["collections"]
 shiny_col = db["shiny_hunts"]
 roles_col = db["staff_roles"]
 settings_col = db["guild_settings"]
+phash_col = db["phash_database"]
 
 
 # Helper: Check Reserve Staff Permissions
@@ -59,19 +67,26 @@ async def on_ready():
 
 
 # ==========================================
-# ⚡ SPAWN PING LISTENER
+# ⚡ DUAL-TIER SPAWN LISTENER & SPY LEARNER
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
     try:
-        # Ensure message is from Pokétwo (ID: 716390085896962058) and in a guild
+        # Ignore own messages
+        if message.author.id == bot.user.id:
+            return
+
+        # -------------------------------------------------------------
+        # 1. POKÉTWO SPAWN CAPTURE (ID: 716390085896962058)
+        # -------------------------------------------------------------
         if message.guild and message.author.id == 716390085896962058:
             if message.embeds:
                 embed = message.embeds[0]
                 if embed.title and "has appeared" in embed.title.lower():
                     spawned_pokemon = None
+                    spawn_hash_str = None
 
-                    # Extract Pokédex ID or slug from the modern image URL format
+                    # A. Try modern URL filename extraction first
                     if embed.image and embed.image.url:
                         url_clean = embed.image.url.split("?")[0]
                         filename = url_clean.split("/")[-1].lower()
@@ -84,6 +99,36 @@ async def on_message(message: discord.Message):
                             cleaned_name = name_part.replace("-", " ").replace("_", " ")
                             if validate_species(cleaned_name):
                                 spawned_pokemon = cleaned_name
+
+                        # B. Compute pHash and cache it for the naming bot to match against
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(embed.image.url) as resp:
+                                    if resp.status == 200:
+                                        image_bytes = await resp.read()
+                                        spawn_img = Image.open(io.BytesIO(image_bytes))
+                                        spawn_hash = imagehash.phash(spawn_img)
+                                        spawn_hash_str = str(spawn_hash)
+                                        
+                                        # Cache for spy listener
+                                        bot.recent_spawns[message.channel.id] = spawn_hash_str
+
+                                        # C. If URL parsing didn't catch it, check MongoDB pHash database via Hamming distance
+                                        if not spawned_pokemon:
+                                            cursor = phash_col.find({})
+                                            lowest_distance = 999
+                                            best_match = None
+                                            async for doc in cursor:
+                                                db_hash = imagehash.hex_to_hash(doc["phash"])
+                                                dist = spawn_hash - db_hash
+                                                if dist < lowest_distance:
+                                                    lowest_distance = dist
+                                                    best_match = doc["pokemon"]
+                                            
+                                            if best_match and lowest_distance <= 12:
+                                                spawned_pokemon = best_match
+                        except Exception as hash_err:
+                            print(f"pHash calculation error: {hash_err}")
 
                     if spawned_pokemon:
                         guild_id = message.guild.id
@@ -134,12 +179,37 @@ async def on_message(message: discord.Message):
 
                         output_lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {formatted_target.lower()}`")
 
-                        # If only_ping_mode is True, require at least one ping category present. If False, always send.
                         has_pings = bool(sh_pings or col_pings or res_pings)
                         if not only_ping_mode or has_pings:
                             await message.channel.send("\n".join(output_lines))
+
+        # -------------------------------------------------------------
+        # 2. SPY & LEARN LISTENER: Vegetaaaaa Bot (ID: 1307910235737948252)
+        # -------------------------------------------------------------
+        VEGETAAAAA_BOT_ID = 1307910235737948252
+
+        if message.author.id == VEGETAAAAA_BOT_ID and message.channel.id in bot.recent_spawns:
+            content = message.content.strip()
+            
+            # Parse output format (e.g., "Ducklett 💧🕊️: 99.87%")
+            match = re.match(r"^([A-Za-z0-9\-\.\'\s]+?)\s*(?:[\:\<]|[\u2600-\u27BF]|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff])", content)
+            if match:
+                pokemon_name = match.group(1).strip().title()
+            else:
+                pokemon_name = content.split()[0].strip().title()
+
+            if pokemon_name and len(pokemon_name) <= 25:
+                spawn_hash_str = bot.recent_spawns[message.channel.id]
+                await phash_col.update_one(
+                    {"pokemon": pokemon_name.lower()},
+                    {"$set": {"pokemon": pokemon_name, "phash": spawn_hash_str}},
+                    upsert=True
+                )
+                print(f"🧠 AUTO-LEARNED: Mapped '{pokemon_name}' -> pHash `{spawn_hash_str}` in MongoDB")
+                del bot.recent_spawns[message.channel.id]
+
     except Exception as e:
-        print(f"Error in spawn listener: {e}")
+        print(f"Error in spawn/spy listener: {e}")
 
     # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
     await bot.process_commands(message)
@@ -184,9 +254,33 @@ async def test_spawn(ctx):
             if validate_species(cleaned_name):
                 spawned_pokemon = cleaned_name
 
+        # Fallback to database pHash check if URL parsing misses
+        if not spawned_pokemon:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(embed.image.url) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+                            spawn_hash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
+                            
+                            cursor = phash_col.find({})
+                            lowest_distance = 999
+                            best_match = None
+                            async for doc in cursor:
+                                db_hash = imagehash.hex_to_hash(doc["phash"])
+                                dist = spawn_hash - db_hash
+                                if dist < lowest_distance:
+                                    lowest_distance = dist
+                                    best_match = doc["pokemon"]
+                            
+                            if best_match and lowest_distance <= 12:
+                                spawned_pokemon = best_match
+            except Exception as e:
+                print(f"Testspawn pHash check error: {e}")
+
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon from image URL: `{embed.image.url if embed.image else 'No Image'}`",
+            description=f"❌ Could not identify Pokémon from image URL or pHash database.",
             color=discord.Color.red()
         ))
         return
@@ -265,7 +359,7 @@ async def onlyping_disable(ctx):
     await ctx.send(embed=embed)
 
 
-# --- Interactive Pagination View ---
+# --- Interactive Pagination Views & Rest of Commands ---
 class CollectionPaginationView(discord.ui.View):
     def __init__(self, user_id, all_pokemon, per_page=20):
         super().__init__(timeout=60)
@@ -1260,7 +1354,7 @@ async def reserve_role_remove(ctx, *, roles_input: str = None):
         desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
 
     embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(desc)
+    await ctx.send(embed=desc)
 
 
 # ==========================================
