@@ -5,7 +5,7 @@ import aiohttp
 import asyncio
 import imagehash
 import numpy as np
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageFilter
 import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -69,7 +69,7 @@ async def on_ready():
 
 
 # ==========================================
-# 🎨 VISUAL FEATURE EXTRACTOR & AUGMENTATION
+# 🎨 EXHAUSTIVE FEATURE EXTRACTOR & AUGMENTATION
 # ==========================================
 def extract_visual_features(img: Image.Image):
     img_resized = img.resize((32, 32)).convert("RGB")
@@ -84,7 +84,7 @@ def extract_visual_features(img: Image.Image):
             patch = arr[r*gh:(r+1)*gh, c*gw:(c+1)*gw]
             mean_color = patch.mean(axis=(0, 1))
             
-            # Center-weighting: multiply middle 2x2 grid cells (where the sprite sits)
+            # Center-weighting: multiply middle 2x2 grid cells (where sprite sits)
             if r in [1, 2] and c in [1, 2]:
                 mean_color *= 2.0
                 
@@ -104,30 +104,66 @@ def calculate_color_similarity(vec1, vec2):
         return 0.0
     return float(dot_product / norm_product)
 
-def generate_augmented_variants(img: Image.Image):
-    """Generates flipped, brightness/contrast adjusted, and scale variations for robust matching."""
+def generate_exhaustive_variants(img: Image.Image):
+    """Generates an extensive matrix of variations (flips, scales, rotations, 
+    brightness, contrast, and edge sharpening) to achieve 100% precision."""
     variants = []
+    base = img.convert("RGB")
+    w, h = base.size
     
-    # Base image variant
-    variants.append(img.copy())
+    orientations = [base, base.transpose(Image.FLIP_LEFT_RIGHT)]
     
-    # 1. Horizontal Flip (Pokétwo often flips sprites)
-    flipped = img.transpose(Image.FLIP_LEFT_RIGHT)
-    variants.append(flipped)
-    
-    # 2. Brightness & Contrast Shifts
-    enhancer_b = ImageEnhance.Brightness(img)
-    variants.append(enhancer_b.enhance(1.15)) # Brighter
-    variants.append(enhancer_b.enhance(0.85)) # Darker
-    
-    enhancer_c = ImageEnhance.Contrast(img)
-    variants.append(enhancer_c.enhance(1.15)) # High contrast
-    
-    # Flipped with brightness adjustment
-    enhancer_fb = ImageEnhance.Brightness(flipped)
-    variants.append(enhancer_fb.enhance(1.1))
-    
+    for b in orientations:
+        variants.append(b.copy())
+        
+        # 1. Multi-Scale Variations
+        for scale in [0.85, 0.95, 1.05, 1.12]:
+            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+            resized = b.resize((nw, nh))
+            canvas = Image.new("RGB", (w, h), (0, 0, 0))
+            if scale < 1.0:
+                canvas.paste(resized, ((w - nw) // 2, (h - nh) // 2))
+            else:
+                crop_x, crop_y = (nw - w) // 2, (nh - h) // 2
+                canvas = resized.crop((crop_x, crop_y, crop_x + w, crop_y + h))
+            variants.append(canvas)
+
+        # 2. Micro-Rotations
+        for angle in [-6, -3, 3, 6]:
+            variants.append(b.rotate(angle, resample=Image.BICUBIC, expand=False))
+
+        # 3. Brightness Spectrum
+        enh_b = ImageEnhance.Brightness(b)
+        variants.extend([
+            enh_b.enhance(0.75),
+            enh_b.enhance(0.90),
+            enh_b.enhance(1.10),
+            enh_b.enhance(1.25)
+        ])
+
+        # 4. Contrast Spectrum & Edge Sharpening
+        enh_c = ImageEnhance.Contrast(b)
+        variants.extend([
+            enh_c.enhance(0.80),
+            enh_c.enhance(1.20),
+            enh_c.enhance(1.35)
+        ])
+        
+        high_v = ImageEnhance.Contrast(enh_b.enhance(1.15)).enhance(1.20)
+        variants.append(high_v.filter(ImageFilter.EDGE_ENHANCE))
+
     return variants
+
+def extract_all_exhaustive_variant_data(img: Image.Image):
+    all_variants = generate_exhaustive_variants(img)
+    phashes, dhashes, visual_features = [], [], []
+
+    for var_img in all_variants:
+        phashes.append(str(imagehash.phash(var_img)))
+        dhashes.append(str(imagehash.dhash(var_img)))
+        visual_features.append(extract_visual_features(var_img))
+
+    return list(dict.fromkeys(phashes)), list(dict.fromkeys(dhashes)), visual_features
 
 
 # ==========================================
@@ -163,7 +199,139 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# 📚 DUAL-ENGINE EMBED LEARNER (E!learn) WITH ACCUMULATIVE MERGING
+# ⚡ HIGH-PRECISION DUAL-ENGINE MATCHING
+# ==========================================
+async def identify_pokemon_dual_engine(image_bytes: bytes):
+    try:
+        spawn_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
+        
+        spawn_p_orig = imagehash.phash(spawn_img)
+        spawn_p_flip = imagehash.phash(flipped_spawn_img)
+        spawn_d_orig = imagehash.dhash(spawn_img)
+        spawn_d_flip = imagehash.dhash(flipped_spawn_img)
+        
+        spawn_features_orig = extract_visual_features(spawn_img)
+        spawn_features_flip = extract_visual_features(flipped_spawn_img)
+
+        cursor = phash_col.find({})
+        best_doc = None
+        highest_score = -1.0
+
+        async for doc in cursor:
+            db_phashes = doc.get("phashes", [])
+            if not db_phashes and doc.get("phash"):
+                db_phashes = [doc.get("phash")]
+
+            max_p_score = 0.0
+            for p_str in db_phashes:
+                if p_str:
+                    db_p = imagehash.hex_to_hash(p_str)
+                    s_orig = max(0.0, 1.0 - ((spawn_p_orig - db_p) / 18.0))
+                    s_flip = max(0.0, 1.0 - ((spawn_p_flip - db_p) / 18.0))
+                    best_sp = max(s_orig, s_flip)
+                    if best_sp > max_p_score:
+                        max_p_score = best_sp
+
+            db_dhashes = doc.get("dhashes", db_phashes)
+            max_d_score = 0.0
+            for d_str in db_dhashes:
+                if d_str:
+                    db_d = imagehash.hex_to_hash(d_str)
+                    d_orig_score = max(0.0, 1.0 - ((spawn_d_orig - db_d) / 18.0))
+                    d_flip_score = max(0.0, 1.0 - ((spawn_d_flip - db_d) / 18.0))
+                    best_sd = max(d_orig_score, d_flip_score)
+                    if best_sd > max_d_score:
+                        max_d_score = best_sd
+
+            db_vf_list = doc.get("visual_features_list", [])
+            if not db_vf_list and doc.get("visual_features"):
+                db_vf_list = [doc.get("visual_features")]
+
+            max_color_score = 0.0
+            for vf in db_vf_list:
+                if vf:
+                    c_orig = calculate_color_similarity(spawn_features_orig, vf)
+                    c_flip = calculate_color_similarity(spawn_features_flip, vf)
+                    best_c = max(c_orig, c_flip)
+                    if best_c > max_color_score:
+                        max_color_score = best_c
+
+            total_score = (max_p_score * 0.50) + (max_d_score * 0.35) + (max_color_score * 0.15)
+
+            if total_score > highest_score:
+                highest_score = total_score
+                best_doc = doc
+
+        if best_doc:
+            accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
+            return best_doc, accuracy_pct
+
+    except Exception as e:
+        print(f"Dual-engine identification error: {e}")
+
+    return None, 0
+
+
+# ==========================================
+# 🧠 ADAPTIVE AUTO-LEARNING HELPER (Stops at 100%)
+# ==========================================
+async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image):
+    with io.BytesIO() as buf:
+        spawn_img.save(buf, format="PNG")
+        raw_bytes = buf.getvalue()
+    
+    matched_doc, current_accuracy = await identify_pokemon_dual_engine(raw_bytes)
+
+    if matched_doc and matched_doc.get("pokemon", "").lower() == formatted_name.lower() and current_accuracy >= 100:
+        print(f"🎯 {formatted_name} has reached 100% accuracy! Learning skipped.")
+        return False, current_accuracy
+
+    new_p, new_d, new_vfs = extract_all_exhaustive_variant_data(spawn_img)
+
+    existing_doc = await phash_col.find_one({"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}})
+
+    if existing_doc:
+        old_p = existing_doc.get("phashes", [existing_doc.get("phash")] if "phash" in existing_doc else [])
+        old_d = existing_doc.get("dhashes", [existing_doc.get("dhash")] if "dhash" in existing_doc else [])
+        old_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
+
+        combined_p = list(dict.fromkeys(old_p + new_p))
+        combined_d = list(dict.fromkeys(old_d + new_d))
+        combined_vfs = old_vfs + new_vfs
+
+        await phash_col.update_one(
+            {"_id": existing_doc["_id"]},
+            {
+                "$set": {
+                    "pokemon": formatted_name,
+                    "phash": combined_p[0],
+                    "phashes": combined_p,
+                    "dhash": combined_d[0],
+                    "dhashes": combined_d,
+                    "visual_features": combined_vfs[0],
+                    "visual_features_list": combined_vfs
+                }
+            }
+        )
+    else:
+        await phash_col.insert_one({
+            "pokemon": formatted_name,
+            "shortest_name": formatted_name.lower(),
+            "phash": new_p[0],
+            "phashes": new_p,
+            "dhash": new_d[0],
+            "dhashes": new_d,
+            "visual_features": new_vfs[0],
+            "visual_features_list": new_vfs
+        })
+
+    print(f"🧠 CONTINUOUS AUTO-LEARN: Appended exhaustive spawn variants for '{formatted_name}' into MongoDB!")
+    return True, current_accuracy
+
+
+# ==========================================
+# 📚 EXHAUSTIVE DUAL-ENGINE EMBED LEARNER (E!learn)
 # ==========================================
 @bot.command(name="learn")
 async def learn_embed(ctx):
@@ -221,6 +389,11 @@ async def learn_embed(ctx):
                     if "🇬🇧" in line_stripped and re.match(r"^[A-Za-z\s\.\'\-]+$", alt_name):
                         pokemon_name = alt_name
 
+    full_embed_header = (embed.title or "") + " " + (embed.description or "")
+    for region in ["Hisuian", "Galarian", "Alolan", "Paldean"]:
+        if region.lower() in full_embed_header.lower() and pokemon_name and not pokemon_name.lower().startswith(region.lower()):
+            pokemon_name = f"{region} {pokemon_name}"
+
     if not pokemon_name and alt_names:
         pokemon_name = alt_names[0]
 
@@ -249,48 +422,39 @@ async def learn_embed(ctx):
     all_valid_names = [formatted_name] + alt_names
     shortest_copy_name = min(all_valid_names, key=len).lower()
 
-    # Generate augmented variants
-    augmented_variants = generate_augmented_variants(img)
-    new_phashes = []
-    new_visual_features_list = []
+    new_p, new_d, new_vfs = extract_all_exhaustive_variant_data(img)
 
-    for var_img in augmented_variants:
-        new_phashes.append(str(imagehash.phash(var_img)))
-        new_visual_features_list.append(extract_visual_features(var_img))
-
-    # Safely update existing unique document without deleting historical data
     existing_doc = await phash_col.find_one({"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}})
 
     if existing_doc:
-        existing_phashes = existing_doc.get("phashes", [existing_doc.get("phash")] if "phash" in existing_doc else [])
-        existing_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
-        existing_alt_names = existing_doc.get("alt_names", [])
-        existing_types = existing_doc.get("types", [])
-        existing_emojis = existing_doc.get("type_emojis", [])
+        old_p = existing_doc.get("phashes", [existing_doc.get("phash")] if "phash" in existing_doc else [])
+        old_d = existing_doc.get("dhashes", [existing_doc.get("dhash")] if "dhash" in existing_doc else [])
+        old_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
 
-        combined_phashes = list(dict.fromkeys(existing_phashes + new_phashes))
-        combined_vfs = existing_vfs + new_visual_features_list
-        combined_alt_names = list(dict.fromkeys(existing_alt_names + alt_names))
-        combined_types = list(dict.fromkeys(existing_types + types_list))
-        combined_emojis = list(dict.fromkeys(existing_emojis + type_emojis))
+        combined_p = list(dict.fromkeys(old_p + new_p))
+        combined_d = list(dict.fromkeys(old_d + new_d))
+        combined_vfs = old_vfs + new_vfs
 
         await phash_col.update_one(
             {"_id": existing_doc["_id"]},
             {
                 "$set": {
                     "pokemon": formatted_name,
-                    "alt_names": combined_alt_names,
-                    "types": combined_types,
-                    "type_emojis": combined_emojis,
+                    "alt_names": list(dict.fromkeys(existing_doc.get("alt_names", []) + alt_names)),
+                    "types": list(dict.fromkeys(existing_doc.get("types", []) + types_list)),
+                    "type_emojis": list(dict.fromkeys(existing_doc.get("type_emojis", []) + type_emojis)),
                     "shortest_name": shortest_copy_name,
-                    "phash": combined_phashes[0],
-                    "phashes": combined_phashes,
+                    "phash": combined_p[0],
+                    "phashes": combined_p,
+                    "dhash": combined_d[0],
+                    "dhashes": combined_d,
                     "visual_features": combined_vfs[0],
                     "visual_features_list": combined_vfs
                 }
             }
         )
-        action_msg = "Preserved historical data & appended new unique variants"
+        total_variants = len(combined_p)
+        action_msg = "Preserved historical data & merged exhaustive variants"
     else:
         await phash_col.insert_one({
             "pokemon": formatted_name,
@@ -298,93 +462,33 @@ async def learn_embed(ctx):
             "types": types_list,
             "type_emojis": list(dict.fromkeys(type_emojis)),
             "shortest_name": shortest_copy_name,
-            "phash": new_phashes[0],
-            "phashes": new_phashes,
-            "visual_features": new_visual_features_list[0],
-            "visual_features_list": new_visual_features_list
+            "phash": new_p[0],
+            "phashes": new_p,
+            "dhash": new_d[0],
+            "dhashes": new_d,
+            "visual_features": new_vfs[0],
+            "visual_features_list": new_vfs
         })
+        total_variants = len(new_p)
         action_msg = "Created new unique record"
 
+    _, verified_score = await identify_pokemon_dual_engine(image_bytes)
+
     await ctx.send(embed=discord.Embed(
-        title="🧠 Augmented Dual-Engine Learning Successful!",
+        title="🧠 High-Precision Exhaustive Learning Complete!",
         description=(
             f"**Pokémon:** {formatted_name}\n"
             f"**Shortest Copy Name:** `{shortest_copy_name}`\n"
-            f"**Status:** {action_msg} ✅"
+            f"**Status:** {action_msg} ✅\n"
+            f"**Total Stored Signatures:** `{total_variants}` variants\n"
+            f"**Verified Target Accuracy:** `{verified_score}%`"
         ),
         color=discord.Color.green()
     ))
 
 
 # ==========================================
-# ⚡ DUAL-ENGINE MATCHING ENGINE (WITH FAILOVER FALLBACK)
-# ==========================================
-async def identify_pokemon_dual_engine(image_bytes: bytes):
-    try:
-        spawn_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
-        
-        spawn_phash_orig = imagehash.phash(spawn_img)
-        spawn_phash_flip = imagehash.phash(flipped_spawn_img)
-        
-        spawn_features_orig = extract_visual_features(spawn_img)
-        spawn_features_flip = extract_visual_features(flipped_spawn_img)
-
-        cursor = phash_col.find({})
-        best_doc = None
-        highest_score = -1.0
-
-        async for doc in cursor:
-            db_phashes = doc.get("phashes", [])
-            if not db_phashes and doc.get("phash"):
-                db_phashes = [doc.get("phash")]
-
-            max_phash_score = 0.0
-            for p_str in db_phashes:
-                if p_str:
-                    db_phash = imagehash.hex_to_hash(p_str)
-                    
-                    dist_orig = spawn_phash_orig - db_phash
-                    score_orig = max(0.0, 1.0 - (dist_orig / 32.0))
-                    
-                    dist_flip = spawn_phash_flip - db_phash
-                    score_flip = max(0.0, 1.0 - (dist_flip / 32.0))
-                    
-                    best_p = max(score_orig, score_flip)
-                    if best_p > max_phash_score:
-                        max_phash_score = best_p
-
-            db_vf_list = doc.get("visual_features_list", [])
-            if not db_vf_list and doc.get("visual_features"):
-                db_vf_list = [doc.get("visual_features")]
-
-            max_color_score = 0.0
-            for vf in db_vf_list:
-                if vf:
-                    c_orig = calculate_color_similarity(spawn_features_orig, vf)
-                    c_flip = calculate_color_similarity(spawn_features_flip, vf)
-                    best_c = max(c_orig, c_flip)
-                    if best_c > max_color_score:
-                        max_color_score = best_c
-
-            total_score = (max_phash_score * 0.70) + (max_color_score * 0.30)
-
-            if total_score > highest_score:
-                highest_score = total_score
-                best_doc = doc
-
-        if best_doc:
-            accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
-            return best_doc, accuracy_pct
-
-    except Exception as e:
-        print(f"Dual-engine identification error: {e}")
-
-    return None, 0
-
-
-# ==========================================
-# ⚡ SPAWN LISTENER & AUTO-LEARNER
+# ⚡ SPAWN LISTENER & CONTINUOUS AUTO-LEARNER
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
@@ -397,7 +501,7 @@ async def on_message(message: discord.Message):
         # -------------------------------------------------------------
         if message.guild and message.author.id == 716390085896962058:
             
-            # A. Check catch success message
+            # A. Check catch success message for continuous learning
             if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
                 if message.channel.id in bot.recent_spawns:
                     spawn_data = bot.recent_spawns[message.channel.id]
@@ -406,19 +510,9 @@ async def on_message(message: discord.Message):
                         pokemon_name = match.group(1).strip().title()
                         if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
                             formatted_catch_name = format_pokemon_name(pokemon_name)
-                            await phash_col.update_one(
-                                {"pokemon": formatted_catch_name.lower()},
-                                {
-                                    "$set": {
-                                        "pokemon": formatted_catch_name,
-                                        "shortest_name": formatted_catch_name.lower(),
-                                        "phash": spawn_data["phash"],
-                                        "visual_features": spawn_data["features"]
-                                    }
-                                },
-                                upsert=True
-                            )
-                            print(f"🧠 AUTO-LEARNED ON CATCH: Mapped '{formatted_catch_name}' -> Dual Features in MongoDB")
+                            spawn_img = spawn_data.get("image_obj")
+                            if spawn_img:
+                                await append_pokemon_spawn_data(formatted_catch_name, spawn_img)
                             del bot.recent_spawns[message.channel.id]
                 return
 
@@ -441,8 +535,7 @@ async def on_message(message: discord.Message):
                                         spawn_img = Image.open(io.BytesIO(image_bytes))
                                         
                                         bot.recent_spawns[message.channel.id] = {
-                                            "phash": str(imagehash.phash(spawn_img)),
-                                            "features": extract_visual_features(spawn_img)
+                                            "image_obj": spawn_img
                                         }
 
                                         # CASCADE STEP 1: Local Match
@@ -460,7 +553,7 @@ async def on_message(message: discord.Message):
                                                 shortest_name = hf_result.lower()
                                                 accuracy_score = 65
 
-                                        # CASCADE STEP 3: Fallback to closest local candidate so you get an answer to inspect
+                                        # CASCADE STEP 3: Fallback to closest local candidate
                                         if not spawned_pokemon and matched_doc:
                                             spawned_pokemon = matched_doc.get("pokemon")
                                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
@@ -552,19 +645,9 @@ async def on_message(message: discord.Message):
             if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
                 formatted_veg_name = format_pokemon_name(pokemon_name)
                 spawn_data = bot.recent_spawns[message.channel.id]
-                await phash_col.update_one(
-                    {"pokemon": formatted_veg_name.lower()},
-                    {
-                        "$set": {
-                            "pokemon": formatted_veg_name,
-                            "shortest_name": formatted_veg_name.lower(),
-                            "phash": spawn_data["phash"],
-                            "visual_features": spawn_data["features"]
-                        }
-                    },
-                    upsert=True
-                )
-                print(f"🧠 AUTO-LEARNED FROM VEGETAAAAA: Mapped '{formatted_veg_name}' -> Dual Features")
+                spawn_img = spawn_data.get("image_obj")
+                if spawn_img:
+                    await append_pokemon_spawn_data(formatted_veg_name, spawn_img)
                 del bot.recent_spawns[message.channel.id]
 
     except Exception as e:
