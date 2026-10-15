@@ -244,6 +244,13 @@ def parse_pokemon_list(raw_text: str) -> list[str]:
         return []
     return [m.strip().lower() for m in raw_text.split(",") if m.strip()]
 
+def get_pokemon_by_id(dex_id: int) -> str:
+    """Fetches a Pokémon name by its Pokédex ID number."""
+    if 0 <= dex_id - 1 < len(POKEMON_DATASET):
+        species_list = sorted(list(POKEMON_DATASET))
+        return species_list[dex_id - 1].title()
+    return None
+
 
 # Initialize dataset loading on import
 load_dataset()
