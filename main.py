@@ -68,45 +68,33 @@ async def on_ready():
 
 
 # ==========================================
-# 🧠 HUGGING FACE VISION API HELPER (WITH DEBUGGING)
+# 🧠 HUGGING FACE VISION API HELPER (OPTIONAL FALLBACK)
 # ==========================================
 HF_API_URL = "https://api-inference.huggingface.co/models/merve/pokemon-classifier"
 
 async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
     token = os.getenv("HF_TOKEN")
     if not token:
-        print("❌ ERROR: HF_TOKEN environment variable is missing!")
         return None
 
     headers = {
         "Authorization": f"Bearer {token.strip()}"
     }
 
-    print(f"🚀 Sending image to Hugging Face API (Token starts with: {token[:6]}...)")
-
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=15) as response:
-                response_text = await response.text()
-                print(f"📥 HF Response Status: {response.status}")
-                print(f"📥 HF Response Body: {response_text}")
-
+            async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=10) as response:
                 if response.status == 200:
                     result = await response.json()
                     if isinstance(result, list) and len(result) > 0:
                         top_pred = result[0]
                         confidence = top_pred.get("score", 0.0)
-                        print(f"✅ Prediction: {top_pred.get('label')} ({confidence * 100:.2f}%)")
                         if confidence >= 0.30:
                             raw_name = top_pred.get("label", "").lower()
                             if validate_species(raw_name):
                                 return raw_name
-                elif response.status == 503:
-                    print("💤 Hugging Face model is warming up (503)...")
-                else:
-                    print(f"⚠️ Hugging Face rejected request with status {response.status}")
-        except Exception as e:
-            print(f"❌ Exception during Hugging Face request: {e}")
+        except Exception:
+            pass # Fail silently so local database takes over cleanly
 
     return None
 
@@ -164,10 +152,21 @@ async def on_message(message: discord.Message):
                                         # Cache for naming bots / catch listeners
                                         bot.recent_spawns[message.channel.id] = spawn_hash_str
 
-                                        # 1. TRY HUGGING FACE FIRST
-                                        spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
+                                        # 1. TRY LOCAL MONGODB pHash DATABASE FIRST (Fast & Reliable)
+                                        cursor = phash_col.find({})
+                                        lowest_distance = 999
+                                        best_match = None
+                                        async for doc in cursor:
+                                            db_hash = imagehash.hex_to_hash(doc["phash"])
+                                            dist = spawn_hash - db_hash
+                                            if dist < lowest_distance:
+                                                lowest_distance = dist
+                                                best_match = doc["pokemon"]
+                                        
+                                        if best_match and lowest_distance <= 12:
+                                            spawned_pokemon = best_match
 
-                                        # 2. If Hugging Face misses, try modern URL filename parsing
+                                        # 2. If Database misses, try modern URL filename parsing
                                         if not spawned_pokemon:
                                             url_clean = embed.image.url.split("?")[0]
                                             filename = url_clean.split("/")[-1].lower()
@@ -181,20 +180,9 @@ async def on_message(message: discord.Message):
                                                 if validate_species(cleaned_name):
                                                     spawned_pokemon = cleaned_name
 
-                                        # 3. If URL parsing misses, try MongoDB pHash database via Hamming distance
+                                        # 3. If URL parsing misses, try Hugging Face as last resort
                                         if not spawned_pokemon:
-                                            cursor = phash_col.find({})
-                                            lowest_distance = 999
-                                            best_match = None
-                                            async for doc in cursor:
-                                                db_hash = imagehash.hex_to_hash(doc["phash"])
-                                                dist = spawn_hash - db_hash
-                                                if dist < lowest_distance:
-                                                    lowest_distance = dist
-                                                    best_match = doc["pokemon"]
-                                            
-                                            if best_match and lowest_distance <= 12:
-                                                spawned_pokemon = best_match
+                                            spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
                         except Exception as hash_err:
                             print(f"pHash/Vision processing error: {hash_err}")
@@ -317,10 +305,21 @@ async def test_spawn(ctx):
                         image_bytes = await resp.read()
                         spawn_hash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
                         
-                        # 1. TRY HUGGING FACE FIRST
-                        spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
+                        # 1. TRY LOCAL MONGODB DATABASE FIRST
+                        cursor = phash_col.find({})
+                        lowest_distance = 999
+                        best_match = None
+                        async for doc in cursor:
+                            db_hash = imagehash.hex_to_hash(doc["phash"])
+                            dist = spawn_hash - db_hash
+                            if dist < lowest_distance:
+                                lowest_distance = dist
+                                best_match = doc["pokemon"]
+                        
+                        if best_match and lowest_distance <= 12:
+                            spawned_pokemon = best_match
 
-                        # 2. If Hugging Face misses, try URL filename parsing
+                        # 2. If Database misses, try URL filename parsing
                         if not spawned_pokemon:
                             url_clean = embed.image.url.split("?")[0]
                             filename = url_clean.split("/")[-1].lower()
@@ -334,27 +333,16 @@ async def test_spawn(ctx):
                                 if validate_species(cleaned_name):
                                     spawned_pokemon = cleaned_name
 
-                        # 3. If URL parsing misses, try MongoDB pHash database check
+                        # 3. If URL parsing misses, try Hugging Face fallback
                         if not spawned_pokemon:
-                            cursor = phash_col.find({})
-                            lowest_distance = 999
-                            best_match = None
-                            async for doc in cursor:
-                                db_hash = imagehash.hex_to_hash(doc["phash"])
-                                dist = spawn_hash - db_hash
-                                if dist < lowest_distance:
-                                    lowest_distance = dist
-                                    best_match = doc["pokemon"]
-                            
-                            if best_match and lowest_distance <= 12:
-                                spawned_pokemon = best_match
+                            spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
         except Exception as e:
             print(f"Testspawn check error: {e}")
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon from image URL, database, or Hugging Face.",
+            description=f"❌ Could not identify Pokémon from database or image URL.",
             color=discord.Color.red()
         ))
         return
