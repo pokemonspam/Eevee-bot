@@ -273,7 +273,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes) -> str:
                 highest_score = score
                 best_match = doc["pokemon"]
 
-        if best_match and highest_score >= 0.60:
+        if best_match and highest_score >= 0.10:
             return best_match
 
     except Exception as e:
@@ -1580,7 +1580,7 @@ async def reserve_role_remove(ctx, *, roles_input: str = None):
         desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
 
     embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(embed=desc)
+    await ctx.send(desc=desc)
 
 
 # ==========================================
