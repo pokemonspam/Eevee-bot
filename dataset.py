@@ -200,6 +200,26 @@ def get_evolution_family(species: str) -> list[str]:
     return [format_pokemon_name(species)]
 
 
+def get_pokemon_variants(species: str) -> list[str]:
+    """Returns all forms/variants for a given Pokémon, or just the formatted name if none exist."""
+    norm = normalize_name(species).replace("all ", "").strip()
+    if norm in POKEMON_FORMS:
+        return POKEMON_FORMS[norm]
+    if norm in REGIONAL_FORMS:
+        return [REGIONAL_FORMS[norm]]
+    return [format_pokemon_name(species)]
+
+
+def get_base_pokemon(species: str) -> str:
+    """Returns the primary/base form name for a given Pokémon form entry."""
+    norm = normalize_name(species).strip()
+    if norm in POKEMON_FORMS:
+        return POKEMON_FORMS[norm][0]
+    if norm in REGIONAL_FORMS:
+        return REGIONAL_FORMS[norm]
+    return format_pokemon_name(species)
+
+
 def validate_species(name: str) -> bool:
     norm = normalize_name(name)
     clean_norm = norm.replace("all ", "").strip()
