@@ -68,17 +68,22 @@ async def on_message(message: discord.Message):
         if message.guild and message.author.id == 716390085896962058:
             if message.embeds:
                 embed = message.embeds[0]
-                # Updated title check to handle fled messages where "has appeared" is present
                 if embed.title and "has appeared" in embed.title.lower():
                     spawned_pokemon = None
 
-                    # Extract Pokédex ID directly from Pokétwo's image URL (e.g., .../images/25.png -> 25)
+                    # Extract Pokédex ID or slug from the modern image URL format
                     if embed.image and embed.image.url:
-                        match = re.search(r'(?:/images/|/)(\d+)(?:\.png|\?)', embed.image.url)
-                        if match:
-                            dex_id = int(match.group(1))
+                        url_clean = embed.image.url.split("?")[0]
+                        filename = url_clean.split("/")[-1].lower()
+                        name_part = filename.split(".")[0]
+
+                        if name_part.isdigit():
                             from dataset import get_pokemon_by_id
-                            spawned_pokemon = get_pokemon_by_id(dex_id)
+                            spawned_pokemon = get_pokemon_by_id(int(name_part))
+                        else:
+                            cleaned_name = name_part.replace("-", " ").replace("_", " ")
+                            if validate_species(cleaned_name):
+                                spawned_pokemon = cleaned_name
 
                     if spawned_pokemon:
                         guild_id = message.guild.id
@@ -138,6 +143,59 @@ async def on_message(message: discord.Message):
 
     # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
     await bot.process_commands(message)
+
+
+# ==========================================
+# 🧪 TEST SPAWN COMMAND (E!testspawn)
+# ==========================================
+@bot.command(name="testspawn")
+async def test_spawn(ctx):
+    if not ctx.message.reference:
+        embed = discord.Embed(
+            description="❌ Please reply to an existing Pokétwo spawn message to test it.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    try:
+        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    except Exception:
+        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
+        return
+
+    if not replied_msg.embeds:
+        await ctx.send(embed=discord.Embed(description="❌ The replied message does not contain an embed.", color=discord.Color.red()))
+        return
+
+    embed = replied_msg.embeds[0]
+    spawned_pokemon = None
+
+    if embed.image and embed.image.url:
+        url_clean = embed.image.url.split("?")[0]
+        filename = url_clean.split("/")[-1].lower()
+        name_part = filename.split(".")[0]
+
+        if name_part.isdigit():
+            from dataset import get_pokemon_by_id
+            spawned_pokemon = get_pokemon_by_id(int(name_part))
+        else:
+            cleaned_name = name_part.replace("-", " ").replace("_", " ")
+            if validate_species(cleaned_name):
+                spawned_pokemon = cleaned_name
+
+    if not spawned_pokemon:
+        await ctx.send(embed=discord.Embed(
+            description=f"❌ Could not identify Pokémon from image URL: `{embed.image.url if embed.image else 'No Image'}`",
+            color=discord.Color.red()
+        ))
+        return
+
+    formatted_target = format_pokemon_name(spawned_pokemon.lower())
+    await ctx.send(embed=discord.Embed(
+        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target}\n**Copy Command:** `@Pokétwo#8236 c {formatted_target.lower()}`",
+        color=discord.Color.green()
+    ))
 
 
 # ==========================================
