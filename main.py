@@ -56,36 +56,66 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
     await bot.change_presence(activity=discord.Game(name="E!sh | E!cl | E!r"))
 
-# ==========================================
+
+    # ==========================================
 # ⚡ SPAWN PING LISTENER
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
     # Ensure message is from Pokétwo (ID: 716390085896962058) and in a guild
     if message.guild and message.author.id == 716390085896962058:
-        # Check if the message contains an embed for a wild Pokémon spawn
         if message.embeds:
             embed = message.embeds[0]
             if embed.title and "wild pokémon has appeared" in embed.title.lower():
                 spawned_pokemon = None
 
-                # 1. Try extracting from Pokétwo's image URL (e.g., .../images/6.png -> 6)
+                # Extract Pokédex ID directly from Pokétwo's image URL (e.g., .../images/25.png -> 25)
                 if embed.image and embed.image.url:
                     match = re.search(r'/images/(\d+)\.png', embed.image.url)
                     if match:
-                        from dataset import POKEMON_DATABASE 
-                        pass
+                        dex_id = int(match.group(1))
+                        from dataset import get_pokemon_by_id
+                        spawned_pokemon = get_pokemon_by_id(dex_id)
 
-                # 2. Fallback / Direct check: Extract from embed description or footer text if Pokétwo layout includes text hints
-                if not spawned_pokemon and embed.description:
-                    pass
-                
                 if spawned_pokemon:
                     guild_id = message.guild.id
                     target_clean = spawned_pokemon.lower()
                     formatted_target = format_pokemon_name(target_clean)
 
                     pings_to_send = []
+
+                    # A. Check Shiny Hunt Pings (E!sh)
+                    sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                    sh_users = await sh_cursor.to_list(length=100)
+                    for doc in sh_users:
+                        member = message.guild.get_member(doc["user_id"])
+                        if member:
+                            pings_to_send.append(f"✨ {member.mention} (Shiny Hunt)")
+
+                    # B. Check Collection Pings (E!cl)
+                    col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                    col_users = await col_cursor.to_list(length=100)
+                    for doc in col_users:
+                        member = message.guild.get_member(doc["user_id"])
+                        if member:
+                            pings_to_send.append(f"📦 {member.mention} (Collection)")
+
+                    # C. Check Reserves Pings (E!r)
+                    res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                    res_users = await res_cursor.to_list(length=100)
+                    for doc in res_users:
+                        member = message.guild.get_member(doc["user_id"])
+                        if member:
+                            pings_to_send.append(f"🔒 {member.mention} (Reserved)")
+
+                    # Dispatch the pings into the spawn channel if any matches were found
+                    if pings_to_send:
+                        ping_content = f"**Spawn Alert:** `{formatted_target}`\n" + " | ".join(pings_to_send)
+                        await message.channel.send(ping_content)
+
+    # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
+    await bot.process_commands(message)
+
 
                     # -------------------------------------------------------------
                     # A. Check Shiny Hunt Pings (E!sh)
