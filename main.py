@@ -67,6 +67,46 @@ async def on_ready():
 
 
 # ==========================================
+# 🧠 HUGGING FACE CLOUD VISION API HELPER
+# ==========================================
+HF_API_URL = "https://api-inference.huggingface.co/models/merve/pokemon-classifier"
+
+async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
+    """
+    Sends spawn image bytes to Hugging Face's free serverless inference API 
+    and returns the predicted Pokémon name.
+    """
+    token = os.getenv("HF_TOKEN")
+    if not token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=10) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if isinstance(result, list) and len(result) > 0:
+                        top_pred = result[0]
+                        confidence = top_pred.get("score", 0.0)
+                        
+                        # If confidence is 50% or higher, accept prediction
+                        if confidence >= 0.50:
+                            raw_name = top_pred.get("label", "").lower()
+                            if validate_species(raw_name):
+                                return raw_name
+                elif response.status == 503:
+                    print("Hugging Face model is warming up on cloud server...")
+        except Exception as e:
+            print(f"Vision API Error: {e}")
+
+    return None
+
+
+# ==========================================
 # ⚡ DUAL-TIER SPAWN LISTENER & SPY LEARNER
 # ==========================================
 @bot.event
@@ -113,7 +153,7 @@ async def on_message(message: discord.Message):
                                         # Cache for spy listener
                                         bot.recent_spawns[message.channel.id] = spawn_hash_str
 
-                                        # C. If URL parsing didn't catch it, check MongoDB pHash database via Hamming distance
+                                        # C. If URL parsing missed, try MongoDB pHash database via Hamming distance
                                         if not spawned_pokemon:
                                             cursor = phash_col.find({})
                                             lowest_distance = 999
@@ -127,8 +167,14 @@ async def on_message(message: discord.Message):
                                             
                                             if best_match and lowest_distance <= 12:
                                                 spawned_pokemon = best_match
+
+                                        # D. If still not found, fallback to Hugging Face Cloud Vision API
+                                        if not spawned_pokemon:
+                                            hf_result = await identify_pokemon_via_hf(image_bytes)
+                                            if hf_result:
+                                                spawned_pokemon = hf_result
                         except Exception as hash_err:
-                            print(f"pHash calculation error: {hash_err}")
+                            print(f"pHash/Vision processing error: {hash_err}")
 
                     if spawned_pokemon:
                         guild_id = message.guild.id
@@ -254,7 +300,7 @@ async def test_spawn(ctx):
             if validate_species(cleaned_name):
                 spawned_pokemon = cleaned_name
 
-        # Fallback to database pHash check if URL parsing misses
+        # Fallback to database pHash check and Hugging Face Vision API if URL parsing misses
         if not spawned_pokemon:
             try:
                 async with aiohttp.ClientSession() as session:
@@ -275,12 +321,17 @@ async def test_spawn(ctx):
                             
                             if best_match and lowest_distance <= 12:
                                 spawned_pokemon = best_match
+
+                            if not spawned_pokemon:
+                                hf_result = await identify_pokemon_via_hf(image_bytes)
+                                if hf_result:
+                                    spawned_pokemon = hf_result
             except Exception as e:
-                print(f"Testspawn pHash check error: {e}")
+                print(f"Testspawn check error: {e}")
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon from image URL or pHash database.",
+            description=f"❌ Could not identify Pokémon from image URL, database, or Vision API.",
             color=discord.Color.red()
         ))
         return
