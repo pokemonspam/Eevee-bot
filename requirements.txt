@@ -8,3 +8,14 @@ python-levenshtein
 aiohttp
 motor
 pymongo
+Pillow
+imagehash
+torch
+torchvision
+transformers
+Pillow
+imagehash
+torch
+torchvision
+transformers
+
