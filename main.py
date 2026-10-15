@@ -159,6 +159,7 @@ async def learn_embed(ctx):
     pokemon_name = None
     alt_names = []
     types_list = []
+    type_emojis = []
 
     lines = embed_text.split("\n")
     current_section = None
@@ -178,13 +179,18 @@ async def learn_embed(ctx):
         if current_section == "types":
             if line_stripped:
                 types_list.append(line_stripped)
+                # Extract emojis from type line
+                found_emojis = re.findall(r"<a?:[a-zA-Z0-9\_]+:\d+>|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\u2600-\u27bf]", line_stripped)
+                type_emojis.extend(found_emojis)
         elif current_section == "names":
             if any(flag in line_stripped for flag in ["🇯🇵", "🇬🇧", "🇩🇪", "🇫🇷", "🇪🇸"]):
                 parts = line_stripped.split()
                 if len(parts) >= 2:
                     alt_name = " ".join(parts[1:])
-                    alt_names.append(alt_name)
-                    if "🇬🇧" in line_stripped:
+                    # Filter out non-English / Japanese characters
+                    if re.match(r"^[A-Za-z\s\.\'\-]+$", alt_name):
+                        alt_names.append(alt_name)
+                    if "🇬🇧" in line_stripped and re.match(r"^[A-Za-z\s\.\'\-]+$", alt_name):
                         pokemon_name = alt_name
 
     if not pokemon_name and alt_names:
@@ -215,6 +221,10 @@ async def learn_embed(ctx):
 
     formatted_name = format_pokemon_name(pokemon_name.lower())
 
+    # Determine shortest English name for copy command
+    all_valid_names = [formatted_name] + alt_names
+    shortest_copy_name = min(all_valid_names, key=len).lower()
+
     await phash_col.update_one(
         {"pokemon": formatted_name.lower()},
         {
@@ -222,6 +232,8 @@ async def learn_embed(ctx):
                 "pokemon": formatted_name,
                 "alt_names": alt_names,
                 "types": types_list,
+                "type_emojis": list(dict.fromkeys(type_emojis)),
+                "shortest_name": shortest_copy_name,
                 "phash": phash_str,
                 "visual_features": visual_features
             }
@@ -233,9 +245,9 @@ async def learn_embed(ctx):
         title="🧠 Dual-Engine Learning Successful!",
         description=(
             f"**Pokémon:** {formatted_name}\n"
-            f"**pHash & Color Features:** Saved ✅\n"
-            f"**Types:** {', '.join(types_list) if types_list else 'Unknown'}\n"
-            f"**Alternate Names:** {', '.join(alt_names) if alt_names else 'None'}"
+            f"**Shortest Copy Name:** `{shortest_copy_name}`\n"
+            f"**Type Emojis:** {' '.join(type_emojis) if type_emojis else 'None'}\n"
+            f"**pHash & Color Features:** Saved ✅"
         ),
         color=discord.Color.green()
     ))
@@ -244,14 +256,14 @@ async def learn_embed(ctx):
 # ==========================================
 # ⚡ DUAL-ENGINE MATCHING ENGINE
 # ==========================================
-async def identify_pokemon_dual_engine(image_bytes: bytes) -> str:
+async def identify_pokemon_dual_engine(image_bytes: bytes) -> dict:
     try:
         spawn_img = Image.open(io.BytesIO(image_bytes))
         spawn_phash = imagehash.phash(spawn_img)
         spawn_features = extract_visual_features(spawn_img)
 
         cursor = phash_col.find({})
-        best_match = None
+        best_doc = None
         highest_score = -1.0
 
         async for doc in cursor:
@@ -271,10 +283,10 @@ async def identify_pokemon_dual_engine(image_bytes: bytes) -> str:
 
             if score > highest_score:
                 highest_score = score
-                best_match = doc["pokemon"]
+                best_doc = doc
 
-        if best_match and highest_score >= 0.10:
-            return best_match
+        if best_doc and highest_score >= 0.10:
+            return best_doc
 
     except Exception as e:
         print(f"Dual-engine identification error: {e}")
@@ -310,6 +322,7 @@ async def on_message(message: discord.Message):
                                 {
                                     "$set": {
                                         "pokemon": formatted_catch_name,
+                                        "shortest_name": formatted_catch_name.lower(),
                                         "phash": spawn_data["phash"],
                                         "visual_features": spawn_data["features"]
                                     }
@@ -324,7 +337,10 @@ async def on_message(message: discord.Message):
             if message.embeds:
                 embed = message.embeds[0]
                 if embed.title and "has appeared" in embed.title.lower():
+                    matched_doc = None
                     spawned_pokemon = None
+                    shortest_name = None
+                    type_emojis = []
 
                     if embed.image and embed.image.url:
                         try:
@@ -334,14 +350,17 @@ async def on_message(message: discord.Message):
                                         image_bytes = await resp.read()
                                         spawn_img = Image.open(io.BytesIO(image_bytes))
                                         
-                                        # Cache image data for catch auto-learner
                                         bot.recent_spawns[message.channel.id] = {
                                             "phash": str(imagehash.phash(spawn_img)),
                                             "features": extract_visual_features(spawn_img)
                                         }
 
                                         # 1. DUAL-ENGINE LOCAL MATCH
-                                        spawned_pokemon = await identify_pokemon_dual_engine(image_bytes)
+                                        matched_doc = await identify_pokemon_dual_engine(image_bytes)
+                                        if matched_doc:
+                                            spawned_pokemon = matched_doc.get("pokemon")
+                                            shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
+                                            type_emojis = matched_doc.get("type_emojis", [])
 
                                         # 2. URL Filename Fallback
                                         if not spawned_pokemon:
@@ -356,10 +375,9 @@ async def on_message(message: discord.Message):
                                                 cleaned_name = name_part.replace("-", " ").replace("_", " ")
                                                 if validate_species(cleaned_name):
                                                     spawned_pokemon = cleaned_name
-
-                                        # 3. Hugging Face Fallback
-                                        if not spawned_pokemon:
-                                            spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
+                            
+                            if spawned_pokemon and not shortest_name:
+                                shortest_name = spawned_pokemon.lower()
 
                         except Exception as hash_err:
                             print(f"Vision processing error: {hash_err}")
@@ -377,6 +395,11 @@ async def on_message(message: discord.Message):
                         sh_users = await sh_cursor.to_list(length=100)
                         for doc in sh_users:
                             member = message.guild.get_member(doc["user_id"])
+                            if not member:
+                                try:
+                                    member = await message.guild.fetch_member(doc["user_id"])
+                                except Exception:
+                                    pass
                             if member:
                                 sh_pings.append(member.mention)
 
@@ -384,6 +407,11 @@ async def on_message(message: discord.Message):
                         col_users = await col_cursor.to_list(length=100)
                         for doc in col_users:
                             member = message.guild.get_member(doc["user_id"])
+                            if not member:
+                                try:
+                                    member = await message.guild.fetch_member(doc["user_id"])
+                                except Exception:
+                                    pass
                             if member:
                                 col_pings.append(member.mention)
 
@@ -391,13 +419,21 @@ async def on_message(message: discord.Message):
                         res_users = await res_cursor.to_list(length=100)
                         for doc in res_users:
                             member = message.guild.get_member(doc["user_id"])
+                            if not member:
+                                try:
+                                    member = await message.guild.fetch_member(doc["user_id"])
+                                except Exception:
+                                    pass
                             if member:
                                 res_pings.append(member.mention)
 
                         guild_setting = await settings_col.find_one({"guild_id": guild_id})
                         only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
-                        output_lines = [f"**{formatted_target}**"]
+                        emojis_str = " ".join(type_emojis) if type_emojis else ""
+                        header_line = f"**{formatted_target}** {emojis_str}".strip()
+
+                        output_lines = [header_line]
                         if sh_pings:
                             output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
                         if col_pings:
@@ -405,7 +441,7 @@ async def on_message(message: discord.Message):
                         if res_pings:
                             output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
 
-                        output_lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {formatted_target.lower()}`")
+                        output_lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {shortest_name}`")
 
                         has_pings = bool(sh_pings or col_pings or res_pings)
                         if not only_ping_mode or has_pings:
@@ -432,6 +468,7 @@ async def on_message(message: discord.Message):
                     {
                         "$set": {
                             "pokemon": formatted_veg_name,
+                            "shortest_name": formatted_veg_name.lower(),
                             "phash": spawn_data["phash"],
                             "visual_features": spawn_data["features"]
                         }
@@ -472,6 +509,8 @@ async def test_spawn(ctx):
 
     embed = replied_msg.embeds[0]
     spawned_pokemon = None
+    shortest_name = None
+    type_emojis = []
 
     if embed.image and embed.image.url:
         try:
@@ -480,10 +519,12 @@ async def test_spawn(ctx):
                     if resp.status == 200:
                         image_bytes = await resp.read()
                         
-                        # 1. Dual-Engine Local Match
-                        spawned_pokemon = await identify_pokemon_dual_engine(image_bytes)
+                        matched_doc = await identify_pokemon_dual_engine(image_bytes)
+                        if matched_doc:
+                            spawned_pokemon = matched_doc.get("pokemon")
+                            shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
+                            type_emojis = matched_doc.get("type_emojis", [])
 
-                        # 2. URL Filename Fallback
                         if not spawned_pokemon:
                             url_clean = embed.image.url.split("?")[0]
                             filename = url_clean.split("/")[-1].lower()
@@ -497,9 +538,8 @@ async def test_spawn(ctx):
                                 if validate_species(cleaned_name):
                                     spawned_pokemon = cleaned_name
 
-                        # 3. Hugging Face Fallback
-                        if not spawned_pokemon:
-                            spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
+                        if spawned_pokemon and not shortest_name:
+                            shortest_name = spawned_pokemon.lower()
 
         except Exception as e:
             print(f"Testspawn check error: {e}")
@@ -512,8 +552,9 @@ async def test_spawn(ctx):
         return
 
     formatted_target = format_pokemon_name(spawned_pokemon.lower())
+    emojis_str = " ".join(type_emojis) if type_emojis else ""
     await ctx.send(embed=discord.Embed(
-        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target}\n**Copy Command:** `@Pokétwo#8236 c {formatted_target.lower()}`",
+        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target} {emojis_str}\n**Copy Command:** `@Pokétwo#8236 c {shortest_name}`",
         color=discord.Color.green()
     ))
 
@@ -552,6 +593,17 @@ async def onlyping_enable(ctx):
         await ctx.send(embed=embed)
         return
 
+    guild_setting = await settings_col.find_one({"guild_id": ctx.guild.id})
+    current_status = guild_setting.get("only_ping", True) if guild_setting else True
+
+    if current_status:
+        embed = discord.Embed(
+            description="❌ OnlyPing is **already enabled**!",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
     await settings_col.update_one(
         {"guild_id": ctx.guild.id},
         {"$set": {"only_ping": True}},
@@ -568,6 +620,17 @@ async def onlyping_disable(ctx):
     if not ctx.author.guild_permissions.administrator:
         embed = discord.Embed(
             description="❌ Only server administrators can configure spawn alert settings.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    guild_setting = await settings_col.find_one({"guild_id": ctx.guild.id})
+    current_status = guild_setting.get("only_ping", True) if guild_setting else True
+
+    if not current_status:
+        embed = discord.Embed(
+            description="❌ OnlyPing is **already disabled**!",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
