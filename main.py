@@ -2,6 +2,7 @@ import os
 import re
 import io
 import aiohttp
+import asyncio
 import imagehash
 from PIL import Image
 import discord
@@ -67,47 +68,49 @@ async def on_ready():
 
 
 # ==========================================
-# 🧠 HUGGING FACE CLOUD VISION API HELPER
+# 💤 SLEEPY AI (Hugging Face Vision API Helper)
 # ==========================================
 HF_API_URL = "https://api-inference.huggingface.co/models/merve/pokemon-classifier"
 
 async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
     """
-    Sends spawn image bytes to Hugging Face's free serverless inference API 
-    and returns the predicted Pokémon name.
+    Sleepy AI: Sends spawn image bytes to Hugging Face's serverless inference API.
+    Includes automatic retry logic to handle cold starts (503 model warming up).
     """
     token = os.getenv("HF_TOKEN")
     if not token:
         return None
 
     headers = {
-        "Authorization": f"Bearer {token}"
+        "Authorization": f"Bearer token {token}" if not token.startswith("Bearer ") else token
     }
 
     async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=10) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if isinstance(result, list) and len(result) > 0:
-                        top_pred = result[0]
-                        confidence = top_pred.get("score", 0.0)
-                        
-                        # If confidence is 50% or higher, accept prediction
-                        if confidence >= 0.50:
-                            raw_name = top_pred.get("label", "").lower()
-                            if validate_species(raw_name):
-                                return raw_name
-                elif response.status == 503:
-                    print("Hugging Face model is warming up on cloud server...")
-        except Exception as e:
-            print(f"Vision API Error: {e}")
+        for attempt in range(2):  # Try twice to wake up the model if sleeping
+            try:
+                async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=12) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, list) and len(result) > 0:
+                            top_pred = result[0]
+                            confidence = top_pred.get("score", 0.0)
+                            
+                            # Accept prediction if confidence is 40% or higher
+                            if confidence >= 0.40:
+                                raw_name = top_pred.get("label", "").lower()
+                                if validate_species(raw_name):
+                                    return raw_name
+                    elif response.status == 503:
+                        print(f"💤 Sleepy AI is waking up (Attempt {attempt + 1})... waiting 3s...")
+                        await asyncio.sleep(3) # Wait for model to load into memory
+            except Exception as e:
+                print(f"Sleepy AI Error: {e}")
 
     return None
 
 
 # ==========================================
-# ⚡ DUAL-TIER SPAWN LISTENER & DUAL AUTO-LEARNER
+# ⚡ SPAWN LISTENER & AUTO-LEARNER
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
@@ -117,31 +120,31 @@ async def on_message(message: discord.Message):
             return
 
         # -------------------------------------------------------------
-        # 1. POKÉTWO SPAWN CAPTURE (ID: 716390085896962058)
+        # 1. POKÉTWO MESSAGE HANDLER (ID: 716390085896962058)
         # -------------------------------------------------------------
         if message.guild and message.author.id == 716390085896962058:
+            
+            # A. Check if it's a catch success message (Plain text auto-learner)
+            if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
+                if message.channel.id in bot.recent_spawns:
+                    spawn_hash_str = bot.recent_spawns[message.channel.id]
+                    match = re.search(r"you caught a level \d+ (.+?)(?:\s*[♂♀]|\s*\()", message.content, re.IGNORECASE)
+                    if match:
+                        pokemon_name = match.group(1).strip().title()
+                        if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
+                            formatted_catch_name = format_pokemon_name(pokemon_name)
+                            await phash_col.update_one(
+                                {"pokemon": formatted_catch_name.lower()},
+                                {"$set": {"pokemon": formatted_catch_name, "phash": spawn_hash_str}},
+                                upsert=True
+                            )
+                            print(f"🧠 AUTO-LEARNED ON USER CATCH: Mapped '{formatted_catch_name}' -> pHash `{spawn_hash_str}` in MongoDB")
+                            del bot.recent_spawns[message.channel.id]
+                return
+
+            # B. Check if it's a new spawn embed
             if message.embeds:
                 embed = message.embeds[0]
-                
-                # Check if it's a catch success message (Fallback auto-learner)
-                if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
-                    if message.channel.id in bot.recent_spawns:
-                        spawn_hash_str = bot.recent_spawns[message.channel.id]
-                        match = re.search(r"you caught a level \d+ (.+?)(?:\s*[♂♀]|\s*\()", message.content, re.IGNORECASE)
-                        if match:
-                            pokemon_name = match.group(1).strip().title()
-                            if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
-                                formatted_catch_name = format_pokemon_name(pokemon_name)
-                                await phash_col.update_one(
-                                    {"pokemon": formatted_catch_name.lower()},
-                                    {"$set": {"pokemon": formatted_catch_name, "phash": spawn_hash_str}},
-                                    upsert=True
-                                )
-                                print(f"🧠 AUTO-LEARNED ON USER CATCH: Mapped '{formatted_catch_name}' -> pHash `{spawn_hash_str}` in MongoDB")
-                                del bot.recent_spawns[message.channel.id]
-                    return
-
-                # Check if it's a new spawn embed
                 if embed.title and "has appeared" in embed.title.lower():
                     spawned_pokemon = None
                     spawn_hash_str = None
@@ -156,13 +159,13 @@ async def on_message(message: discord.Message):
                                         spawn_hash = imagehash.phash(spawn_img)
                                         spawn_hash_str = str(spawn_hash)
                                         
-                                        # Cache for spy listeners / catch listeners
+                                        # Cache for naming bots / catch listeners
                                         bot.recent_spawns[message.channel.id] = spawn_hash_str
 
-                                        # 1. TRY HUGGING FACE FIRST
+                                        # 1. TRY SLEEPY AI (Hugging Face) FIRST
                                         spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
-                                        # 2. If HF misses, try modern URL filename extraction
+                                        # 2. If Sleepy AI misses, try modern URL filename parsing
                                         if not spawned_pokemon:
                                             url_clean = embed.image.url.split("?")[0]
                                             filename = url_clean.split("/")[-1].lower()
@@ -176,7 +179,7 @@ async def on_message(message: discord.Message):
                                                 if validate_species(cleaned_name):
                                                     spawned_pokemon = cleaned_name
 
-                                        # 3. If URL parsing also misses, try MongoDB pHash database via Hamming distance
+                                        # 3. If URL parsing misses, try MongoDB pHash database via Hamming distance
                                         if not spawned_pokemon:
                                             cursor = phash_col.find({})
                                             lowest_distance = 999
@@ -255,7 +258,6 @@ async def on_message(message: discord.Message):
         if message.author.id == VEGETAAAAA_BOT_ID and message.channel.id in bot.recent_spawns:
             content = message.content.strip()
             
-            # Parse output format (e.g., "Ducklett 💧🕊️: 99.87%")
             match = re.match(r"^([A-Za-z0-9\-\.\'\s]+?)\s*(?:[\:\<]|[\u2600-\u27BF]|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff])", content)
             if match:
                 pokemon_name = match.group(1).strip().title()
@@ -276,7 +278,6 @@ async def on_message(message: discord.Message):
     except Exception as e:
         print(f"Error in spawn/spy listener: {e}")
 
-    # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
     await bot.process_commands(message)
 
 
@@ -314,10 +315,10 @@ async def test_spawn(ctx):
                         image_bytes = await resp.read()
                         spawn_hash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
                         
-                        # 1. TRY HUGGING FACE FIRST
+                        # 1. TRY SLEEPY AI FIRST
                         spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
-                        # 2. If HF misses, try URL filename parsing
+                        # 2. If Sleepy AI misses, try URL filename parsing
                         if not spawned_pokemon:
                             url_clean = embed.image.url.split("?")[0]
                             filename = url_clean.split("/")[-1].lower()
@@ -351,14 +352,14 @@ async def test_spawn(ctx):
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon from image URL, database, or Vision API.",
+            description=f"❌ Could not identify Pokémon from image URL, database, or Sleepy AI.",
             color=discord.Color.red()
         ))
         return
 
     formatted_target = format_pokemon_name(spawned_pokemon.lower())
     await ctx.send(embed=discord.Embed(
-        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target}\n**Copy Command:** `@Pokétwo#8236 c {formatted_target.lower()}`",
+        description=f"✅ **Successfully Identified by Sleepy AI!**\n**Pokémon:** {formatted_target}\n**Copy Command:** `@Pokétwo#8236 c {formatted_target.lower()}`",
         color=discord.Color.green()
     ))
 
@@ -1425,7 +1426,7 @@ async def reserve_role_remove(ctx, *, roles_input: str = None):
         desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
 
     embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(embed=desc)
+    await ctx.send(desc=desc)
 
 
 # ==========================================
