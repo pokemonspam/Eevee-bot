@@ -146,21 +146,7 @@ async def on_message(message: discord.Message):
                     spawned_pokemon = None
                     spawn_hash_str = None
 
-                    # A. Try modern URL filename extraction first
                     if embed.image and embed.image.url:
-                        url_clean = embed.image.url.split("?")[0]
-                        filename = url_clean.split("/")[-1].lower()
-                        name_part = filename.split(".")[0]
-
-                        if name_part.isdigit():
-                            from dataset import get_pokemon_by_id
-                            spawned_pokemon = get_pokemon_by_id(int(name_part))
-                        else:
-                            cleaned_name = name_part.replace("-", " ").replace("_", " ")
-                            if validate_species(cleaned_name):
-                                spawned_pokemon = cleaned_name
-
-                        # B. Compute pHash and cache it for naming bots / catch listeners
                         try:
                             async with aiohttp.ClientSession() as session:
                                 async with session.get(embed.image.url) as resp:
@@ -173,7 +159,24 @@ async def on_message(message: discord.Message):
                                         # Cache for spy listeners / catch listeners
                                         bot.recent_spawns[message.channel.id] = spawn_hash_str
 
-                                        # C. If URL parsing missed, try MongoDB pHash database via Hamming distance
+                                        # 1. TRY HUGGING FACE FIRST
+                                        spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
+
+                                        # 2. If HF misses, try modern URL filename extraction
+                                        if not spawned_pokemon:
+                                            url_clean = embed.image.url.split("?")[0]
+                                            filename = url_clean.split("/")[-1].lower()
+                                            name_part = filename.split(".")[0]
+
+                                            if name_part.isdigit():
+                                                from dataset import get_pokemon_by_id
+                                                spawned_pokemon = get_pokemon_by_id(int(name_part))
+                                            else:
+                                                cleaned_name = name_part.replace("-", " ").replace("_", " ")
+                                                if validate_species(cleaned_name):
+                                                    spawned_pokemon = cleaned_name
+
+                                        # 3. If URL parsing also misses, try MongoDB pHash database via Hamming distance
                                         if not spawned_pokemon:
                                             cursor = phash_col.find({})
                                             lowest_distance = 999
@@ -188,11 +191,6 @@ async def on_message(message: discord.Message):
                                             if best_match and lowest_distance <= 12:
                                                 spawned_pokemon = best_match
 
-                                        # D. If still not found, fallback to Hugging Face Cloud Vision API
-                                        if not spawned_pokemon:
-                                            hf_result = await identify_pokemon_via_hf(image_bytes)
-                                            if hf_result:
-                                                spawned_pokemon = hf_result
                         except Exception as hash_err:
                             print(f"pHash/Vision processing error: {hash_err}")
 
@@ -309,27 +307,32 @@ async def test_spawn(ctx):
     spawned_pokemon = None
 
     if embed.image and embed.image.url:
-        url_clean = embed.image.url.split("?")[0]
-        filename = url_clean.split("/")[-1].lower()
-        name_part = filename.split(".")[0]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(embed.image.url) as resp:
+                    if resp.status == 200:
+                        image_bytes = await resp.read()
+                        spawn_hash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
+                        
+                        # 1. TRY HUGGING FACE FIRST
+                        spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
-        if name_part.isdigit():
-            from dataset import get_pokemon_by_id
-            spawned_pokemon = get_pokemon_by_id(int(name_part))
-        else:
-            cleaned_name = name_part.replace("-", " ").replace("_", " ")
-            if validate_species(cleaned_name):
-                spawned_pokemon = cleaned_name
+                        # 2. If HF misses, try URL filename parsing
+                        if not spawned_pokemon:
+                            url_clean = embed.image.url.split("?")[0]
+                            filename = url_clean.split("/")[-1].lower()
+                            name_part = filename.split(".")[0]
 
-        # Fallback to database pHash check and Hugging Face Vision API if URL parsing misses
-        if not spawned_pokemon:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(embed.image.url) as resp:
-                        if resp.status == 200:
-                            image_bytes = await resp.read()
-                            spawn_hash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
-                            
+                            if name_part.isdigit():
+                                from dataset import get_pokemon_by_id
+                                spawned_pokemon = get_pokemon_by_id(int(name_part))
+                            else:
+                                cleaned_name = name_part.replace("-", " ").replace("_", " ")
+                                if validate_species(cleaned_name):
+                                    spawned_pokemon = cleaned_name
+
+                        # 3. If URL parsing misses, try MongoDB pHash database check
+                        if not spawned_pokemon:
                             cursor = phash_col.find({})
                             lowest_distance = 999
                             best_match = None
@@ -343,12 +346,8 @@ async def test_spawn(ctx):
                             if best_match and lowest_distance <= 12:
                                 spawned_pokemon = best_match
 
-                            if not spawned_pokemon:
-                                hf_result = await identify_pokemon_via_hf(image_bytes)
-                                if hf_result:
-                                    spawned_pokemon = hf_result
-            except Exception as e:
-                print(f"Testspawn check error: {e}")
+        except Exception as e:
+            print(f"Testspawn check error: {e}")
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
