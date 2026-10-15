@@ -4,6 +4,7 @@ import io
 import aiohttp
 import asyncio
 import imagehash
+import numpy as np
 from PIL import Image
 import discord
 from discord.ext import commands
@@ -64,11 +65,43 @@ async def is_staff(ctx):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    await bot.change_presence(activity=discord.Game(name="E!sh | E!cl | E!r"))
+    await bot.change_presence(activity=discord.Game(name="E!sh | E!cl | E!r | E!learn"))
 
 
 # ==========================================
-# 🧠 HUGGING FACE VISION API HELPER (OPTIONAL FALLBACK)
+# 🎨 VISUAL FEATURE EXTRACTOR (COLOR/GRID HISTOGRAM)
+# ==========================================
+def extract_visual_features(img: Image.Image):
+    img_resized = img.resize((32, 32)).convert("RGB")
+    arr = np.array(img_resized)
+    
+    h, w, _ = arr.shape
+    gh, gw = h // 4, w // 4
+    features = []
+    
+    for r in range(4):
+        for c in range(4):
+            patch = arr[r*gh:(r+1)*gh, c*gw:(c+1)*gw]
+            mean_color = patch.mean(axis=(0, 1))
+            features.extend(mean_color)
+            
+    features = np.array(features, dtype=float)
+    norm = np.linalg.norm(features)
+    if norm > 0:
+        features /= norm
+    return features.tolist()
+
+def calculate_color_similarity(vec1, vec2):
+    v1, v2 = np.array(vec1), np.array(vec2)
+    dot_product = np.dot(v1, v2)
+    norm_product = np.linalg.norm(v1) * np.linalg.norm(v2)
+    if norm_product == 0:
+        return 0.0
+    return float(dot_product / norm_product)
+
+
+# ==========================================
+# 🧠 HUGGING FACE VISION API HELPER (FALLBACK)
 # ==========================================
 HF_API_URL = "https://api-inference.huggingface.co/models/merve/pokemon-classifier"
 
@@ -94,7 +127,157 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
                             if validate_species(raw_name):
                                 return raw_name
         except Exception:
-            pass # Fail silently so local database takes over cleanly
+            pass
+
+    return None
+
+
+# ==========================================
+# 📚 DUAL-ENGINE EMBED LEARNER (E!learn)
+# ==========================================
+@bot.command(name="learn")
+async def learn_embed(ctx):
+    if not ctx.message.reference:
+        await ctx.send(embed=discord.Embed(description="❌ Please reply to a Pokémon info embed.", color=discord.Color.red()))
+        return
+
+    try:
+        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    except Exception:
+        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
+        return
+
+    if not replied_msg.embeds:
+        await ctx.send(embed=discord.Embed(description="❌ The replied message does not contain an embed.", color=discord.Color.red()))
+        return
+
+    embed = replied_msg.embeds[0]
+    embed_text = embed.description or ""
+    for field in embed.fields:
+        embed_text += f"\n{field.name}\n{field.value}"
+
+    pokemon_name = None
+    alt_names = []
+    types_list = []
+
+    lines = embed_text.split("\n")
+    current_section = None
+
+    for line in lines:
+        line_stripped = line.strip()
+        if "Types" in line_stripped:
+            current_section = "types"
+            continue
+        elif "Names" in line_stripped:
+            current_section = "names"
+            continue
+        elif "Appearance" in line_stripped or "Region" in line_stripped or "Base Stats" in line_stripped:
+            current_section = None
+            continue
+
+        if current_section == "types":
+            if line_stripped:
+                types_list.append(line_stripped)
+        elif current_section == "names":
+            if any(flag in line_stripped for flag in ["🇯🇵", "🇬🇧", "🇩🇪", "🇫🇷", "🇪🇸"]):
+                parts = line_stripped.split()
+                if len(parts) >= 2:
+                    alt_name = " ".join(parts[1:])
+                    alt_names.append(alt_name)
+                    if "🇬🇧" in line_stripped:
+                        pokemon_name = alt_name
+
+    if not pokemon_name and alt_names:
+        pokemon_name = alt_names[0]
+
+    if not embed.image or not embed.image.url:
+        await ctx.send(embed=discord.Embed(description="❌ No sprite image found in the embed.", color=discord.Color.red()))
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(embed.image.url) as resp:
+                if resp.status == 200:
+                    image_bytes = await resp.read()
+                    img = Image.open(io.BytesIO(image_bytes))
+                    phash_str = str(imagehash.phash(img))
+                    visual_features = extract_visual_features(img)
+                else:
+                    await ctx.send(embed=discord.Embed(description="❌ Failed to download sprite image.", color=discord.Color.red()))
+                    return
+    except Exception as e:
+        await ctx.send(embed=discord.Embed(description=f"❌ Error processing image: {e}", color=discord.Color.red()))
+        return
+
+    if not pokemon_name:
+        await ctx.send(embed=discord.Embed(description="❌ Could not parse Pokémon details from this embed layout.", color=discord.Color.red()))
+        return
+
+    formatted_name = format_pokemon_name(pokemon_name.lower())
+
+    await phash_col.update_one(
+        {"pokemon": formatted_name.lower()},
+        {
+            "$set": {
+                "pokemon": formatted_name,
+                "alt_names": alt_names,
+                "types": types_list,
+                "phash": phash_str,
+                "visual_features": visual_features
+            }
+        },
+        upsert=True
+    )
+
+    await ctx.send(embed=discord.Embed(
+        title="🧠 Dual-Engine Learning Successful!",
+        description=(
+            f"**Pokémon:** {formatted_name}\n"
+            f"**pHash & Color Features:** Saved ✅\n"
+            f"**Types:** {', '.join(types_list) if types_list else 'Unknown'}\n"
+            f"**Alternate Names:** {', '.join(alt_names) if alt_names else 'None'}"
+        ),
+        color=discord.Color.green()
+    ))
+
+
+# ==========================================
+# ⚡ DUAL-ENGINE MATCHING ENGINE
+# ==========================================
+async def identify_pokemon_dual_engine(image_bytes: bytes) -> str:
+    try:
+        spawn_img = Image.open(io.BytesIO(image_bytes))
+        spawn_phash = imagehash.phash(spawn_img)
+        spawn_features = extract_visual_features(spawn_img)
+
+        cursor = phash_col.find({})
+        best_match = None
+        highest_score = -1.0
+
+        async for doc in cursor:
+            score = 0.0
+            
+            # 1. pHash Score Contribution
+            if "phash" in doc:
+                db_phash = imagehash.hex_to_hash(doc["phash"])
+                phash_dist = spawn_phash - db_phash
+                phash_score = max(0.0, 1.0 - (phash_dist / 20.0))
+                score += phash_score * 0.5
+
+            # 2. Color/Grid Histogram Score Contribution
+            if "visual_features" in doc:
+                color_score = calculate_color_similarity(spawn_features, doc["visual_features"])
+                score += color_score * 0.5
+
+            if score > highest_score:
+                highest_score = score
+                best_match = doc["pokemon"]
+
+        if best_match and highest_score >= 0.60:
+            return best_match
+
+    except Exception as e:
+        print(f"Dual-engine identification error: {e}")
 
     return None
 
@@ -105,7 +288,6 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 @bot.event
 async def on_message(message: discord.Message):
     try:
-        # Ignore own messages
         if message.author.id == bot.user.id:
             return
 
@@ -114,10 +296,10 @@ async def on_message(message: discord.Message):
         # -------------------------------------------------------------
         if message.guild and message.author.id == 716390085896962058:
             
-            # A. Check if it's a catch success message (Plain text auto-learner)
+            # A. Check catch success message
             if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
                 if message.channel.id in bot.recent_spawns:
-                    spawn_hash_str = bot.recent_spawns[message.channel.id]
+                    spawn_data = bot.recent_spawns[message.channel.id]
                     match = re.search(r"you caught a level \d+ (.+?)(?:\s*[♂♀]|\s*\()", message.content, re.IGNORECASE)
                     if match:
                         pokemon_name = match.group(1).strip().title()
@@ -125,19 +307,24 @@ async def on_message(message: discord.Message):
                             formatted_catch_name = format_pokemon_name(pokemon_name)
                             await phash_col.update_one(
                                 {"pokemon": formatted_catch_name.lower()},
-                                {"$set": {"pokemon": formatted_catch_name, "phash": spawn_hash_str}},
+                                {
+                                    "$set": {
+                                        "pokemon": formatted_catch_name,
+                                        "phash": spawn_data["phash"],
+                                        "visual_features": spawn_data["features"]
+                                    }
+                                },
                                 upsert=True
                             )
-                            print(f"🧠 AUTO-LEARNED ON USER CATCH: Mapped '{formatted_catch_name}' -> pHash `{spawn_hash_str}` in MongoDB")
+                            print(f"🧠 AUTO-LEARNED ON CATCH: Mapped '{formatted_catch_name}' -> Dual Features in MongoDB")
                             del bot.recent_spawns[message.channel.id]
                 return
 
-            # B. Check if it's a new spawn embed
+            # B. Check new spawn embed
             if message.embeds:
                 embed = message.embeds[0]
                 if embed.title and "has appeared" in embed.title.lower():
                     spawned_pokemon = None
-                    spawn_hash_str = None
 
                     if embed.image and embed.image.url:
                         try:
@@ -146,27 +333,17 @@ async def on_message(message: discord.Message):
                                     if resp.status == 200:
                                         image_bytes = await resp.read()
                                         spawn_img = Image.open(io.BytesIO(image_bytes))
-                                        spawn_hash = imagehash.phash(spawn_img)
-                                        spawn_hash_str = str(spawn_hash)
                                         
-                                        # Cache for naming bots / catch listeners
-                                        bot.recent_spawns[message.channel.id] = spawn_hash_str
+                                        # Cache image data for catch auto-learner
+                                        bot.recent_spawns[message.channel.id] = {
+                                            "phash": str(imagehash.phash(spawn_img)),
+                                            "features": extract_visual_features(spawn_img)
+                                        }
 
-                                        # 1. TRY LOCAL MONGODB pHash DATABASE FIRST (Fast & Reliable)
-                                        cursor = phash_col.find({})
-                                        lowest_distance = 999
-                                        best_match = None
-                                        async for doc in cursor:
-                                            db_hash = imagehash.hex_to_hash(doc["phash"])
-                                            dist = spawn_hash - db_hash
-                                            if dist < lowest_distance:
-                                                lowest_distance = dist
-                                                best_match = doc["pokemon"]
-                                        
-                                        if best_match and lowest_distance <= 12:
-                                            spawned_pokemon = best_match
+                                        # 1. DUAL-ENGINE LOCAL MATCH
+                                        spawned_pokemon = await identify_pokemon_dual_engine(image_bytes)
 
-                                        # 2. If Database misses, try modern URL filename parsing
+                                        # 2. URL Filename Fallback
                                         if not spawned_pokemon:
                                             url_clean = embed.image.url.split("?")[0]
                                             filename = url_clean.split("/")[-1].lower()
@@ -180,12 +357,12 @@ async def on_message(message: discord.Message):
                                                 if validate_species(cleaned_name):
                                                     spawned_pokemon = cleaned_name
 
-                                        # 3. If URL parsing misses, try Hugging Face as last resort
+                                        # 3. Hugging Face Fallback
                                         if not spawned_pokemon:
                                             spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
                         except Exception as hash_err:
-                            print(f"pHash/Vision processing error: {hash_err}")
+                            print(f"Vision processing error: {hash_err}")
 
                     if spawned_pokemon:
                         guild_id = message.guild.id
@@ -196,7 +373,6 @@ async def on_message(message: discord.Message):
                         col_pings = []
                         res_pings = []
 
-                        # A. Check Shiny Hunt Pings (E!sh)
                         sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
                         sh_users = await sh_cursor.to_list(length=100)
                         for doc in sh_users:
@@ -204,7 +380,6 @@ async def on_message(message: discord.Message):
                             if member:
                                 sh_pings.append(member.mention)
 
-                        # B. Check Collection Pings (E!cl)
                         col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
                         col_users = await col_cursor.to_list(length=100)
                         for doc in col_users:
@@ -212,7 +387,6 @@ async def on_message(message: discord.Message):
                             if member:
                                 col_pings.append(member.mention)
 
-                        # C. Check Reserves Pings (E!r)
                         res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
                         res_users = await res_cursor.to_list(length=100)
                         for doc in res_users:
@@ -220,13 +394,10 @@ async def on_message(message: discord.Message):
                             if member:
                                 res_pings.append(member.mention)
 
-                        # Check guild setting for onlyping toggle (default to True/enabled)
                         guild_setting = await settings_col.find_one({"guild_id": guild_id})
                         only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
-                        # Construct message output
                         output_lines = [f"**{formatted_target}**"]
-                        
                         if sh_pings:
                             output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
                         if col_pings:
@@ -247,7 +418,6 @@ async def on_message(message: discord.Message):
 
         if message.author.id == VEGETAAAAA_BOT_ID and message.channel.id in bot.recent_spawns:
             content = message.content.strip()
-            
             match = re.match(r"^([A-Za-z0-9\-\.\'\s]+?)\s*(?:[\:\<]|[\u2600-\u27BF]|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff])", content)
             if match:
                 pokemon_name = match.group(1).strip().title()
@@ -256,13 +426,19 @@ async def on_message(message: discord.Message):
 
             if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
                 formatted_veg_name = format_pokemon_name(pokemon_name)
-                spawn_hash_str = bot.recent_spawns[message.channel.id]
+                spawn_data = bot.recent_spawns[message.channel.id]
                 await phash_col.update_one(
                     {"pokemon": formatted_veg_name.lower()},
-                    {"$set": {"pokemon": formatted_veg_name, "phash": spawn_hash_str}},
+                    {
+                        "$set": {
+                            "pokemon": formatted_veg_name,
+                            "phash": spawn_data["phash"],
+                            "visual_features": spawn_data["features"]
+                        }
+                    },
                     upsert=True
                 )
-                print(f"🧠 AUTO-LEARNED FROM VEGETAAAAA: Mapped '{formatted_veg_name}' -> pHash `{spawn_hash_str}` in MongoDB")
+                print(f"🧠 AUTO-LEARNED FROM VEGETAAAAA: Mapped '{formatted_veg_name}' -> Dual Features")
                 del bot.recent_spawns[message.channel.id]
 
     except Exception as e:
@@ -303,23 +479,11 @@ async def test_spawn(ctx):
                 async with session.get(embed.image.url) as resp:
                     if resp.status == 200:
                         image_bytes = await resp.read()
-                        spawn_hash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
                         
-                        # 1. TRY LOCAL MONGODB DATABASE FIRST
-                        cursor = phash_col.find({})
-                        lowest_distance = 999
-                        best_match = None
-                        async for doc in cursor:
-                            db_hash = imagehash.hex_to_hash(doc["phash"])
-                            dist = spawn_hash - db_hash
-                            if dist < lowest_distance:
-                                lowest_distance = dist
-                                best_match = doc["pokemon"]
-                        
-                        if best_match and lowest_distance <= 12:
-                            spawned_pokemon = best_match
+                        # 1. Dual-Engine Local Match
+                        spawned_pokemon = await identify_pokemon_dual_engine(image_bytes)
 
-                        # 2. If Database misses, try URL filename parsing
+                        # 2. URL Filename Fallback
                         if not spawned_pokemon:
                             url_clean = embed.image.url.split("?")[0]
                             filename = url_clean.split("/")[-1].lower()
@@ -333,7 +497,7 @@ async def test_spawn(ctx):
                                 if validate_species(cleaned_name):
                                     spawned_pokemon = cleaned_name
 
-                        # 3. If URL parsing misses, try Hugging Face fallback
+                        # 3. Hugging Face Fallback
                         if not spawned_pokemon:
                             spawned_pokemon = await identify_pokemon_via_hf(image_bytes)
 
@@ -1416,7 +1580,7 @@ async def reserve_role_remove(ctx, *, roles_input: str = None):
         desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
 
     embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(desc=desc)
+    await ctx.send(embed=desc)
 
 
 # ==========================================
