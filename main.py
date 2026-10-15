@@ -37,6 +37,7 @@ reserves_col = db["reserves"]
 collections_col = db["collections"]
 shiny_col = db["shiny_hunts"]
 roles_col = db["staff_roles"]
+settings_col = db["guild_settings"]
 
 
 # Helper: Check Reserve Staff Permissions
@@ -110,7 +111,11 @@ async def on_message(message: discord.Message):
                         if member:
                             res_pings.append(member.mention)
 
-                    # Construct message output matching reference screenshot styles
+                    # Check guild setting for onlyping toggle (default to True/enabled)
+                    guild_setting = await settings_col.find_one({"guild_id": guild_id})
+                    only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
+
+                    # Construct message output
                     output_lines = [f"**{formatted_target}**"]
                     
                     if sh_pings:
@@ -120,11 +125,82 @@ async def on_message(message: discord.Message):
                     if res_pings:
                         output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
 
-                    if len(output_lines) > 1:
+                    output_lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {formatted_target.lower()}`")
+
+                    # If only_ping_mode is True, require at least one ping category present. If False, always send.
+                    has_pings = bool(sh_pings or col_pings or res_pings)
+                    if not only_ping_mode or has_pings:
                         await message.channel.send("\n".join(output_lines))
 
     # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
     await bot.process_commands(message)
+
+
+# ==========================================
+# ⚙️ ONLYPING TOGGLE COMMAND (E!onlyping)
+# ==========================================
+@bot.group(name="onlyping", invoke_without_command=True)
+async def onlyping_group(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ Only server administrators can configure spawn alert settings.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    guild_setting = await settings_col.find_one({"guild_id": ctx.guild.id})
+    current_status = guild_setting.get("only_ping", True) if guild_setting else True
+    status_str = "Enabled (Only naming when there are pings)" if current_status else "Disabled (Naming every spawn)"
+
+    embed = discord.Embed(
+        title="⚙️ OnlyPing Settings",
+        description=f"**Current Status:** {status_str}\n\n**Usage:**\n`E!onlyping enable` - Name only when there are pings.\n`E!onlyping disable` - Name every spawn regardless of pings.",
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed)
+
+@onlyping_group.command(name="enable")
+async def onlyping_enable(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ Only server administrators can configure spawn alert settings.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    await settings_col.update_one(
+        {"guild_id": ctx.guild.id},
+        {"$set": {"only_ping": True}},
+        upsert=True
+    )
+    embed = discord.Embed(
+        description="✅ **OnlyPing enabled!** The bot will now only name/alert spawns when there are active pings.",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+
+@onlyping_group.command(name="disable")
+async def onlyping_disable(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ Only server administrators can configure spawn alert settings.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    await settings_col.update_one(
+        {"guild_id": ctx.guild.id},
+        {"$set": {"only_ping": False}},
+        upsert=True
+    )
+    embed = discord.Embed(
+        description="✅ **OnlyPing disabled!** The bot will now name and alert **every** single spawn.",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
 
 
 # --- Interactive Pagination View ---
