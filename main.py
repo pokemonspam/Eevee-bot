@@ -57,7 +57,7 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name="E!sh | E!cl | E!r"))
 
 
-    # ==========================================
+# ==========================================
 # ⚡ SPAWN PING LISTENER
 # ==========================================
 @bot.event
@@ -82,7 +82,9 @@ async def on_message(message: discord.Message):
                     target_clean = spawned_pokemon.lower()
                     formatted_target = format_pokemon_name(target_clean)
 
-                    pings_to_send = []
+                    sh_pings = []
+                    col_pings = []
+                    res_pings = []
 
                     # A. Check Shiny Hunt Pings (E!sh)
                     sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
@@ -90,7 +92,7 @@ async def on_message(message: discord.Message):
                     for doc in sh_users:
                         member = message.guild.get_member(doc["user_id"])
                         if member:
-                            pings_to_send.append(f"✨ {member.mention} (Shiny Hunt)")
+                            sh_pings.append(member.mention)
 
                     # B. Check Collection Pings (E!cl)
                     col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
@@ -98,7 +100,7 @@ async def on_message(message: discord.Message):
                     for doc in col_users:
                         member = message.guild.get_member(doc["user_id"])
                         if member:
-                            pings_to_send.append(f"📦 {member.mention} (Collection)")
+                            col_pings.append(member.mention)
 
                     # C. Check Reserves Pings (E!r)
                     res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
@@ -106,54 +108,24 @@ async def on_message(message: discord.Message):
                     for doc in res_users:
                         member = message.guild.get_member(doc["user_id"])
                         if member:
-                            pings_to_send.append(f"🔒 {member.mention} (Reserved)")
+                            res_pings.append(member.mention)
 
-                    # Dispatch the pings into the spawn channel if any matches were found
-                    if pings_to_send:
-                        ping_content = f"**Spawn Alert:** `{formatted_target}`\n" + " | ".join(pings_to_send)
-                        await message.channel.send(ping_content)
+                    # Construct message output matching reference screenshot styles
+                    output_lines = [f"**{formatted_target}**"]
+                    
+                    if sh_pings:
+                        output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
+                    if col_pings:
+                        output_lines.append(f"Collection pings: {', '.join(col_pings)}")
+                    if res_pings:
+                        output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
+
+                    if len(output_lines) > 1:
+                        await message.channel.send("\n".join(output_lines))
 
     # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
     await bot.process_commands(message)
 
-
-                    # -------------------------------------------------------------
-                    # A. Check Shiny Hunt Pings (E!sh)
-                    # -------------------------------------------------------------
-                    sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                    sh_users = await sh_cursor.to_list(length=100)
-                    for doc in sh_users:
-                        member = message.guild.get_member(doc["user_id"])
-                        if member:
-                            pings_to_send.append(f"✨ {member.mention} (Shiny Hunt)")
-
-                    # -------------------------------------------------------------
-                    # B. Check Collection Pings (E!cl)
-                    # -------------------------------------------------------------
-                    col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                    col_users = await col_cursor.to_list(length=100)
-                    for doc in col_users:
-                        member = message.guild.get_member(doc["user_id"])
-                        if member:
-                            pings_to_send.append(f"📦 {member.mention} (Collection)")
-
-                    # -------------------------------------------------------------
-                    # C. Check Reserves Pings (E!r)
-                    # -------------------------------------------------------------
-                    res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                    res_users = await res_cursor.to_list(length=100)
-                    for doc in res_users:
-                        member = message.guild.get_member(doc["user_id"])
-                        if member:
-                            pings_to_send.append(f"🔒 {member.mention} (Reserved)")
-
-                    # Dispatch the pings into the spawn channel if any matches were found
-                    if pings_to_send:
-                        ping_content = f"**Spawn Alert:** `{formatted_target}`\n" + " | ".join(pings_to_send)
-                        await message.channel.send(ping_content)
-
-    # CRITICAL: Ensures commands like E!sh, E!cl, E!r are processed even with on_message active
-    await bot.process_commands(message)
 
 # --- Interactive Pagination View ---
 class CollectionPaginationView(discord.ui.View):
@@ -1150,7 +1122,7 @@ async def reserve_role_remove(ctx, *, roles_input: str = None):
         desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
 
     embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(embed=embed)
+    await ctx.send(embed=desc)
 
 
 # ==========================================
