@@ -18,4 +18,11 @@ imagehash
 torch
 torchvision
 transformers
+imagehash
+Pillow
+aiohttp
+torch
+torchvision
+numpy
+
 
