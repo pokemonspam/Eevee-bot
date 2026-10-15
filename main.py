@@ -63,76 +63,79 @@ async def on_ready():
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
-    # Ensure message is from Pokétwo (ID: 716390085896962058) and in a guild
-    if message.guild and message.author.id == 716390085896962058:
-        if message.embeds:
-            embed = message.embeds[0]
-            if embed.title and "wild pokémon has appeared" in embed.title.lower():
-                spawned_pokemon = None
+    try:
+        # Ensure message is from Pokétwo (ID: 716390085896962058) and in a guild
+        if message.guild and message.author.id == 716390085896962058:
+            if message.embeds:
+                embed = message.embeds[0]
+                if embed.title and "wild pokémon has appeared" in embed.title.lower():
+                    spawned_pokemon = None
 
-                # Extract Pokédex ID directly from Pokétwo's image URL (e.g., .../images/25.png -> 25)
-                if embed.image and embed.image.url:
-                    match = re.search(r'/images/(\d+)\.png', embed.image.url)
-                    if match:
-                        dex_id = int(match.group(1))
-                        from dataset import get_pokemon_by_id
-                        spawned_pokemon = get_pokemon_by_id(dex_id)
+                    # Extract Pokédex ID directly from Pokétwo's image URL
+                    if embed.image and embed.image.url:
+                        match = re.search(r'(?:/images/|/)(\d+)(?:\.png|\?)', embed.image.url)
+                        if match:
+                            dex_id = int(match.group(1))
+                            from dataset import get_pokemon_by_id
+                            spawned_pokemon = get_pokemon_by_id(dex_id)
 
-                if spawned_pokemon:
-                    guild_id = message.guild.id
-                    target_clean = spawned_pokemon.lower()
-                    formatted_target = format_pokemon_name(target_clean)
+                    if spawned_pokemon:
+                        guild_id = message.guild.id
+                        target_clean = spawned_pokemon.lower()
+                        formatted_target = format_pokemon_name(target_clean)
 
-                    sh_pings = []
-                    col_pings = []
-                    res_pings = []
+                        sh_pings = []
+                        col_pings = []
+                        res_pings = []
 
-                    # A. Check Shiny Hunt Pings (E!sh)
-                    sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                    sh_users = await sh_cursor.to_list(length=100)
-                    for doc in sh_users:
-                        member = message.guild.get_member(doc["user_id"])
-                        if member:
-                            sh_pings.append(member.mention)
+                        # A. Check Shiny Hunt Pings (E!sh)
+                        sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                        sh_users = await sh_cursor.to_list(length=100)
+                        for doc in sh_users:
+                            member = message.guild.get_member(doc["user_id"])
+                            if member:
+                                sh_pings.append(member.mention)
 
-                    # B. Check Collection Pings (E!cl)
-                    col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                    col_users = await col_cursor.to_list(length=100)
-                    for doc in col_users:
-                        member = message.guild.get_member(doc["user_id"])
-                        if member:
-                            col_pings.append(member.mention)
+                        # B. Check Collection Pings (E!cl)
+                        col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                        col_users = await col_cursor.to_list(length=100)
+                        for doc in col_users:
+                            member = message.guild.get_member(doc["user_id"])
+                            if member:
+                                col_pings.append(member.mention)
 
-                    # C. Check Reserves Pings (E!r)
-                    res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                    res_users = await res_cursor.to_list(length=100)
-                    for doc in res_users:
-                        member = message.guild.get_member(doc["user_id"])
-                        if member:
-                            res_pings.append(member.mention)
+                        # C. Check Reserves Pings (E!r)
+                        res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
+                        res_users = await res_cursor.to_list(length=100)
+                        for doc in res_users:
+                            member = message.guild.get_member(doc["user_id"])
+                            if member:
+                                res_pings.append(member.mention)
 
-                    # Check guild setting for onlyping toggle (default to True/enabled)
-                    guild_setting = await settings_col.find_one({"guild_id": guild_id})
-                    only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
+                        # Check guild setting for onlyping toggle (default to True/enabled)
+                        guild_setting = await settings_col.find_one({"guild_id": guild_id})
+                        only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
-                    # Construct message output
-                    output_lines = [f"**{formatted_target}**"]
-                    
-                    if sh_pings:
-                        output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
-                    if col_pings:
-                        output_lines.append(f"Collection pings: {', '.join(col_pings)}")
-                    if res_pings:
-                        output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
+                        # Construct message output
+                        output_lines = [f"**{formatted_target}**"]
+                        
+                        if sh_pings:
+                            output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
+                        if col_pings:
+                            output_lines.append(f"Collection pings: {', '.join(col_pings)}")
+                        if res_pings:
+                            output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
 
-                    output_lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {formatted_target.lower()}`")
+                        output_lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {formatted_target.lower()}`")
 
-                    # If only_ping_mode is True, require at least one ping category present. If False, always send.
-                    has_pings = bool(sh_pings or col_pings or res_pings)
-                    if not only_ping_mode or has_pings:
-                        await message.channel.send("\n".join(output_lines))
+                        # If only_ping_mode is True, require at least one ping category present. If False, always send.
+                        has_pings = bool(sh_pings or col_pings or res_pings)
+                        if not only_ping_mode or has_pings:
+                            await message.channel.send("\n".join(output_lines))
+    except Exception as e:
+        print(f"Error in spawn listener: {e}")
 
-    # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
+    # CRITICAL: Always process commands so E!sh, E!cl, E!r, E!onlyping still work
     await bot.process_commands(message)
 
 
