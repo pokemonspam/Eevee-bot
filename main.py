@@ -83,6 +83,11 @@ def extract_visual_features(img: Image.Image):
         for c in range(4):
             patch = arr[r*gh:(r+1)*gh, c*gw:(c+1)*gw]
             mean_color = patch.mean(axis=(0, 1))
+            
+            # Center-weighting: multiply middle 2x2 grid cells (where the sprite sits)
+            if r in [1, 2] and c in [1, 2]:
+                mean_color *= 2.0
+                
             features.extend(mean_color)
             
     features = np.array(features, dtype=float)
@@ -204,6 +209,7 @@ async def learn_embed(ctx):
         if current_section == "types":
             if line_stripped:
                 types_list.append(line_stripped)
+                # Parse exact custom Discord emoji formatting (<:name:id> or <a:name:id>) or unicode emojis
                 found_emojis = re.findall(r"<a?:[a-zA-Z0-9\_]+:\d+>|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\u2600-\u27bf]", line_stripped)
                 type_emojis.extend(found_emojis)
         elif current_section == "names":
@@ -297,21 +303,18 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
         highest_score = -1.0
 
         async for doc in cursor:
-            score = 0.0
-            
-            # Check against single phash or list of augmented phashes
+            # 1. pHash Structural Matching (80% weight for sprite structure)
             db_phashes = doc.get("phashes", [doc.get("phash")] if "phash" in doc else [])
             max_phash_score = 0.0
             for p_str in db_phashes:
                 if p_str:
                     db_phash = imagehash.hex_to_hash(p_str)
                     phash_dist = spawn_phash - db_phash
-                    p_score = max(0.0, 1.0 - (phash_dist / 20.0))
+                    p_score = max(0.0, 1.0 - (phash_dist / 18.0))
                     if p_score > max_phash_score:
                         max_phash_score = p_score
-            score += max_phash_score * 0.5
 
-            # Check against single visual features or list of augmented features
+            # 2. Center-Weighted Color Similarity (20% weight)
             db_vf_list = doc.get("visual_features_list", [doc.get("visual_features")] if "visual_features" in doc else [])
             max_color_score = 0.0
             for vf in db_vf_list:
@@ -319,13 +322,14 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
                     c_score = calculate_color_similarity(spawn_features, vf)
                     if c_score > max_color_score:
                         max_color_score = c_score
-            score += max_color_score * 0.5
 
-            if score > highest_score:
-                highest_score = score
+            total_score = (max_phash_score * 0.80) + (max_color_score * 0.20)
+
+            if total_score > highest_score:
+                highest_score = total_score
                 best_doc = doc
 
-        if best_doc and highest_score >= 0.10:
+        if best_doc and highest_score >= 0.25:
             accuracy_pct = int(min(1.0, highest_score) * 100)
             return best_doc, accuracy_pct
 
