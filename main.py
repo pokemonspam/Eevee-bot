@@ -107,7 +107,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ DUAL-TIER SPAWN LISTENER & SPY LEARNER
+# ⚡ DUAL-TIER SPAWN LISTENER & DUAL AUTO-LEARNER
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
@@ -122,6 +122,26 @@ async def on_message(message: discord.Message):
         if message.guild and message.author.id == 716390085896962058:
             if message.embeds:
                 embed = message.embeds[0]
+                
+                # Check if it's a catch success message (Fallback auto-learner)
+                if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
+                    if message.channel.id in bot.recent_spawns:
+                        spawn_hash_str = bot.recent_spawns[message.channel.id]
+                        match = re.search(r"you caught a level \d+ (.+?)(?:\s*[♂♀]|\s*\()", message.content, re.IGNORECASE)
+                        if match:
+                            pokemon_name = match.group(1).strip().title()
+                            if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
+                                formatted_catch_name = format_pokemon_name(pokemon_name)
+                                await phash_col.update_one(
+                                    {"pokemon": formatted_catch_name.lower()},
+                                    {"$set": {"pokemon": formatted_catch_name, "phash": spawn_hash_str}},
+                                    upsert=True
+                                )
+                                print(f"🧠 AUTO-LEARNED ON USER CATCH: Mapped '{formatted_catch_name}' -> pHash `{spawn_hash_str}` in MongoDB")
+                                del bot.recent_spawns[message.channel.id]
+                    return
+
+                # Check if it's a new spawn embed
                 if embed.title and "has appeared" in embed.title.lower():
                     spawned_pokemon = None
                     spawn_hash_str = None
@@ -140,7 +160,7 @@ async def on_message(message: discord.Message):
                             if validate_species(cleaned_name):
                                 spawned_pokemon = cleaned_name
 
-                        # B. Compute pHash and cache it for the naming bot to match against
+                        # B. Compute pHash and cache it for naming bots / catch listeners
                         try:
                             async with aiohttp.ClientSession() as session:
                                 async with session.get(embed.image.url) as resp:
@@ -150,7 +170,7 @@ async def on_message(message: discord.Message):
                                         spawn_hash = imagehash.phash(spawn_img)
                                         spawn_hash_str = str(spawn_hash)
                                         
-                                        # Cache for spy listener
+                                        # Cache for spy listeners / catch listeners
                                         bot.recent_spawns[message.channel.id] = spawn_hash_str
 
                                         # C. If URL parsing missed, try MongoDB pHash database via Hamming distance
@@ -244,14 +264,15 @@ async def on_message(message: discord.Message):
             else:
                 pokemon_name = content.split()[0].strip().title()
 
-            if pokemon_name and len(pokemon_name) <= 25:
+            if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
+                formatted_veg_name = format_pokemon_name(pokemon_name)
                 spawn_hash_str = bot.recent_spawns[message.channel.id]
                 await phash_col.update_one(
-                    {"pokemon": pokemon_name.lower()},
-                    {"$set": {"pokemon": pokemon_name, "phash": spawn_hash_str}},
+                    {"pokemon": formatted_veg_name.lower()},
+                    {"$set": {"pokemon": formatted_veg_name, "phash": spawn_hash_str}},
                     upsert=True
                 )
-                print(f"🧠 AUTO-LEARNED: Mapped '{pokemon_name}' -> pHash `{spawn_hash_str}` in MongoDB")
+                print(f"🧠 AUTO-LEARNED FROM VEGETAAAAA: Mapped '{formatted_veg_name}' -> pHash `{spawn_hash_str}` in MongoDB")
                 del bot.recent_spawns[message.channel.id]
 
     except Exception as e:
