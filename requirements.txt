@@ -4,3 +4,5 @@ motor
 pymongo[srv]
 dnspython
 python-levenshtein
+imagehash
+Pillow
