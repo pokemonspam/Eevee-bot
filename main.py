@@ -68,10 +68,11 @@ async def on_message(message: discord.Message):
         if message.guild and message.author.id == 716390085896962058:
             if message.embeds:
                 embed = message.embeds[0]
-                if embed.title and "wild pokémon has appeared" in embed.title.lower():
+                # Updated title check to handle fled messages where "has appeared" is present
+                if embed.title and "has appeared" in embed.title.lower():
                     spawned_pokemon = None
 
-                    # Extract Pokédex ID directly from Pokétwo's image URL
+                    # Extract Pokédex ID directly from Pokétwo's image URL (e.g., .../images/25.png -> 25)
                     if embed.image and embed.image.url:
                         match = re.search(r'(?:/images/|/)(\d+)(?:\.png|\?)', embed.image.url)
                         if match:
@@ -135,7 +136,7 @@ async def on_message(message: discord.Message):
     except Exception as e:
         print(f"Error in spawn listener: {e}")
 
-    # CRITICAL: Always process commands so E!sh, E!cl, E!r, E!onlyping still work
+    # CRITICAL: Always process commands so E!sh, E!cl, E!r still work
     await bot.process_commands(message)
 
 
@@ -1201,7 +1202,7 @@ async def reserve_role_remove(ctx, *, roles_input: str = None):
         desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
 
     embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(embed=desc)
+    await ctx.send(desc)
 
 
 # ==========================================
