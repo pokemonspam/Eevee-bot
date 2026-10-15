@@ -163,7 +163,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# 📚 DUAL-ENGINE EMBED LEARNER (E!learn) WITH AUGMENTATION
+# 📚 DUAL-ENGINE EMBED LEARNER (E!learn) WITH ACCUMULATIVE MERGING
 # ==========================================
 @bot.command(name="learn")
 async def learn_embed(ctx):
@@ -209,7 +209,6 @@ async def learn_embed(ctx):
         if current_section == "types":
             if line_stripped:
                 types_list.append(line_stripped)
-                # Parse exact custom Discord emoji formatting (<:name:id> or <a:name:id>) or unicode emojis
                 found_emojis = re.findall(r"<a?:[a-zA-Z0-9\_]+:\d+>|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\u2600-\u27bf]", line_stripped)
                 type_emojis.extend(found_emojis)
         elif current_section == "names":
@@ -250,87 +249,132 @@ async def learn_embed(ctx):
     all_valid_names = [formatted_name] + alt_names
     shortest_copy_name = min(all_valid_names, key=len).lower()
 
-    # Generate augmented variants for instant robust matching
+    # Generate augmented variants
     augmented_variants = generate_augmented_variants(img)
-    phashes = []
-    visual_features_list = []
+    new_phashes = []
+    new_visual_features_list = []
 
     for var_img in augmented_variants:
-        phashes.append(str(imagehash.phash(var_img)))
-        visual_features_list.append(extract_visual_features(var_img))
+        new_phashes.append(str(imagehash.phash(var_img)))
+        new_visual_features_list.append(extract_visual_features(var_img))
 
-    await phash_col.update_one(
-        {"pokemon": formatted_name.lower()},
-        {
-            "$set": {
-                "pokemon": formatted_name,
-                "alt_names": alt_names,
-                "types": types_list,
-                "type_emojis": list(dict.fromkeys(type_emojis)),
-                "shortest_name": shortest_copy_name,
-                "phash": phashes[0], # Primary pHash
-                "phashes": phashes, # All augmented pHashes
-                "visual_features": visual_features_list[0], # Primary features
-                "visual_features_list": visual_features_list # All augmented features
+    # Safely update existing unique document without deleting historical data
+    existing_doc = await phash_col.find_one({"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}})
+
+    if existing_doc:
+        existing_phashes = existing_doc.get("phashes", [existing_doc.get("phash")] if "phash" in existing_doc else [])
+        existing_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
+        existing_alt_names = existing_doc.get("alt_names", [])
+        existing_types = existing_doc.get("types", [])
+        existing_emojis = existing_doc.get("type_emojis", [])
+
+        combined_phashes = list(dict.fromkeys(existing_phashes + new_phashes))
+        combined_vfs = existing_vfs + new_visual_features_list
+        combined_alt_names = list(dict.fromkeys(existing_alt_names + alt_names))
+        combined_types = list(dict.fromkeys(existing_types + types_list))
+        combined_emojis = list(dict.fromkeys(existing_emojis + type_emojis))
+
+        await phash_col.update_one(
+            {"_id": existing_doc["_id"]},
+            {
+                "$set": {
+                    "pokemon": formatted_name,
+                    "alt_names": combined_alt_names,
+                    "types": combined_types,
+                    "type_emojis": combined_emojis,
+                    "shortest_name": shortest_copy_name,
+                    "phash": combined_phashes[0],
+                    "phashes": combined_phashes,
+                    "visual_features": combined_vfs[0],
+                    "visual_features_list": combined_vfs
+                }
             }
-        },
-        upsert=True
-    )
+        )
+        action_msg = "Preserved historical data & appended new unique variants"
+    else:
+        await phash_col.insert_one({
+            "pokemon": formatted_name,
+            "alt_names": alt_names,
+            "types": types_list,
+            "type_emojis": list(dict.fromkeys(type_emojis)),
+            "shortest_name": shortest_copy_name,
+            "phash": new_phashes[0],
+            "phashes": new_phashes,
+            "visual_features": new_visual_features_list[0],
+            "visual_features_list": new_visual_features_list
+        })
+        action_msg = "Created new unique record"
 
     await ctx.send(embed=discord.Embed(
         title="🧠 Augmented Dual-Engine Learning Successful!",
         description=(
             f"**Pokémon:** {formatted_name}\n"
             f"**Shortest Copy Name:** `{shortest_copy_name}`\n"
-            f"**Type Emojis:** {' '.join(type_emojis) if type_emojis else 'None'}\n"
-            f"**Augmented Variants Generated:** {len(augmented_variants)} variants (Flips, Brightness, Contrast) ✅"
+            f"**Status:** {action_msg} ✅"
         ),
         color=discord.Color.green()
     ))
 
 
 # ==========================================
-# ⚡ DUAL-ENGINE MATCHING ENGINE (WITH ACCURACY SCORE)
+# ⚡ DUAL-ENGINE MATCHING ENGINE (WITH FAILOVER FALLBACK)
 # ==========================================
 async def identify_pokemon_dual_engine(image_bytes: bytes):
     try:
         spawn_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        spawn_phash = imagehash.phash(spawn_img)
-        spawn_features = extract_visual_features(spawn_img)
+        flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
+        
+        spawn_phash_orig = imagehash.phash(spawn_img)
+        spawn_phash_flip = imagehash.phash(flipped_spawn_img)
+        
+        spawn_features_orig = extract_visual_features(spawn_img)
+        spawn_features_flip = extract_visual_features(flipped_spawn_img)
 
         cursor = phash_col.find({})
         best_doc = None
         highest_score = -1.0
 
         async for doc in cursor:
-            # 1. pHash Structural Matching (80% weight for sprite structure)
-            db_phashes = doc.get("phashes", [doc.get("phash")] if "phash" in doc else [])
+            db_phashes = doc.get("phashes", [])
+            if not db_phashes and doc.get("phash"):
+                db_phashes = [doc.get("phash")]
+
             max_phash_score = 0.0
             for p_str in db_phashes:
                 if p_str:
                     db_phash = imagehash.hex_to_hash(p_str)
-                    phash_dist = spawn_phash - db_phash
-                    p_score = max(0.0, 1.0 - (phash_dist / 18.0))
-                    if p_score > max_phash_score:
-                        max_phash_score = p_score
+                    
+                    dist_orig = spawn_phash_orig - db_phash
+                    score_orig = max(0.0, 1.0 - (dist_orig / 32.0))
+                    
+                    dist_flip = spawn_phash_flip - db_phash
+                    score_flip = max(0.0, 1.0 - (dist_flip / 32.0))
+                    
+                    best_p = max(score_orig, score_flip)
+                    if best_p > max_phash_score:
+                        max_phash_score = best_p
 
-            # 2. Center-Weighted Color Similarity (20% weight)
-            db_vf_list = doc.get("visual_features_list", [doc.get("visual_features")] if "visual_features" in doc else [])
+            db_vf_list = doc.get("visual_features_list", [])
+            if not db_vf_list and doc.get("visual_features"):
+                db_vf_list = [doc.get("visual_features")]
+
             max_color_score = 0.0
             for vf in db_vf_list:
                 if vf:
-                    c_score = calculate_color_similarity(spawn_features, vf)
-                    if c_score > max_color_score:
-                        max_color_score = c_score
+                    c_orig = calculate_color_similarity(spawn_features_orig, vf)
+                    c_flip = calculate_color_similarity(spawn_features_flip, vf)
+                    best_c = max(c_orig, c_flip)
+                    if best_c > max_color_score:
+                        max_color_score = best_c
 
-            total_score = (max_phash_score * 0.80) + (max_color_score * 0.20)
+            total_score = (max_phash_score * 0.70) + (max_color_score * 0.30)
 
             if total_score > highest_score:
                 highest_score = total_score
                 best_doc = doc
 
-        if best_doc and highest_score >= 0.25:
-            accuracy_pct = int(min(1.0, highest_score) * 100)
+        if best_doc:
+            accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
             return best_doc, accuracy_pct
 
     except Exception as e:
@@ -401,20 +445,26 @@ async def on_message(message: discord.Message):
                                             "features": extract_visual_features(spawn_img)
                                         }
 
-                                        # 1. DUAL-ENGINE LOCAL MATCH (No URL Fallback)
+                                        # CASCADE STEP 1: Local Match
                                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
-                                        if matched_doc:
+                                        if matched_doc and accuracy_score >= 40:
                                             spawned_pokemon = matched_doc.get("pokemon")
                                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                                             type_emojis = matched_doc.get("type_emojis", [])
 
-                                        # 2. Hugging Face Fallback if local match fails
+                                        # CASCADE STEP 2: Hugging Face Fallback
                                         if not spawned_pokemon:
                                             hf_result = await identify_pokemon_via_hf(image_bytes)
                                             if hf_result:
                                                 spawned_pokemon = hf_result
                                                 shortest_name = hf_result.lower()
-                                                accuracy_score = 35 # Base HF confidence approximation
+                                                accuracy_score = 65
+
+                                        # CASCADE STEP 3: Fallback to closest local candidate so you get an answer to inspect
+                                        if not spawned_pokemon and matched_doc:
+                                            spawned_pokemon = matched_doc.get("pokemon")
+                                            shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
+                                            type_emojis = matched_doc.get("type_emojis", [])
 
                         except Exception as hash_err:
                             print(f"Vision processing error: {hash_err}")
@@ -560,7 +610,7 @@ async def test_spawn(ctx):
                         image_bytes = await resp.read()
                         
                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
-                        if matched_doc:
+                        if matched_doc and accuracy_score >= 40:
                             spawned_pokemon = matched_doc.get("pokemon")
                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                             type_emojis = matched_doc.get("type_emojis", [])
@@ -570,7 +620,12 @@ async def test_spawn(ctx):
                             if hf_result:
                                 spawned_pokemon = hf_result
                                 shortest_name = hf_result.lower()
-                                accuracy_score = 35
+                                accuracy_score = 65
+
+                        if not spawned_pokemon and matched_doc:
+                            spawned_pokemon = matched_doc.get("pokemon")
+                            shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
+                            type_emojis = matched_doc.get("type_emojis", [])
 
                         if spawned_pokemon and not shortest_name:
                             shortest_name = spawned_pokemon.lower()
