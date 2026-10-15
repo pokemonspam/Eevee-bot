@@ -101,19 +101,19 @@ class Starboard(commands.Cog):
         embed.set_footer(text="Catch Detection System")
         return embed
 
-    @commands.group(name="starboard", invoke_without_command=True)
+    @commands.group(name="starboard", invoke_without_command=True, case_insensitive=True)
     async def starboard_group(self, ctx):
         embed = discord.Embed(
             title="📋 Starboard Configuration Commands List",
             description=(
                 "**Link category to channel:**\n"
-                "```A!starboard set <category> <#channel>```\n"
+                "```E!starboard set <category> <#channel> or e!starboard set <category> <#channel>```\n"
                 "**Unlink/Clear a category:**\n"
-                "```A!starboard clear <category>```\n\n"
+                "```E!starboard clear <category> or e!starboard clear <category>```\n\n"
                 "**Available Categories:**\n"
                 "• `shiny`, `rare`, `high_iv`, `low_iv`, `regional`, `gmax`\n\n"
                 "**Check Current Mappings:**\n"
-                "```A!starboard channel```"
+                "```E!starboard channel or e!starboard channel```"
             ),
             color=0x2B2D31
         )
@@ -141,7 +141,6 @@ class Starboard(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    # 🟢 ADDED: Clear / Remove Command
     @starboard_group.command(name="clear", aliases=["remove", "unset", "delete"])
     async def clear_category_channel(self, ctx, category: str):
         valid_categories = ["shiny", "rare", "high_iv", "low_iv", "regional", "gmax"]
@@ -217,7 +216,6 @@ class Starboard(commands.Cog):
             elif embed_obj.image:
                 sprite_url = embed_obj.image.url
 
-        # Parse IV % from catch text (e.g., "IV: 92.50%")
         iv_value = None
         iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
         if iv_match:
@@ -226,23 +224,18 @@ class Starboard(commands.Cog):
             except ValueError:
                 iv_value = None
 
-        # Parse Level
         lvl_match = re.search(r"Level\s+(\d+)", content)
         level_str = lvl_match.group(1) if lvl_match else "N/A"
 
-        # Parse Pokémon Name
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
         pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Unknown Pokémon"
 
-        # Parse Gender (♀ or ♂)
         gender_match = re.search(r"([♀♂])", content)
         gender_str = gender_match.group(1) if gender_match else ""
 
-        # Parse Form
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
         form_str = form_match.group(1).strip() if form_match else ""
 
-        # Parse Chain count
         chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
         chain_val = chain_match.group(1) if chain_match else None
 
@@ -257,33 +250,26 @@ class Starboard(commands.Cog):
             "sprite_url": sprite_url
         }
 
-        # Determine target categories
         detected_categories = []
 
-        # 1. Shiny Detection
         if "These colors seem unusual..." in content or "✨" in content:
             detected_categories.append("shiny")
 
-        # 2. Gmax Detection
         if "Woah! It seems that this pokémon has the Gigantamax Factor..." in content:
             detected_categories.append("gmax")
 
-        # 3. IV Detections
         if iv_value is not None:
             if iv_value >= 90.0:
                 detected_categories.append("high_iv")
             elif iv_value < 10.0:
                 detected_categories.append("low_iv")
 
-        # 4. Regional Detection
         if self.is_regional(pokemon_name):
             detected_categories.append("regional")
 
-        # 5. Rare Detection
         if self.is_rare(pokemon_name):
             detected_categories.append("rare")
 
-        # Dispatch embeds to matching configured channels in MongoDB
         for category_key in detected_categories:
             if category_key in categories:
                 target_channel_id = categories[category_key]
