@@ -11,6 +11,24 @@ import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 
+
+import asyncio
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+
+async def purge_lillipup():
+    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
+    db = mongo_client["pokemon_bot"]
+    phash_col = db["phash_database"]
+
+    # Delete the corrupted Lillipup record entirely
+    result = await phash_col.delete_one({"pokemon": {"$regex": "^lillipup$", "$options": "i"}})
+    print(f"🗑️ Deleted Lillipup from database. Count removed: {result.deleted_count}")
+
+asyncio.run(purge_lillipup())
+
+
+
 # Import dataset helpers and registries from dataset.py
 from dataset import (
     parse_pokemon_list,
