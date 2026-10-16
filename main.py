@@ -111,6 +111,15 @@ async def on_ready():
 # ==========================================
 # 🎨 FEATURE EXTRACTOR & AUGMENTATION
 # ==========================================
+def process_image_canvas(img: Image.Image) -> Image.Image:
+    """Converts transparent WEBP/PNG images to RGB by placing them on a clean white background."""
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        converted = img.convert("RGBA")
+        canvas = Image.new("RGBA", converted.size, (255, 255, 255, 255))
+        canvas.alpha_composite(converted)
+        return canvas.convert("RGB")
+    return img.convert("RGB")
+
 def extract_visual_features(img: Image.Image):
     img_resized = img.resize((32, 32)).convert("RGB")
     arr = np.array(img_resized)
@@ -147,7 +156,7 @@ def calculate_color_similarity(vec1, vec2):
 def generate_exhaustive_variants(img: Image.Image):
     """Generates a streamlined matrix of variations to stay well under 512MB RAM."""
     variants = []
-    base = img.convert("RGB")
+    base = process_image_canvas(img)
     w, h = base.size
 
     # Reduced bounds to prevent OOM
@@ -228,7 +237,11 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 # ==========================================
 async def identify_pokemon_dual_engine(image_bytes: bytes):
     try:
-        spawn_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        raw_img = Image.open(io.BytesIO(image_bytes))
+        if hasattr(raw_img, "seek"):
+            raw_img.seek(0)
+            
+        spawn_img = process_image_canvas(raw_img)
         flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
         
         spawn_p_orig = imagehash.phash(spawn_img)
@@ -252,8 +265,8 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
             for p_str in db_phashes:
                 if p_str:
                     db_p = imagehash.hex_to_hash(p_str)
-                    s_orig = max(0.0, 1.0 - ((spawn_p_orig - db_p) / 18.0))
-                    s_flip = max(0.0, 1.0 - ((spawn_p_flip - db_p) / 18.0))
+                    s_orig = max(0.0, 1.0 - ((spawn_p_orig - db_p) / 22.0))
+                    s_flip = max(0.0, 1.0 - ((spawn_p_flip - db_p) / 22.0))
                     best_sp = max(s_orig, s_flip)
                     if best_sp > max_p_score:
                         max_p_score = best_sp
@@ -263,8 +276,8 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
             for d_str in db_dhashes:
                 if d_str:
                     db_d = imagehash.hex_to_hash(d_str)
-                    d_orig_score = max(0.0, 1.0 - ((spawn_d_orig - db_d) / 18.0))
-                    d_flip_score = max(0.0, 1.0 - ((spawn_d_flip - db_d) / 18.0))
+                    d_orig_score = max(0.0, 1.0 - ((spawn_d_orig - db_d) / 22.0))
+                    d_flip_score = max(0.0, 1.0 - ((spawn_d_flip - db_d) / 22.0))
                     best_sd = max(d_orig_score, d_flip_score)
                     if best_sd > max_d_score:
                         max_d_score = best_sd
@@ -436,7 +449,10 @@ async def learn_embed(ctx):
             async with session.get(embed.image.url) as resp:
                 if resp.status == 200:
                     image_bytes = await resp.read()
-                    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                    raw_img = Image.open(io.BytesIO(image_bytes))
+                    if hasattr(raw_img, "seek"):
+                        raw_img.seek(0)
+                    img = process_image_canvas(raw_img)
                 else:
                     await ctx.send(embed=discord.Embed(description="❌ Failed to download sprite image.", color=discord.Color.red()))
                     return
@@ -561,7 +577,10 @@ async def on_message(message: discord.Message):
                                 async with session.get(embed.image.url) as resp:
                                     if resp.status == 200:
                                         image_bytes = await resp.read()
-                                        spawn_img = Image.open(io.BytesIO(image_bytes))
+                                        raw_spawn = Image.open(io.BytesIO(image_bytes))
+                                        if hasattr(raw_spawn, "seek"):
+                                            raw_spawn.seek(0)
+                                        spawn_img = process_image_canvas(raw_spawn)
                                         
                                         bot.recent_spawns[message.channel.id] = {
                                             "image_obj": spawn_img
