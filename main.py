@@ -6,6 +6,7 @@ import asyncio
 import imagehash
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
+from aiohttp import web
 import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -37,10 +38,30 @@ bot.db = db
 # Memory cache for active channel spawns to map to naming bot outputs
 bot.recent_spawns = {}
 
+# -------------------------------------------------------------
+# DUMMY PORT SERVER FOR RENDER FREE WEB SERVICE
+# -------------------------------------------------------------
+async def handle_ping(request):
+    return web.Response(text="Bot is alive!")
+
+async def start_dummy_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))  # Render automatically sets PORT
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"✅ Dummy web server listening on port {port}")
+
+
 @bot.event
 async def setup_hook():
     await bot.load_extension("starboard")
     print("✅ Loaded starboard extension successfully!")
+    
+    # Launch the dummy HTTP server so Render detects an open port
+    asyncio.create_task(start_dummy_server())
 
 reserves_col = db["reserves"]
 collections_col = db["collections"]
