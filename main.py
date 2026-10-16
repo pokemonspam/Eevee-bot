@@ -575,9 +575,9 @@ async def learn_spawn_cmd(ctx, *, pokemon_name: str = None):
 # ==========================================
 @bot.command(name="correct")
 async def correct_cmd(ctx):
-    """Confirms the bot's identification by parsing name from message text and training on the cached spawn image."""
+    """Confirms the bot's identification by parsing the name directly from the output message."""
     if not ctx.message.reference:
-        await ctx.send(embed=discord.Embed(description="❌ Please reply directly to the bot's identification message (e.g. `E!testspawn` output)!", color=discord.Color.red()))
+        await ctx.send(embed=discord.Embed(description="❌ Reply directly to the bot's identification or testspawn message!", color=discord.Color.red()))
         return
 
     try:
@@ -586,20 +586,29 @@ async def correct_cmd(ctx):
         await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
         return
 
-    target_name = None
     search_text = replied_msg.content or ""
     if replied_msg.embeds:
         for embed in replied_msg.embeds:
             if embed.description:
                 search_text += "\n" + embed.description
 
-    # Match format like **Pokémon:** Kecleon or **Kecleon**
-    match = re.search(r"\*\*(?:Pokémon:\s*)?([A-Za-z\s\.\'\-]+?)\*\*", search_text)
-    if match:
-        target_name = match.group(1).split(":")[0].strip()
+    # 1. First attempt: Parse directly from Copy Command block (`@Pokétwo#8236 c partner eevee`)
+    target_name = None
+    copy_match = re.search(r"c\s+([A-Za-z0-9\s\.\'\-]+)`?", search_text, re.IGNORECASE)
+    if copy_match:
+        target_name = copy_match.group(1).replace("`", "").strip()
+
+    # 2. Second attempt: Fallback to matching 'Pokémon: Partner Eevee' line (handles both bold and plain text)
+    if not target_name:
+        match = re.search(r"Pokémon:\s*([A-Za-z0-9\s\.\'\-]+?)(?:\s*:|\s*<|\s*\d+%)", search_text, re.IGNORECASE)
+        if match:
+            target_name = match.group(1).strip()
 
     if not target_name or not validate_species(target_name):
-        await ctx.send(embed=discord.Embed(description="❌ Could not parse a valid Pokémon name from that message text.", color=discord.Color.red()))
+        await ctx.send(embed=discord.Embed(
+            description=f"❌ Could not parse a valid Pokémon species from that message. (Parsed: `{target_name}`)", 
+            color=discord.Color.red()
+        ))
         return
 
     spawn_img = bot.recent_spawns.get(ctx.channel.id, {}).get("image_obj")
@@ -609,11 +618,14 @@ async def correct_cmd(ctx):
         await append_pokemon_spawn_data(formatted_target, spawn_img)
         await ctx.send(embed=discord.Embed(
             title="🎯 Correct Match Confirmed!",
-            description=f"Successfully locked **{formatted_target}** into memory. Future variants of this spawn will now match with 100% precision!",
+            description=f"Successfully locked **{formatted_target}** into database memory! Future spawns of this sprite will now match with **100% precision**.",
             color=discord.Color.green()
         ))
     else:
-        await ctx.send(embed=discord.Embed(description="❌ Active spawn image cache expired for this channel. Use `E!learnspawn <name>` by replying directly to the original spawn embed instead.", color=discord.Color.red()))
+        await ctx.send(embed=discord.Embed(
+            description="❌ Active spawn image cache expired for this channel. Reply directly to the original Pokétwo spawn embed using `E!learnspawn <name>` instead.", 
+            color=discord.Color.red()
+        ))
 
 
 @bot.command(name="wrong")
@@ -624,7 +636,7 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
         return
 
     if not correct_name or not validate_species(correct_name):
-        await ctx.send(embed=discord.Embed(description="❌ Please provide the actual correct Pokémon name! Example: `E!wrong Kecleon`", color=discord.Color.red()))
+        await ctx.send(embed=discord.Embed(description="❌ Please provide a valid actual Pokémon species name! Example: `E!wrong Partner Eevee`", color=discord.Color.red()))
         return
 
     try:
@@ -633,23 +645,27 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
         await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
         return
 
-    wrong_name = None
     search_text = replied_msg.content or ""
     if replied_msg.embeds:
         for embed in replied_msg.embeds:
             if embed.description:
                 search_text += "\n" + embed.description
 
-    match = re.search(r"\*\*(?:Pokémon:\s*)?([A-Za-z\s\.\'\-]+?)\*\*", search_text)
-    if match:
-        wrong_name = match.group(1).split(":")[0].strip()
+    wrong_name = None
+    copy_match = re.search(r"c\s+([A-Za-z0-9\s\.\'\-]+)`?", search_text, re.IGNORECASE)
+    if copy_match:
+        wrong_name = copy_match.group(1).replace("`", "").strip()
+    else:
+        match = re.search(r"Pokémon:\s*([A-Za-z0-9\s\.\'\-]+?)(?:\s*:|\s*<|\s*\d+%)", search_text, re.IGNORECASE)
+        if match:
+            wrong_name = match.group(1).strip()
 
-    # 1. Purge incorrect records from database
+    # 1. Purge incorrect database entry
     if wrong_name:
         formatted_wrong = format_pokemon_name(wrong_name)
         await phash_col.delete_one({"pokemon": {"$regex": f"^{re.escape(formatted_wrong)}$", "$options": "i"}})
 
-    # 2. Re-train immediately with the provided correct name using cached image
+    # 2. Re-train immediately with correct target name using cached spawn image
     spawn_img = bot.recent_spawns.get(ctx.channel.id, {}).get("image_obj")
     formatted_correct = format_pokemon_name(correct_name)
 
@@ -657,12 +673,12 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
         await append_pokemon_spawn_data(formatted_correct, spawn_img)
         await ctx.send(embed=discord.Embed(
             title="🧠 Misidentification Fixed & Re-learned!",
-            description=f"Wiped incorrect entry for **{wrong_name if wrong_name else 'Unknown'}**.\nSuccessfully mapped this spawn to **{formatted_correct}** so it will never be misidentified again!",
+            description=f"Wiped incorrect entry for **{wrong_name if wrong_name else 'Unknown'}**.\nSuccessfully mapped this spawn to **{formatted_correct}** so it will never name it wrong again!",
             color=discord.Color.green()
         ))
     else:
         await ctx.send(embed=discord.Embed(
-            description=f"🗑️ Cleaned wrong records for **{wrong_name}**. Cached spawn image was missing, please reply directly to the spawn embed with `E!learnspawn {formatted_correct}`.",
+            description=f"🗑️ Cleaned wrong records for **{wrong_name}**. Cached spawn image missing, reply directly to the spawn embed with `E!learnspawn {formatted_correct}`.",
             color=discord.Color.gold()
         ))
 
