@@ -274,7 +274,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
 
 
 # ==========================================
-# 🧠 ADAPTIVE AUTO-LEARNING HELPER (Stops at 100%)
+# 🧠 UNLIMITED CONTINUOUS AUTO-LEARNING ENGINE (95%+ Target)
 # ==========================================
 async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image):
     with io.BytesIO() as buf:
@@ -283,9 +283,11 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
     
     matched_doc, current_accuracy = await identify_pokemon_dual_engine(raw_bytes)
 
-    if matched_doc and matched_doc.get("pokemon", "").lower() == formatted_name.lower() and current_accuracy >= 100:
-        print(f"🎯 {formatted_name} has reached 100% accuracy! Learning skipped.")
+    if matched_doc and matched_doc.get("pokemon", "").lower() == formatted_name.lower() and current_accuracy >= 95:
+        print(f"🎯 '{formatted_name}' has reached {current_accuracy}% accuracy (>=95%). Mastered!")
         return False, current_accuracy
+
+    print(f"🔄 Accuracy for '{formatted_name}' is {current_accuracy}% (<95%). Ingesting live spawn variants...")
 
     new_p, new_d, new_vfs = extract_all_exhaustive_variant_data(spawn_img)
 
@@ -326,8 +328,9 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
             "visual_features_list": new_vfs
         })
 
-    print(f"🧠 CONTINUOUS AUTO-LEARN: Appended exhaustive spawn variants for '{formatted_name}' into MongoDB!")
-    return True, current_accuracy
+    _, new_accuracy = await identify_pokemon_dual_engine(raw_bytes)
+    print(f"🧠 AUTO-LEARN SUCCESS: Added variants for '{formatted_name}'. Upgraded Accuracy: {new_accuracy}%")
+    return True, new_accuracy
 
 
 # ==========================================
@@ -538,9 +541,9 @@ async def on_message(message: discord.Message):
                                             "image_obj": spawn_img
                                         }
 
-                                        # CASCADE STEP 1: Local Match
+                                        # CASCADE STEP 1: Strict Local Match (Requires 95%+ Confidence)
                                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
-                                        if matched_doc and accuracy_score >= 40:
+                                        if matched_doc and accuracy_score >= 95:
                                             spawned_pokemon = matched_doc.get("pokemon")
                                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                                             type_emojis = matched_doc.get("type_emojis", [])
@@ -693,7 +696,7 @@ async def test_spawn(ctx):
                         image_bytes = await resp.read()
                         
                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
-                        if matched_doc and accuracy_score >= 40:
+                        if matched_doc and accuracy_score >= 95:
                             spawned_pokemon = matched_doc.get("pokemon")
                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                             type_emojis = matched_doc.get("type_emojis", [])
