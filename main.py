@@ -105,24 +105,19 @@ def calculate_color_similarity(vec1, vec2):
     return float(dot_product / norm_product)
 
 def generate_exhaustive_variants(img: Image.Image):
-    """Generates an exhaustive matrix of visual variations covering 
-    every possible combination of flips, fine scale steps, rotations, brightness, 
-    contrast, and edge sharpening until nothing more is left to generate."""
+    """Generates a streamlined matrix of variations to stay well under 512MB RAM."""
     variants = []
     base = img.convert("RGB")
     w, h = base.size
 
-    # 1. Base Orientations (Normal & Flipped)
+    # Reduced bounds to prevent OOM
     orientations = [base, base.transpose(Image.FLIP_LEFT_RIGHT)]
-
-    # Matrix Parameter Bounds (Exhaustive Combinatorial Grid)
-    scales = [0.75, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10, 1.18]
-    rotations = [-15, -10, -6, -3, 0, 3, 6, 10, 15]
-    brightness_levels = [0.70, 0.85, 1.0, 1.15, 1.30]
-    contrast_levels = [0.75, 1.0, 1.25]
+    scales = [0.90, 1.0, 1.10]
+    rotations = [-6, 0, 6]
+    brightness_levels = [0.85, 1.0, 1.15]
+    contrast_levels = [1.0, 1.25]
 
     for b in orientations:
-        # A. Multi-Scale Transforms
         for scale in scales:
             nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
             resized = b.resize((nw, nh), resample=Image.BICUBIC)
@@ -133,36 +128,16 @@ def generate_exhaustive_variants(img: Image.Image):
                 crop_x, crop_y = (nw - w) // 2, (nh - h) // 2
                 canvas = resized.crop((crop_x, crop_y, crop_x + w, crop_y + h))
             
-            # B. Rotation Transforms on Scaled Image
             for angle in rotations:
-                if angle == 0:
-                    rotated = canvas
-                else:
-                    rotated = canvas.rotate(angle, resample=Image.BICUBIC, expand=False)
-                
-                # C. Brightness Spectrum
+                rotated = canvas if angle == 0 else canvas.rotate(angle, resample=Image.BICUBIC, expand=False)
                 for b_val in brightness_levels:
-                    if b_val == 1.0:
-                        brightened = rotated
-                    else:
-                        brightened = ImageEnhance.Brightness(rotated).enhance(b_val)
-                    
-                    # D. Contrast Spectrum
+                    brightened = rotated if b_val == 1.0 else ImageEnhance.Brightness(rotated).enhance(b_val)
                     for c_val in contrast_levels:
-                        if c_val == 1.0:
-                            final_img = brightened
-                        else:
-                            final_img = ImageEnhance.Contrast(brightened).enhance(c_val)
-                        
+                        final_img = brightened if c_val == 1.0 else ImageEnhance.Contrast(brightened).enhance(c_val)
                         variants.append(final_img)
 
-        # E. Edge Sharpening & High-Contrast Filter Variations
-        enh_b = ImageEnhance.Brightness(b).enhance(1.15)
-        high_v = ImageEnhance.Contrast(enh_b).enhance(1.25)
-        variants.append(high_v.filter(ImageFilter.EDGE_ENHANCE))
-        variants.append(high_v.filter(ImageFilter.SHARPEN))
-
     return variants
+
 
 def extract_all_exhaustive_variant_data(img: Image.Image):
     all_variants = generate_exhaustive_variants(img)
