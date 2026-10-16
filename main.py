@@ -11,24 +11,6 @@ import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 
-
-import asyncio
-import os
-from motor.motor_asyncio import AsyncIOMotorClient
-
-async def purge_lillipup():
-    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
-    db = mongo_client["pokemon_bot"]
-    phash_col = db["phash_database"]
-
-    # Delete the corrupted Lillipup record entirely
-    result = await phash_col.delete_one({"pokemon": {"$regex": "^lillipup$", "$options": "i"}})
-    print(f"🗑️ Deleted Lillipup from database. Count removed: {result.deleted_count}")
-
-asyncio.run(purge_lillipup())
-
-
-
 # Import dataset helpers and registries from dataset.py
 from dataset import (
     parse_pokemon_list,
@@ -108,7 +90,7 @@ async def on_ready():
 
 
 # ==========================================
-# 🎨 MAXIMUM EXHAUSTIVE FEATURE EXTRACTOR & AUGMENTATION
+# 🎨 FEATURE EXTRACTOR & AUGMENTATION
 # ==========================================
 def extract_visual_features(img: Image.Image):
     img_resized = img.resize((32, 32)).convert("RGB")
@@ -298,7 +280,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
 
 
 # ==========================================
-# 🧠 UNLIMITED CONTINUOUS AUTO-LEARNING ENGINE (95%+ Target)
+# 🧠 SAFE AUTO-LEARNING ENGINE (STRICT 120 VARIANTS CAP)
 # ==========================================
 async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image):
     with io.BytesIO() as buf:
@@ -311,7 +293,7 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
         print(f"🎯 '{formatted_name}' has reached {current_accuracy}% accuracy (>=95%). Mastered!")
         return False, current_accuracy
 
-    print(f"🔄 Accuracy for '{formatted_name}' is {current_accuracy}% (<95%). Generating full combinatorial variant matrix...")
+    print(f"🔄 Accuracy for '{formatted_name}' is {current_accuracy}% (<95%). Generating variant matrix...")
 
     new_p, new_d, new_vfs = extract_all_exhaustive_variant_data(spawn_img)
 
@@ -322,9 +304,11 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
         old_d = existing_doc.get("dhashes", [existing_doc.get("dhash")] if "dhash" in existing_doc else [])
         old_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
 
-        combined_p = list(dict.fromkeys(old_p + new_p))
-        combined_d = list(dict.fromkeys(old_d + new_d))
-        combined_vfs = old_vfs + new_vfs
+        # HARD CAP: Limit variants to 120 so records never bloat or hijack other matches
+        MAX_VARIANTS = 120
+        combined_p = list(dict.fromkeys(old_p + new_p))[:MAX_VARIANTS]
+        combined_d = list(dict.fromkeys(old_d + new_d))[:MAX_VARIANTS]
+        combined_vfs = (old_vfs + new_vfs)[:MAX_VARIANTS]
 
         await phash_col.update_one(
             {"_id": existing_doc["_id"]},
@@ -353,7 +337,7 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
         })
 
     _, new_accuracy = await identify_pokemon_dual_engine(raw_bytes)
-    print(f"🧠 AUTO-LEARN SUCCESS: Added {len(new_p)} variants for '{formatted_name}'. Upgraded Accuracy: {new_accuracy}%")
+    print(f"🧠 AUTO-LEARN SUCCESS: Clean variants added for '{formatted_name}'. Accuracy: {new_accuracy}%")
     return True, new_accuracy
 
 
@@ -458,9 +442,10 @@ async def learn_embed(ctx):
         old_d = existing_doc.get("dhashes", [existing_doc.get("dhash")] if "dhash" in existing_doc else [])
         old_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
 
-        combined_p = list(dict.fromkeys(old_p + new_p))
-        combined_d = list(dict.fromkeys(old_d + new_d))
-        combined_vfs = old_vfs + new_vfs
+        MAX_VARIANTS = 120
+        combined_p = list(dict.fromkeys(old_p + new_p))[:MAX_VARIANTS]
+        combined_d = list(dict.fromkeys(old_d + new_d))[:MAX_VARIANTS]
+        combined_vfs = (old_vfs + new_vfs)[:MAX_VARIANTS]
 
         await phash_col.update_one(
             {"_id": existing_doc["_id"]},
@@ -481,7 +466,7 @@ async def learn_embed(ctx):
             }
         )
         total_variants = len(combined_p)
-        action_msg = "Preserved historical data & merged exhaustive variants"
+        action_msg = "Preserved historical data & merged variants"
     else:
         await phash_col.insert_one({
             "pokemon": formatted_name,
@@ -502,7 +487,7 @@ async def learn_embed(ctx):
     _, verified_score = await identify_pokemon_dual_engine(image_bytes)
 
     await ctx.send(embed=discord.Embed(
-        title="🧠 High-Precision Exhaustive Learning Complete!",
+        title="🧠 High-Precision Learning Complete!",
         description=(
             f"**Pokémon:** {formatted_name}\n"
             f"**Shortest Copy Name:** `{shortest_copy_name}`\n"
@@ -515,7 +500,7 @@ async def learn_embed(ctx):
 
 
 # ==========================================
-# ⚡ SPAWN LISTENER & CONTINUOUS AUTO-LEARNER
+# ⚡ SPAWN LISTENER & AUTO-LEARNER (WITH STRICT 60% CONFIDENCE GUARD)
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
@@ -528,7 +513,6 @@ async def on_message(message: discord.Message):
         # -------------------------------------------------------------
         if message.guild and message.author.id == 716390085896962058:
             
-            # A. Check catch success message for continuous learning
             if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
                 if message.channel.id in bot.recent_spawns:
                     spawn_data = bot.recent_spawns[message.channel.id]
@@ -543,7 +527,6 @@ async def on_message(message: discord.Message):
                             del bot.recent_spawns[message.channel.id]
                 return
 
-            # B. Check new spawn embed
             if message.embeds:
                 embed = message.embeds[0]
                 if embed.title and "has appeared" in embed.title.lower():
@@ -580,8 +563,8 @@ async def on_message(message: discord.Message):
                                                 shortest_name = hf_result.lower()
                                                 accuracy_score = 65
 
-                                        # CASCADE STEP 3: Fallback to closest local candidate
-                                        if not spawned_pokemon and matched_doc:
+                                        # CASCADE STEP 3: Local match ONLY if confidence is solid (>= 60%)
+                                        if not spawned_pokemon and matched_doc and accuracy_score >= 60:
                                             spawned_pokemon = matched_doc.get("pokemon")
                                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                                             type_emojis = matched_doc.get("type_emojis", [])
@@ -732,7 +715,8 @@ async def test_spawn(ctx):
                                 shortest_name = hf_result.lower()
                                 accuracy_score = 65
 
-                        if not spawned_pokemon and matched_doc:
+                        # REJECT low confidence guesses (<60%)
+                        if not spawned_pokemon and matched_doc and accuracy_score >= 60:
                             spawned_pokemon = matched_doc.get("pokemon")
                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                             type_emojis = matched_doc.get("type_emojis", [])
@@ -745,7 +729,7 @@ async def test_spawn(ctx):
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon from local database or Hugging Face.",
+            description=f"❌ Could not identify Pokémon (Confidence below 60%). Use `E!learn` on an info embed!",
             color=discord.Color.red()
         ))
         return
