@@ -537,10 +537,6 @@ async def learn_embed(ctx):
 # ==========================================
 @bot.command(name="learnspawn")
 async def learn_spawn_cmd(ctx, *, pokemon_name: str = None):
-    if not ctx.message.reference:
-        await ctx.send(embed=discord.Embed(description="❌ Please reply to an active Pokétwo spawn message to learn its sprite.", color=discord.Color.red()))
-        return
-
     if not pokemon_name:
         await ctx.send(embed=discord.Embed(description="❌ Please specify the Pokémon name! (e.g. `E!learnspawn Sobble`)", color=discord.Color.red()))
         return
@@ -549,32 +545,31 @@ async def learn_spawn_cmd(ctx, *, pokemon_name: str = None):
         await ctx.send(embed=discord.Embed(description=f"❌ **{pokemon_name}** is not a valid Pokémon species.", color=discord.Color.red()))
         return
 
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    except Exception:
-        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
-        return
+    spawn_img = None
 
-    if not replied_msg.embeds or not replied_msg.embeds[0].image or not replied_msg.embeds[0].image.url:
-        await ctx.send(embed=discord.Embed(description="❌ The replied message does not contain a spawn image embed.", color=discord.Color.red()))
-        return
+    # Check if a recent spawn cache exists for this channel
+    spawn_data = bot.recent_spawns.get(ctx.channel.id)
+    if spawn_data and spawn_data.get("image_obj"):
+        spawn_img = spawn_data.get("image_obj")
 
-    embed_image_url = replied_msg.embeds[0].image.url
+    # Fallback: Fetch directly from replied message embed if replied
+    if not spawn_img and ctx.message.reference:
+        try:
+            replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            if replied_msg.embeds and replied_msg.embeds[0].image and replied_msg.embeds[0].image.url:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(replied_msg.embeds[0].image.url) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+                            raw_spawn = Image.open(io.BytesIO(image_bytes))
+                            if hasattr(raw_spawn, "seek"):
+                                raw_spawn.seek(0)
+                            spawn_img = process_image_canvas(raw_spawn)
+        except Exception:
+            pass
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(embed_image_url) as resp:
-                if resp.status == 200:
-                    image_bytes = await resp.read()
-                    raw_spawn = Image.open(io.BytesIO(image_bytes))
-                    if hasattr(raw_spawn, "seek"):
-                        raw_spawn.seek(0)
-                    spawn_img = process_image_canvas(raw_spawn)
-                else:
-                    await ctx.send(embed=discord.Embed(description="❌ Failed to download spawn image.", color=discord.Color.red()))
-                    return
-    except Exception as e:
-        await ctx.send(embed=discord.Embed(description=f"❌ Error downloading image: {e}", color=discord.Color.red()))
+    if not spawn_img:
+        await ctx.send(embed=discord.Embed(description="❌ No active spawn image found in cache or replied message. Reply directly to a spawn embed!", color=discord.Color.red()))
         return
 
     formatted_target = format_pokemon_name(pokemon_name.lower())
@@ -582,7 +577,7 @@ async def learn_spawn_cmd(ctx, *, pokemon_name: str = None):
 
     await ctx.send(embed=discord.Embed(
         title="✨ Spawn Learn Success!",
-        description=f"Successfully learned spawn sprite for **{formatted_target}**!\n**Current Match Accuracy:** `{accuracy}%`",
+        description=f"Successfully learned spawn sprite and mapped variants for **{formatted_target}**!\n**Current Match Accuracy:** `{accuracy}%`",
         color=discord.Color.green()
     ))
 
