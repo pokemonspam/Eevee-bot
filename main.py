@@ -11,6 +11,25 @@ import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 
+
+import asyncio
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+
+async def clean_database():
+    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
+    db = mongo_client["pokemon_bot"]
+    phash_col = db["phash_database"]
+
+    # Delete corrupted records
+    res1 = await phash_col.delete_one({"pokemon": {"$regex": "^sobble$", "$options": "i"}})
+    res2 = await phash_col.delete_one({"pokemon": {"$regex": "^pikipek$", "$options": "i"}})
+    print(f"🗑️ Cleaned database - Sobble removed: {res1.deleted_count}, Pikipek removed: {res2.deleted_count}")
+
+asyncio.run(clean_database())
+
+
+
 # Import dataset helpers and registries from dataset.py
 from dataset import (
     parse_pokemon_list,
