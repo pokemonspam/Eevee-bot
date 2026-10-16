@@ -69,7 +69,7 @@ async def on_ready():
 
 
 # ==========================================
-# 🎨 EXHAUSTIVE FEATURE EXTRACTOR & AUGMENTATION
+# 🎨 MAXIMUM EXHAUSTIVE FEATURE EXTRACTOR & AUGMENTATION
 # ==========================================
 def extract_visual_features(img: Image.Image):
     img_resized = img.resize((32, 32)).convert("RGB")
@@ -105,52 +105,62 @@ def calculate_color_similarity(vec1, vec2):
     return float(dot_product / norm_product)
 
 def generate_exhaustive_variants(img: Image.Image):
-    """Generates an extensive matrix of variations (flips, scales, rotations, 
-    brightness, contrast, and edge sharpening) to achieve 100% precision."""
+    """Generates an exhaustive matrix of visual variations covering 
+    every possible combination of flips, fine scale steps, rotations, brightness, 
+    contrast, and edge sharpening until nothing more is left to generate."""
     variants = []
     base = img.convert("RGB")
     w, h = base.size
-    
+
+    # 1. Base Orientations (Normal & Flipped)
     orientations = [base, base.transpose(Image.FLIP_LEFT_RIGHT)]
-    
+
+    # Matrix Parameter Bounds (Exhaustive Combinatorial Grid)
+    scales = [0.75, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10, 1.18]
+    rotations = [-15, -10, -6, -3, 0, 3, 6, 10, 15]
+    brightness_levels = [0.70, 0.85, 1.0, 1.15, 1.30]
+    contrast_levels = [0.75, 1.0, 1.25]
+
     for b in orientations:
-        variants.append(b.copy())
-        
-        # 1. Multi-Scale Variations
-        for scale in [0.85, 0.95, 1.05, 1.12]:
+        # A. Multi-Scale Transforms
+        for scale in scales:
             nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-            resized = b.resize((nw, nh))
+            resized = b.resize((nw, nh), resample=Image.BICUBIC)
             canvas = Image.new("RGB", (w, h), (0, 0, 0))
             if scale < 1.0:
                 canvas.paste(resized, ((w - nw) // 2, (h - nh) // 2))
             else:
                 crop_x, crop_y = (nw - w) // 2, (nh - h) // 2
                 canvas = resized.crop((crop_x, crop_y, crop_x + w, crop_y + h))
-            variants.append(canvas)
+            
+            # B. Rotation Transforms on Scaled Image
+            for angle in rotations:
+                if angle == 0:
+                    rotated = canvas
+                else:
+                    rotated = canvas.rotate(angle, resample=Image.BICUBIC, expand=False)
+                
+                # C. Brightness Spectrum
+                for b_val in brightness_levels:
+                    if b_val == 1.0:
+                        brightened = rotated
+                    else:
+                        brightened = ImageEnhance.Brightness(rotated).enhance(b_val)
+                    
+                    # D. Contrast Spectrum
+                    for c_val in contrast_levels:
+                        if c_val == 1.0:
+                            final_img = brightened
+                        else:
+                            final_img = ImageEnhance.Contrast(brightened).enhance(c_val)
+                        
+                        variants.append(final_img)
 
-        # 2. Micro-Rotations
-        for angle in [-6, -3, 3, 6]:
-            variants.append(b.rotate(angle, resample=Image.BICUBIC, expand=False))
-
-        # 3. Brightness Spectrum
-        enh_b = ImageEnhance.Brightness(b)
-        variants.extend([
-            enh_b.enhance(0.75),
-            enh_b.enhance(0.90),
-            enh_b.enhance(1.10),
-            enh_b.enhance(1.25)
-        ])
-
-        # 4. Contrast Spectrum & Edge Sharpening
-        enh_c = ImageEnhance.Contrast(b)
-        variants.extend([
-            enh_c.enhance(0.80),
-            enh_c.enhance(1.20),
-            enh_c.enhance(1.35)
-        ])
-        
-        high_v = ImageEnhance.Contrast(enh_b.enhance(1.15)).enhance(1.20)
+        # E. Edge Sharpening & High-Contrast Filter Variations
+        enh_b = ImageEnhance.Brightness(b).enhance(1.15)
+        high_v = ImageEnhance.Contrast(enh_b).enhance(1.25)
         variants.append(high_v.filter(ImageFilter.EDGE_ENHANCE))
+        variants.append(high_v.filter(ImageFilter.SHARPEN))
 
     return variants
 
@@ -287,7 +297,7 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
         print(f"🎯 '{formatted_name}' has reached {current_accuracy}% accuracy (>=95%). Mastered!")
         return False, current_accuracy
 
-    print(f"🔄 Accuracy for '{formatted_name}' is {current_accuracy}% (<95%). Ingesting live spawn variants...")
+    print(f"🔄 Accuracy for '{formatted_name}' is {current_accuracy}% (<95%). Generating full combinatorial variant matrix...")
 
     new_p, new_d, new_vfs = extract_all_exhaustive_variant_data(spawn_img)
 
@@ -329,7 +339,7 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
         })
 
     _, new_accuracy = await identify_pokemon_dual_engine(raw_bytes)
-    print(f"🧠 AUTO-LEARN SUCCESS: Added variants for '{formatted_name}'. Upgraded Accuracy: {new_accuracy}%")
+    print(f"🧠 AUTO-LEARN SUCCESS: Added {len(new_p)} variants for '{formatted_name}'. Upgraded Accuracy: {new_accuracy}%")
     return True, new_accuracy
 
 
