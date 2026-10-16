@@ -12,23 +12,6 @@ from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 
 
-import asyncio
-import os
-from motor.motor_asyncio import AsyncIOMotorClient
-
-async def clean_database():
-    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
-    db = mongo_client["pokemon_bot"]
-    phash_col = db["phash_database"]
-
-    # Delete corrupted records
-    res1 = await phash_col.delete_one({"pokemon": {"$regex": "^sobble$", "$options": "i"}})
-    res2 = await phash_col.delete_one({"pokemon": {"$regex": "^pikipek$", "$options": "i"}})
-    print(f"🗑️ Cleaned database - Sobble removed: {res1.deleted_count}, Pikipek removed: {res2.deleted_count}")
-
-asyncio.run(clean_database())
-
-
 
 # Import dataset helpers and registries from dataset.py
 from dataset import (
@@ -739,6 +722,10 @@ async def test_spawn(ctx):
                 async with session.get(embed.image.url) as resp:
                     if resp.status == 200:
                         image_bytes = await resp.read()
+
+                        matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
+                        print(f"🔍 DEBUG TESTSPAWN MATCH: Doc found -> {bool(matched_doc)}, Raw Accuracy Score -> {accuracy_score}%")
+
                         
                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
                         if matched_doc and accuracy_score >= 95:
@@ -751,7 +738,7 @@ async def test_spawn(ctx):
                             if hf_result:
                                 spawned_pokemon = hf_result
                                 shortest_name = hf_result.lower()
-                                accuracy_score = 65
+                                accuracy_score = 14
 
                         # REJECT low confidence guesses (<60%)
                         if not spawned_pokemon and matched_doc and accuracy_score >= 60:
