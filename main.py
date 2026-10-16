@@ -12,6 +12,23 @@ from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 
 
+import asyncio
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+
+async def clean_database():
+    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
+    db = mongo_client["pokemon_bot"]
+    phash_col = db["phash_database"]
+
+    # Delete corrupted records
+    res1 = await phash_col.delete_one({"pokemon": {"$regex": "^sobble$", "$options": "i"}})
+    res2 = await phash_col.delete_one({"pokemon": {"$regex": "^pikipek$", "$options": "i"}})
+    print(f"🗑️ Cleaned database - Sobble removed: {res1.deleted_count}, Pikipek removed: {res2.deleted_count}")
+
+asyncio.run(clean_database())
+
+
 
 # Import dataset helpers and registries from dataset.py
 from dataset import (
@@ -142,7 +159,6 @@ def generate_exhaustive_variants(img: Image.Image):
     base = process_image_canvas(img)
     w, h = base.size
 
-    # Reduced bounds to prevent OOM
     orientations = [base, base.transpose(Image.FLIP_LEFT_RIGHT)]
     scales = [0.90, 1.0, 1.10]
     rotations = [-6, 0, 6]
@@ -319,7 +335,6 @@ async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image)
         old_d = existing_doc.get("dhashes", [existing_doc.get("dhash")] if "dhash" in existing_doc else [])
         old_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
 
-        # HARD CAP: Limit variants to 120 so records never bloat or hijack other matches
         MAX_VARIANTS = 120
         combined_p = list(dict.fromkeys(old_p + new_p))[:MAX_VARIANTS]
         combined_d = list(dict.fromkeys(old_d + new_d))[:MAX_VARIANTS]
@@ -518,7 +533,62 @@ async def learn_embed(ctx):
 
 
 # ==========================================
-# ⚡ SPAWN LISTENER & AUTO-LEARNER (WITH STRICT 60% CONFIDENCE GUARD)
+# ⚡ MANUAL SPAWN LEARNER COMMAND (E!learnspawn)
+# ==========================================
+@bot.command(name="learnspawn")
+async def learn_spawn_cmd(ctx, *, pokemon_name: str = None):
+    if not ctx.message.reference:
+        await ctx.send(embed=discord.Embed(description="❌ Please reply to an active Pokétwo spawn message to learn its sprite.", color=discord.Color.red()))
+        return
+
+    if not pokemon_name:
+        await ctx.send(embed=discord.Embed(description="❌ Please specify the Pokémon name! (e.g. `E!learnspawn Sobble`)", color=discord.Color.red()))
+        return
+
+    if not validate_species(pokemon_name):
+        await ctx.send(embed=discord.Embed(description=f"❌ **{pokemon_name}** is not a valid Pokémon species.", color=discord.Color.red()))
+        return
+
+    try:
+        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    except Exception:
+        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
+        return
+
+    if not replied_msg.embeds or not replied_msg.embeds[0].image or not replied_msg.embeds[0].image.url:
+        await ctx.send(embed=discord.Embed(description="❌ The replied message does not contain a spawn image embed.", color=discord.Color.red()))
+        return
+
+    embed_image_url = replied_msg.embeds[0].image.url
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(embed_image_url) as resp:
+                if resp.status == 200:
+                    image_bytes = await resp.read()
+                    raw_spawn = Image.open(io.BytesIO(image_bytes))
+                    if hasattr(raw_spawn, "seek"):
+                        raw_spawn.seek(0)
+                    spawn_img = process_image_canvas(raw_spawn)
+                else:
+                    await ctx.send(embed=discord.Embed(description="❌ Failed to download spawn image.", color=discord.Color.red()))
+                    return
+    except Exception as e:
+        await ctx.send(embed=discord.Embed(description=f"❌ Error downloading image: {e}", color=discord.Color.red()))
+        return
+
+    formatted_target = format_pokemon_name(pokemon_name.lower())
+    _, accuracy = await append_pokemon_spawn_data(formatted_target, spawn_img)
+
+    await ctx.send(embed=discord.Embed(
+        title="✨ Spawn Learn Success!",
+        description=f"Successfully learned spawn sprite for **{formatted_target}**!\n**Current Match Accuracy:** `{accuracy}%`",
+        color=discord.Color.green()
+    ))
+
+
+# ==========================================
+# ⚡ SPAWN LISTENER & AUTO-LEARNER (WITH 15% DEBUG THRESHOLD)
 # ==========================================
 @bot.event
 async def on_message(message: discord.Message):
@@ -526,9 +596,6 @@ async def on_message(message: discord.Message):
         if message.author.id == bot.user.id:
             return
 
-        # -------------------------------------------------------------
-        # 1. POKÉTWO MESSAGE HANDLER (ID: 716390085896962058)
-        # -------------------------------------------------------------
         if message.guild and message.author.id == 716390085896962058:
             
             if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
@@ -569,14 +636,14 @@ async def on_message(message: discord.Message):
                                             "image_obj": spawn_img
                                         }
 
-                                        # CASCADE STEP 1: Strict Local Match (Requires 95%+ Confidence)
                                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
+                                        print(f"🔍 DEBUG SPAWN MATCH: Doc found -> {bool(matched_doc)}, Raw Accuracy Score -> {accuracy_score}%")
+
                                         if matched_doc and accuracy_score >= 95:
                                             spawned_pokemon = matched_doc.get("pokemon")
                                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                                             type_emojis = matched_doc.get("type_emojis", [])
 
-                                        # CASCADE STEP 2: Hugging Face Fallback
                                         if not spawned_pokemon:
                                             hf_result = await identify_pokemon_via_hf(image_bytes)
                                             if hf_result:
@@ -584,8 +651,7 @@ async def on_message(message: discord.Message):
                                                 shortest_name = hf_result.lower()
                                                 accuracy_score = 65
 
-                                        # CASCADE STEP 3: Local match ONLY if confidence is solid (>= 60%)
-                                        if not spawned_pokemon and matched_doc and accuracy_score >= 60:
+                                        if not spawned_pokemon and matched_doc and accuracy_score >= 15:
                                             spawned_pokemon = matched_doc.get("pokemon")
                                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                                             type_emojis = matched_doc.get("type_emojis", [])
@@ -608,11 +674,6 @@ async def on_message(message: discord.Message):
                         sh_users = await sh_cursor.to_list(length=100)
                         for doc in sh_users:
                             member = message.guild.get_member(doc["user_id"])
-                            if not member:
-                                try:
-                                    member = await message.guild.fetch_member(doc["user_id"])
-                                except Exception:
-                                    pass
                             if member:
                                 sh_pings.append(member.mention)
 
@@ -620,11 +681,6 @@ async def on_message(message: discord.Message):
                         col_users = await col_cursor.to_list(length=100)
                         for doc in col_users:
                             member = message.guild.get_member(doc["user_id"])
-                            if not member:
-                                try:
-                                    member = await message.guild.fetch_member(doc["user_id"])
-                                except Exception:
-                                    pass
                             if member:
                                 col_pings.append(member.mention)
 
@@ -632,11 +688,6 @@ async def on_message(message: discord.Message):
                         res_users = await res_cursor.to_list(length=100)
                         for doc in res_users:
                             member = message.guild.get_member(doc["user_id"])
-                            if not member:
-                                try:
-                                    member = await message.guild.fetch_member(doc["user_id"])
-                                except Exception:
-                                    pass
                             if member:
                                 res_pings.append(member.mention)
 
@@ -660,11 +711,7 @@ async def on_message(message: discord.Message):
                         if not only_ping_mode or has_pings:
                             await message.channel.send("\n".join(output_lines))
 
-        # -------------------------------------------------------------
-        # 2. SPY & LEARN LISTENER: Vegetaaaaa Bot (ID: 1307910235737948252)
-        # -------------------------------------------------------------
         VEGETAAAAA_BOT_ID = 1307910235737948252
-
         if message.author.id == VEGETAAAAA_BOT_ID and message.channel.id in bot.recent_spawns:
             content = message.content.strip()
             match = re.match(r"^([A-Za-z0-9\-\.\'\s]+?)\s*(?:[\:\<]|[\u2600-\u27bf]|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff])", content)
@@ -722,12 +769,10 @@ async def test_spawn(ctx):
                 async with session.get(embed.image.url) as resp:
                     if resp.status == 200:
                         image_bytes = await resp.read()
-
+                        
                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
                         print(f"🔍 DEBUG TESTSPAWN MATCH: Doc found -> {bool(matched_doc)}, Raw Accuracy Score -> {accuracy_score}%")
 
-                        
-                        matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
                         if matched_doc and accuracy_score >= 95:
                             spawned_pokemon = matched_doc.get("pokemon")
                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
@@ -740,8 +785,7 @@ async def test_spawn(ctx):
                                 shortest_name = hf_result.lower()
                                 accuracy_score = 65
 
-                        # REJECT low confidence guesses (<60%)
-                        if not spawned_pokemon and matched_doc and accuracy_score >= 13:
+                        if not spawned_pokemon and matched_doc and accuracy_score >= 15:
                             spawned_pokemon = matched_doc.get("pokemon")
                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                             type_emojis = matched_doc.get("type_emojis", [])
@@ -754,7 +798,7 @@ async def test_spawn(ctx):
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon (Confidence below 60%). Use `E!learn` on an info embed!",
+            description=f"❌ Could not identify Pokémon (Confidence below 15%). Use `E!learn` on an info embed!",
             color=discord.Color.red()
         ))
         return
