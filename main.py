@@ -738,10 +738,10 @@ async def test_spawn(ctx):
                             if hf_result:
                                 spawned_pokemon = hf_result
                                 shortest_name = hf_result.lower()
-                                accuracy_score = 14
+                                accuracy_score = 65
 
                         # REJECT low confidence guesses (<60%)
-                        if not spawned_pokemon and matched_doc and accuracy_score >= 60:
+                        if not spawned_pokemon and matched_doc and accuracy_score >= 13:
                             spawned_pokemon = matched_doc.get("pokemon")
                             shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                             type_emojis = matched_doc.get("type_emojis", [])
