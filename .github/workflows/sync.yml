@@ -6,7 +6,7 @@ on:
 jobs:
   run-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 1440
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
