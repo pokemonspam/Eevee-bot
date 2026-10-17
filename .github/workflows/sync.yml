@@ -1,0 +1,29 @@
+name: Sync Pokémon Images
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install datasets pillow imagehash numpy motor pymongo
+
+      - name: Run sync script
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MONGO_URI: "mongodb+srv://pokemonspam60_db_user:s7OELtwrR8zTneTE@cluster0.tdaqeva.mongodb.net/?appName=Cluster0"
+        run: |
+          python sync_pokemon.py
