@@ -1,6 +1,7 @@
 requests
 tensorflow
-Discord.py
+numpy
+discord.py
 aiohttp
 motor
 pymongo[srv]
@@ -8,4 +9,3 @@ dnspython
 python-levenshtein
 imagehash
 Pillow
-huggingface_hub
