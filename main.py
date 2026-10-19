@@ -1,28 +1,31 @@
 import os
+import urllib.request
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 
+MODEL_URL = "https://files.catbox.moe/0b26ob.keras"
 MODEL_PATH = "pokemon_model.keras"
 
 if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
-    print("Reassembling model from 6 repository parts...")
+    print(f"Downloading model from Catbox...")
     try:
-        with open(MODEL_PATH, "wb") as outfile:
-            for i in range(1, 7):
-                part_name = f"pokemon_model.keras.part{i}"
-                if os.path.exists(part_name):
-                    with open(part_name, "rb") as infile:
-                        outfile.write(infile.read())
-        print("Model reassembly complete!")
+        req = urllib.request.Request(
+            MODEL_URL, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req) as response, open(MODEL_PATH, 'wb') as out_file:
+            out_file.write(response.read())
+        print("✅ Download complete!")
     except Exception as e:
-        print(f"Reassembly error: {e}")
+        print(f"❌ Download error: {e}")
 
 try:
     model = load_model(MODEL_PATH)
-    print("Model loaded successfully!")
+    print("✅ Model loaded successfully!")
 except Exception as e:
-    print(f"Model load error: {e}")
+    print(f"❌ Model load error: {e}")
     model = None
+
 
 
 
