@@ -8,3 +8,4 @@ dnspython
 python-levenshtein
 imagehash
 Pillow
+gdown
