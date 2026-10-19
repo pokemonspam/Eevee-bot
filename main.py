@@ -6,20 +6,17 @@ from huggingface_hub import hf_hub_download
 MODEL_PATH = "pokemon_model.keras"
 
 if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
-    print("Downloading pokemon model using huggingface_hub...")
+    print("Reassembling model from 6 repository parts...")
     try:
-        model_file = hf_hub_download(
-            repo_id="Eeveebot/Eevee-dataset",
-            filename="pokemon_model.keras",
-            repo_type="dataset"
-        )
-        # Copy or rename to standard local path if needed
-        if model_file != MODEL_PATH:
-            import shutil
-            shutil.copy(model_file, MODEL_PATH)
-        print("Download complete!")
+        with open(MODEL_PATH, "wb") as outfile:
+            for i in range(1, 7):
+                part_name = f"pokemon_model.keras.part{i}"
+                if os.path.exists(part_name):
+                    with open(part_name, "rb") as infile:
+                        outfile.write(infile.read())
+        print("Model reassembly complete!")
     except Exception as e:
-        print(f"Model download error: {e}")
+        print(f"Reassembly error: {e}")
 
 try:
     model = load_model(MODEL_PATH)
