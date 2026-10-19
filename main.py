@@ -1,16 +1,27 @@
 import os
+import gdown
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 
 MODEL_PATH = "pokemon_model.keras"
+# Paste your full Google Drive shareable link inside the quotes below:
+GDRIVE_URL = "https://drive.google.com/file/d/1ddKM81F2G20-fFHOdrr3faWvGLlGSZh_/view?usp=drivesdk"
 
-if os.path.exists(MODEL_PATH):
-    print("Loading local pokemon model...")
+if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
+    print("Downloading pokemon model from Google Drive...")
+    try:
+        gdown.download(GDRIVE_URL, MODEL_PATH, fuzzy=True)
+        print("Download complete!")
+    except Exception as e:
+        print(f"Google Drive download error: {e}")
+
+try:
     model = load_model(MODEL_PATH)
     print("Model loaded successfully!")
-else:
-    print(f"❌ Error: {MODEL_PATH} not found locally in repository!")
+except Exception as e:
+    print(f"Model load error: {e}")
     model = None
+
 
 
 import os
