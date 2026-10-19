@@ -1,19 +1,19 @@
 import os
-import gdown
+import os
+import urllib.request
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 
+MODEL_URL = "https://huggingface.co/datasets/Eeveebot/Eevee-dataset/resolve/main/pokemon_model.keras"
 MODEL_PATH = "pokemon_model.keras"
-# Paste your full Google Drive shareable link inside the quotes below:
-GDRIVE_URL = "https://drive.google.com/file/d/1ddKM81F2G20-fFHOdrr3faWvGLlGSZh_/view?usp=drivesdk"
 
 if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
-    print("Downloading pokemon model from Google Drive...")
+    print("Downloading pokemon model from Hugging Face...")
     try:
-        gdown.download(GDRIVE_URL, MODEL_PATH, fuzzy=True)
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
         print("Download complete!")
     except Exception as e:
-        print(f"Google Drive download error: {e}")
+        print(f"Model download error: {e}")
 
 try:
     model = load_model(MODEL_PATH)
@@ -21,6 +21,7 @@ try:
 except Exception as e:
     print(f"Model load error: {e}")
     model = None
+
 
 
 
