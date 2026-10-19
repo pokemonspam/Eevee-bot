@@ -4,25 +4,32 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.utils import image_dataset_from_directory
 
+# ==========================================
+# 📥 RELIABLE GITHUB MODEL DOWNLOADER
+# ==========================================
 MODEL_URL = "https://github.com/pokemonspam/Eevee-bot/releases/download/v1/pokemon_model.keras"
 MODEL_PATH = "pokemon_model.keras"
 
 if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
     print("Downloading pokemon model from GitHub release...")
     try:
-        # Create a request with a browser User-Agent to bypass bot blocks
-        req = urllib.request.Request(
-            MODEL_URL, 
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        )
-        with urllib.request.urlopen(req) as response, open(MODEL_PATH, "wb") as out_file:
-            out_file.write(response.read())
-        print("Download complete!")
+        import requests
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/octet-stream"
+        }
+        response = requests.get(MODEL_URL, headers=headers, allow_redirects=True, stream=True)
+        if response.status_code == 200:
+            with open(MODEL_PATH, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            print("Download complete!")
+        else:
+            print(f"Failed to download model: HTTP {response.status_code}")
     except Exception as e:
         print(f"Model download error: {e}")
 
-model = tf.keras.models.load_model(MODEL_PATH)
-print("Model loaded successfully!")
 
 
 import os
