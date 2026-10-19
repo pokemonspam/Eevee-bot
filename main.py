@@ -4,32 +4,26 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.utils import image_dataset_from_directory
 
-# GitHub Release direct download URL for your model
 MODEL_URL = "https://github.com/pokemonspam/Eevee-bot/releases/download/v1/pokemon_model.keras"
 MODEL_PATH = "pokemon_model.keras"
 
-# Automatically download the model if it's not already downloaded or if it's an invalid redirect file
 if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
     print("Downloading pokemon model from GitHub release...")
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    print("Download complete!")
+    try:
+        # Create a request with a browser User-Agent to bypass bot blocks
+        req = urllib.request.Request(
+            MODEL_URL, 
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        with urllib.request.urlopen(req) as response, open(MODEL_PATH, "wb") as out_file:
+            out_file.write(response.read())
+        print("Download complete!")
+    except Exception as e:
+        print(f"Model download error: {e}")
 
-# Load the model into your bot
 model = tf.keras.models.load_model(MODEL_PATH)
 print("Model loaded successfully!")
 
-# Automatically load class names from your dataset folder directory
-DATASET_DIR = "poketwo_dataset"
-CLASS_NAMES = []
-try:
-    if os.path.exists(DATASET_DIR):
-        temp_ds = image_dataset_from_directory(DATASET_DIR, image_size=(128, 128), verbose=0)
-        CLASS_NAMES = temp_ds.class_names
-        print(f"✅ Loaded {len(CLASS_NAMES)} Pokémon classes from folder directory!")
-    else:
-        print(f"⚠️ Dataset directory '{DATASET_DIR}' not found locally. Folder name lookup will fallback safely.")
-except Exception as e:
-    print(f"Dataset directory scan warning: {e}")
 
 import os
 import re
