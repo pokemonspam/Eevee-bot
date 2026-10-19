@@ -8,4 +8,4 @@ dnspython
 python-levenshtein
 imagehash
 Pillow
-gdown
+huggingface_hub
