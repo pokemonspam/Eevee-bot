@@ -771,7 +771,8 @@ async def on_message(message: discord.Message):
 
             if message.embeds:
                 embed = message.embeds[0]
-                if embed.title and "has appeared" in embed.title.lower():
+                embed_text = f"{embed.title or ''} {embed.description or ''}".lower()
+                if "has appeared" in embed_text:
                     matched_doc = None
                     spawned_pokemon = None
                     shortest_name = None
