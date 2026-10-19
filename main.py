@@ -1,16 +1,22 @@
 import os
-import os
-import urllib.request
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+from huggingface_hub import hf_hub_download
 
-MODEL_URL = "https://huggingface.co/datasets/Eeveebot/Eevee-dataset/resolve/main/pokemon_model.keras"
 MODEL_PATH = "pokemon_model.keras"
 
 if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
-    print("Downloading pokemon model from Hugging Face...")
+    print("Downloading pokemon model using huggingface_hub...")
     try:
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        model_file = hf_hub_download(
+            repo_id="Eeveebot/Eevee-dataset",
+            filename="pokemon_model.keras",
+            repo_type="dataset"
+        )
+        # Copy or rename to standard local path if needed
+        if model_file != MODEL_PATH:
+            import shutil
+            shutil.copy(model_file, MODEL_PATH)
         print("Download complete!")
     except Exception as e:
         print(f"Model download error: {e}")
@@ -21,7 +27,6 @@ try:
 except Exception as e:
     print(f"Model load error: {e}")
     model = None
-
 
 
 
