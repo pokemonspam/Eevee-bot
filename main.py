@@ -1,6 +1,8 @@
 import os
 import urllib.request
 import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.utils import image_dataset_from_directory
 
 # GitHub Release direct download URL for your model
 MODEL_URL = "https://github.com/pokemonspam/Eevee-bot/releases/download/v1/pokemon_model.keras"
@@ -15,6 +17,19 @@ if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
 # Load the model into your bot
 model = tf.keras.models.load_model(MODEL_PATH)
 print("Model loaded successfully!")
+
+# Automatically load class names from your dataset folder directory
+DATASET_DIR = "poketwo_dataset"
+CLASS_NAMES = []
+try:
+    if os.path.exists(DATASET_DIR):
+        temp_ds = image_dataset_from_directory(DATASET_DIR, image_size=(128, 128), verbose=0)
+        CLASS_NAMES = temp_ds.class_names
+        print(f"✅ Loaded {len(CLASS_NAMES)} Pokémon classes from folder directory!")
+    else:
+        print(f"⚠️ Dataset directory '{DATASET_DIR}' not found locally. Folder name lookup will fallback safely.")
+except Exception as e:
+    print(f"Dataset directory scan warning: {e}")
 
 import os
 import re
@@ -39,7 +54,10 @@ async def clean_database():
     res2 = await phash_col.delete_one({"pokemon": {"$regex": "^pikipek$", "$options": "i"}})
     print(f"🗑️ Cleaned database - Sobble removed: {res1.deleted_count}, Pikipek removed: {res2.deleted_count}")
 
-asyncio.run(clean_database())
+try:
+    asyncio.run(clean_database())
+except RuntimeError:
+    pass
 
 # Import dataset helpers and registries from dataset.py
 from dataset import (
@@ -264,18 +282,11 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
             pred_idx = np.argmax(preds[0])
             confidence = float(np.max(preds[0]))
 
-            # Attempt to resolve label if dataset provides class mapping
-            from dataset import POKEMON_CLASSES # Safely try importing class list if available
-            if 'POKEMON_CLASSES' in globals() or 'POKEMON_CLASSES' in locals() or hasattr(dataset, 'POKEMON_CLASSES'):
-                pass
-            
-            # If confidence is strong, construct a virtual document result
-            if confidence >= 0.40:
-                # Fallback label resolver if model outputs index
-                predicted_name = str(pred_idx) # Default if classes aren't list-mapped directly
-                # If your model outputs string labels or you have a class list, it maps here.
-                # To be completely safe and robust, let's also cross check with DB or fallback if needed.
-                pass
+            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
+                mapped_name = CLASS_NAMES[pred_idx]
+                if validate_species(mapped_name) and confidence >= 0.40:
+                    # Construct a matching virtual document result for compatibility
+                    return {"pokemon": mapped_name, "shortest_name": mapped_name.lower(), "type_emojis": []}, int(confidence * 100)
         except Exception as tf_err:
             print(f"TensorFlow inference pass skipped/failed: {tf_err}")
 
