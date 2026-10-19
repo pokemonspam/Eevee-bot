@@ -1,4 +1,24 @@
 import os
+import requests
+import tensorflow as tf
+
+# GitHub Release direct download URL for your model
+MODEL_URL = "https://github.com/pokemonspam/Eevee-bot/releases/download/v1/pokemon_model.keras"
+MODEL_PATH = "pokemon_model.keras"
+
+# Automatically download the model if it's not already downloaded
+if not os.path.exists(MODEL_PATH):
+    print("Downloading pokemon model from GitHub release...")
+    response = requests.get(MODEL_URL, stream=True)
+    with open(MODEL_PATH, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    print("Download complete!")
+
+# Load the model into your bot
+model = tf.keras.models.load_model(MODEL_PATH)
+print("Model loaded successfully!")
+import os
 import re
 import io
 import aiohttp
