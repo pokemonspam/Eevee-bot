@@ -1,14 +1,7 @@
-requests
 tensorflow
 numpy
-discord.py
-aiohttp
-motor
-pymongo[srv]
-dnspython
-python-levenshtein
-imagehash
-Pillow
+pillow
 streamlit
 huggingface_hub
+requests
 certifi
