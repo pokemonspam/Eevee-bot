@@ -310,7 +310,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
         # 1. FIRST PRIORITY: TENSORFLOW MODEL PREDICTION
         # -------------------------------------------------------------
         try:
-            model_img = spawn_img.resize((128, 128))
+            model_img = raw_img.convert("RGB").resize((128, 128))
             img_array = np.array(model_img, dtype=np.float32) / 255.0
             img_array = np.expand_dims(img_array, axis=0)
 
@@ -320,7 +320,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
 
             if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
                 predicted_pokemon = CLASS_NAMES[pred_idx]
-                if validate_species(predicted_pokemon) and confidence >= 0.60:
+                if validate_species(predicted_pokemon) and confidence >= 0.25:
                     formatted_pred = format_pokemon_name(predicted_pokemon)
                     return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
         except Exception as tf_err:
@@ -2138,3 +2138,4 @@ if __name__ == "__main__":
     if not any(t.name == "DiscordBotThread" for t in threading.enumerate()):
         bot_thread = threading.Thread(target=run_discord_bot, name="DiscordBotThread", daemon=True)
         bot_thread.start()
+        
