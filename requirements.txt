@@ -5,3 +5,10 @@ streamlit
 huggingface_hub
 requests
 certifi
+discord.py
+motor
+pymongo
+dnspython
+python-levenshtein
+imagehash
+aiohttp
