@@ -11,3 +11,4 @@ imagehash
 Pillow
 streamlit
 huggingface_hub
+certifi
