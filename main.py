@@ -1,12 +1,18 @@
 import os
+import streamlit as st
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
 
+# --- 1. Streamlit UI Layout ---
+st.title("⚡ Eevee Bot Status")
+st.write("Streamlit app is active and your Discord bot code is running!")
+
+# --- 2. Model Loading Logic ---
 MODEL_PATH = "pokemon_model.keras"
 
 if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
-    print("Downloading pokemon model using huggingface_hub...")
+    st.write("Downloading pokemon model using huggingface_hub...")
     try:
         model_file = hf_hub_download(
             repo_id="Eeveebot/Eevee-dataset",  # Replace with your HF repo ID if different
@@ -16,16 +22,26 @@ if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
         if model_file != MODEL_PATH:
             import shutil
             shutil.copy(model_file, MODEL_PATH)
-        print("✅ Model download complete!")
+        st.success("✅ Model download complete!")
     except Exception as e:
-        print(f"❌ Model download error: {e}")
+        st.error(f"❌ Model download error: {e}")
 
 try:
     model = load_model(MODEL_PATH)
-    print("✅ Model loaded successfully into TensorFlow!")
+    st.success("✅ Model loaded successfully into TensorFlow!")
 except Exception as e:
-    print(f"❌ Model load error: {e}")
+    st.error(f"❌ Model load error: {e}")
     model = None
+
+# --- 3. Get Discord Token Securely ---
+# This grabs the secret you saved in Streamlit or falls back to an environment variable
+DISCORD_TOKEN = st.secrets.get("DISCORD_TOKEN") or os.getenv("DISCORD_TOKEN")
+
+if DISCORD_TOKEN:
+    st.info("🔑 Discord Token found! (Bot background loop can be initialized here)")
+else:
+    st.warning("⚠️ DISCORD_TOKEN not found in Streamlit Secrets. Please check your app settings.")
+
 
 
 
