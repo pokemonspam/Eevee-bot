@@ -220,7 +220,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ PURE AI IDENTIFICATION ENGINE (PIL ROBUST + CROP)
+# ⚡ PURE AI IDENTIFICATION ENGINE (FULL RESIZE)
 # ==========================================
 async def identify_pokemon_ai_engine(image_bytes: bytes):
     try:
@@ -232,28 +232,19 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
 
         if model is not None:
             try:
-                # 1. Clean center-crop using PIL (removes 15% outer background border on all sides)
-                width, height = spawn_img.size
-                left = width * 0.15
-                top = height * 0.15
-                right = width * 0.85
-                bottom = height * 0.85
+                # 1. Resize directly to 96x96 using high-quality bilinear interpolation
+                model_img = spawn_img.resize((96, 96), Image.Resampling.BILINEAR)
                 
-                cropped_img = spawn_img.crop((left, top, right, bottom))
-                
-                # 2. Resize to 96x96 using high-quality resampling (matches Kaggle setup)
-                model_img = cropped_img.resize((96, 96), Image.Resampling.BILINEAR)
-                
-                # 3. Convert to numpy array (Float32, raw 0-255 for model with Rescaling layer)
+                # 2. Convert to numpy array (Float32, raw 0-255 values for model with Rescaling layer)
                 img_array = np.array(model_img, dtype=np.float32)
                 img_array = np.expand_dims(img_array, axis=0)
 
-                # 4. Predict
+                # 3. Predict
                 preds = model.predict(img_array, verbose=0)
                 pred_idx = int(np.argmax(preds[0]))
                 confidence = float(np.max(preds[0]))
 
-                # 5. Debug log top 3 guesses to your Streamlit terminal/console
+                # 4. Debug log top 3 guesses to your Streamlit terminal/console
                 top_3 = np.argsort(preds[0])[-3:][::-1]
                 print(f"--- MODEL SPARK PREDICTION ---")
                 for idx in top_3:
@@ -266,7 +257,7 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                         formatted_pred = format_pokemon_name(predicted_pokemon)
                         return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
             except Exception as tf_err:
-                print(f"TensorFlow PIL inference failed: {tf_err}")
+                print(f"TensorFlow inference failed: {tf_err}")
 
         # Fallback to Hugging Face Vision API
         hf_result = await identify_pokemon_via_hf(image_bytes)
