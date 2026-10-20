@@ -299,7 +299,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ TENSORFLOW AI (FIRST PRIORITY) + MONGODB HASHING (FALLBACK)
+# ⚡ ROBUST DUAL-ENGINE IDENTIFICATION ENGINE
 # ==========================================
 async def identify_pokemon_dual_engine(image_bytes: bytes):
     try:
@@ -310,27 +310,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
         spawn_img = process_image_canvas(raw_img)
 
         # -------------------------------------------------------------
-        # 1. FIRST PRIORITY: TENSORFLOW MODEL PREDICTION
-        # -------------------------------------------------------------
-        try:
-            model_img = raw_img.convert("RGB").resize((128, 128))
-            img_array = np.array(model_img, dtype=np.float32) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
-
-            preds = model.predict(img_array, verbose=0)
-            pred_idx = np.argmax(preds[0])
-            confidence = float(np.max(preds[0]))
-
-            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
-                predicted_pokemon = CLASS_NAMES[pred_idx]
-                if validate_species(predicted_pokemon) and confidence >= 0.25:
-                    formatted_pred = format_pokemon_name(predicted_pokemon)
-                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
-        except Exception as tf_err:
-            print(f"TensorFlow primary inference failed: {tf_err}")
-
-        # -------------------------------------------------------------
-        # 2. SECOND PRIORITY: MONGODB DUAL-ENGINE HASHING (Fallback)
+        # 1. FIRST PRIORITY: MONGODB DUAL-ENGINE HASHING (Instant & Accurate if learned)
         # -------------------------------------------------------------
         flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
         
@@ -391,9 +371,38 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
                 highest_score = total_score
                 best_doc = doc
 
-        if best_doc and highest_score >= 0.50:
+        if best_doc and highest_score >= 0.45:
             accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
             return best_doc, accuracy_pct
+
+        # -------------------------------------------------------------
+        # 2. SECOND PRIORITY: HUGGING FACE VISION API FALLBACK
+        # -------------------------------------------------------------
+        hf_result = await identify_pokemon_via_hf(image_bytes)
+        if hf_result:
+            formatted_hf = format_pokemon_name(hf_result)
+            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": []}, 75
+
+        # -------------------------------------------------------------
+        # 3. THIRD PRIORITY: TENSORFLOW MODEL PREDICTION
+        # -------------------------------------------------------------
+        if model is not None:
+            try:
+                model_img = raw_img.convert("RGB").resize((128, 128))
+                img_array = np.array(model_img, dtype=np.float32) / 255.0
+                img_array = np.expand_dims(img_array, axis=0)
+
+                preds = model.predict(img_array, verbose=0)
+                pred_idx = np.argmax(preds[0])
+                confidence = float(np.max(preds[0]))
+
+                if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
+                    predicted_pokemon = CLASS_NAMES[pred_idx]
+                    if validate_species(predicted_pokemon) and confidence >= 0.10:
+                        formatted_pred = format_pokemon_name(predicted_pokemon)
+                        return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
+            except Exception as tf_err:
+                print(f"TensorFlow inference failed: {tf_err}")
 
     except Exception as e:
         print(f"Dual-engine identification error: {e}")
