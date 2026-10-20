@@ -295,7 +295,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ TENSORFLOW AI + DUAL-ENGINE MATCHING
+# ⚡ TENSORFLOW AI + DUAL-ENGINE MATCHING (FIXED PRIORITY)
 # ==========================================
 async def identify_pokemon_dual_engine(image_bytes: bytes):
     try:
@@ -306,28 +306,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
         spawn_img = process_image_canvas(raw_img)
 
         # -------------------------------------------------------------
-        # 1. FIRST PRIORITY: TENSORFLOW MODEL PREDICTION
-        # -------------------------------------------------------------
-        try:
-            model_img = spawn_img.resize((128, 128))
-            img_array = np.array(model_img, dtype=np.float32) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
-
-            preds = model.predict(img_array, verbose=0)
-            pred_idx = np.argmax(preds[0])
-            confidence = float(np.max(preds[0]))
-
-            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
-                predicted_pokemon = CLASS_NAMES[pred_idx]
-                print(f"Prediction: {predicted_pokemon} ({confidence * 100:.2f}%)")
-                if validate_species(predicted_pokemon) and confidence >= 0.40:
-                    formatted_pred = format_pokemon_name(predicted_pokemon)
-                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
-        except Exception as tf_err:
-            print(f"TensorFlow inference pass skipped/failed: {tf_err}")
-
-        # -------------------------------------------------------------
-        # 2. SECOND PRIORITY / BACKUP: MONGODB DUAL-ENGINE MATCHING
+        # 1. FIRST PRIORITY: MONGODB DUAL-ENGINE HASHING (Most Accurate)
         # -------------------------------------------------------------
         flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
         
@@ -388,7 +367,33 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
                 highest_score = total_score
                 best_doc = doc
 
-        if best_doc:
+        # If database finds a solid match, return it immediately!
+        if best_doc and highest_score >= 0.45:
+            accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
+            return best_doc, accuracy_pct
+
+        # -------------------------------------------------------------
+        # 2. SECOND PRIORITY: TENSORFLOW MODEL PREDICTION (Fallback)
+        # -------------------------------------------------------------
+        try:
+            model_img = spawn_img.resize((128, 128))
+            img_array = np.array(model_img, dtype=np.float32) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+
+            preds = model.predict(img_array, verbose=0)
+            pred_idx = np.argmax(preds[0])
+            confidence = float(np.max(preds[0]))
+
+            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
+                predicted_pokemon = CLASS_NAMES[pred_idx]
+                if validate_species(predicted_pokemon) and confidence >= 0.75:
+                    formatted_pred = format_pokemon_name(predicted_pokemon)
+                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
+        except Exception as tf_err:
+            print(f"TensorFlow fallback inference failed: {tf_err}")
+
+        # If database match existed below strict threshold but is better than nothing
+        if best_doc and highest_score >= 0.20:
             accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
             return best_doc, accuracy_pct
 
