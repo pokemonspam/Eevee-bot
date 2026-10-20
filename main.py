@@ -1,11 +1,25 @@
 import os
+import re
+import io
+import aiohttp
+import asyncio
+import imagehash
+import numpy as np
+import certifi
 import streamlit as st
 import tensorflow as tf
+from PIL import Image, ImageEnhance
+from aiohttp import web
+import discord
+from discord.ext import commands
+from motor.motor_asyncio import AsyncIOMotorClient
 from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
+from pymongo import MongoClient
+import requests
 
-# --- 1. Streamlit UI Layout ---
-st.title("⚡ Eevee Bot Status")
+# --- 1. Streamlit Status UI ---
+st.title("⚡ Eevee Bot Dashboard")
 st.write("Streamlit app is active and your Discord bot code is running!")
 
 # --- 2. Model Loading Logic ---
@@ -33,45 +47,13 @@ except Exception as e:
     st.error(f"❌ Model load error: {e}")
     model = None
 
-# --- 3. Get Discord Token Securely ---
-# This grabs the secret you saved in Streamlit or falls back to an environment variable
-DISCORD_TOKEN = st.secrets.get("DISCORD_TOKEN") or os.getenv("DISCORD_TOKEN")
-
-if DISCORD_TOKEN:
-    st.info("🔑 Discord Token found! (Bot background loop can be initialized here)")
-else:
-    st.warning("⚠️ DISCORD_TOKEN not found in Streamlit Secrets. Please check your app settings.")
-
-
-import os
-import streamlit as st
-import certifi
-from pymongo import MongoClient
-
-# Load MongoDB URI securely from Streamlit Secrets or Environment
+# --- 3. Database Connection ---
 MONGO_URI = st.secrets.get("MONGO_URI") or os.getenv("MONGO_URI")
-
-if not MONGO_URI:
-    st.error("❌ MONGO_URI not found in Streamlit Secrets!")
-else:
+if MONGO_URI:
     client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-    print("✅ Connected to MongoDB successfully!")
-
-
-
-
-import os
-import re
-import io
-import aiohttp
-import asyncio
-import imagehash
-import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
-from aiohttp import web
-import discord
-from discord.ext import commands
-from motor.motor_asyncio import AsyncIOMotorClient
+    st.success("✅ Connected to MongoDB successfully!")
+else:
+    st.error("❌ MONGO_URI not found in Streamlit Secrets!")
 
 async def clean_database():
     mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
@@ -311,10 +293,10 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
             pred_idx = np.argmax(preds[0])
             confidence = float(np.max(preds[0]))
 
-            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
+            # Fallback mapping or class names validation if available
+            if 'CLASS_NAMES' in globals() and CLASS_NAMES and pred_idx < len(CLASS_NAMES):
                 mapped_name = CLASS_NAMES[pred_idx]
                 if validate_species(mapped_name) and confidence >= 0.40:
-                    # Construct a matching virtual document result for compatibility
                     return {"pokemon": mapped_name, "shortest_name": mapped_name.lower(), "type_emojis": []}, int(confidence * 100)
         except Exception as tf_err:
             print(f"TensorFlow inference pass skipped/failed: {tf_err}")
@@ -751,7 +733,6 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
             if embed.description:
                 search_text += "\n" + embed.description
 
-    # Parse both primary Pokémon name and copy alias from the message
     wrong_display_name = None
     wrong_copy_name = None
 
@@ -763,7 +744,6 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
     if copy_match:
         wrong_copy_name = copy_match.group(1).replace("`", "").strip()
 
-    # 1. Complete Purge from MongoDB
     delete_queries = []
     if wrong_display_name:
         fmt_disp = format_pokemon_name(wrong_display_name)
@@ -775,7 +755,6 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
     if delete_queries:
         await phash_col.delete_many({"$or": delete_queries})
 
-    # 2. Get Spawn Image
     spawn_img = bot.recent_spawns.get(ctx.channel.id, {}).get("image_obj")
 
     if not spawn_img and replied_msg.reference:
@@ -793,7 +772,6 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
         except Exception as e:
             print(f"Fallback image fetch error in wrong_cmd: {e}")
 
-    # 3. Re-train with correct species name
     formatted_correct = format_pokemon_name(correct_name)
 
     if spawn_img:
@@ -863,7 +841,6 @@ async def on_message(message: discord.Message):
                                         }
 
                                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
-                                        print(f"🔍 DEBUG SPAWN MATCH: Doc found -> {bool(matched_doc)}, Raw Accuracy Score -> {accuracy_score}%")
 
                                         if matched_doc and accuracy_score >= 95:
                                             spawned_pokemon = matched_doc.get("pokemon")
@@ -980,7 +957,6 @@ async def test_spawn(ctx):
                         image_bytes = await resp.read()
                         
                         matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
-                        print(f"🔍 DEBUG TESTSPAWN MATCH: Doc found -> {bool(matched_doc)}, Raw Accuracy Score -> {accuracy_score}%")
 
                         if matched_doc and accuracy_score >= 95:
                             spawned_pokemon = matched_doc.get("pokemon")
@@ -1054,17 +1030,6 @@ async def onlyping_enable(ctx):
         await ctx.send(embed=embed)
         return
 
-    guild_setting = await settings_col.find_one({"guild_id": ctx.guild.id})
-    current_status = guild_setting.get("only_ping", True) if guild_setting else True
-
-    if current_status:
-        embed = discord.Embed(
-            description="❌ OnlyPing is **already enabled**!",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
     await settings_col.update_one(
         {"guild_id": ctx.guild.id},
         {"$set": {"only_ping": True}},
@@ -1081,17 +1046,6 @@ async def onlyping_disable(ctx):
     if not ctx.author.guild_permissions.administrator:
         embed = discord.Embed(
             description="❌ Only server administrators can configure spawn alert settings.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    guild_setting = await settings_col.find_one({"guild_id": ctx.guild.id})
-    current_status = guild_setting.get("only_ping", True) if guild_setting else True
-
-    if not current_status:
-        embed = discord.Embed(
-            description="❌ OnlyPing is **already disabled**!",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
@@ -2104,11 +2058,11 @@ async def reserve_role_remove(ctx, *, roles_input: str = None):
         desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
 
     embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(desc=desc)
+    await ctx.send(embed=embed)
 
 
 # ==========================================
-# ✨️ SHINY HUNT COMMANDS (E!sh)
+# ✨️ SHINY HUNT COMMANDS (E!sh) - PLAIN TEXT UPDATE
 # ==========================================
 
 @bot.group(name="sh", invoke_without_command=True)
@@ -2116,11 +2070,7 @@ async def shiny_group(ctx, *, target_mon: str = None):
     if target_mon:
         clean_target = target_mon.strip().lower()
         if not validate_species(clean_target):
-            embed = discord.Embed(
-                description=f"❌ **{target_mon}** is not a valid Pokémon.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+            await ctx.send(f"❌ **{target_mon}** is not a valid Pokémon.")
             return
 
         formatted_mon = format_pokemon_name(clean_target)
@@ -2129,41 +2079,26 @@ async def shiny_group(ctx, *, target_mon: str = None):
             {"$set": {"target": formatted_mon}},
             upsert=True
         )
-        embed = discord.Embed(
-            description=f"✅ Set active shiny hunt to ✨️ **{formatted_mon}**.",
-            color=discord.Color.green()
-        )
-        await ctx.send(embed=embed)
+        await ctx.send(f"✅ Set active shiny hunt to ✨️ **{formatted_mon}**.")
         return
 
     user_doc = await shiny_col.find_one({"user_id": ctx.author.id})
     target = user_doc.get("target", "None") if user_doc else "None"
 
-    embed = discord.Embed(
-        title="✨️ Shiny Hunt",
-        description=f"**Current Active Hunt:** ✨️ **{target}**\n\nUse **`E!sh <mon>`** to set a new target.",
-        color=discord.Color.purple()
-    )
-    await ctx.send(embed=embed)
+    # Sent as clean plain text instead of embed as requested
+    await ctx.send(f"✨ **Shiny Hunt**\nCurrent Active Hunt: ✨ **{target}**\nUse `E!sh <mon>` to set a new target.")
 
 @shiny_group.command(name="clear")
 async def shiny_clear(ctx):
     try:
         result = await shiny_col.delete_one({"user_id": ctx.author.id})
         if result.deleted_count > 0:
-            embed = discord.Embed(
-                description="✅ Your active shiny hunt has been cleared.",
-                color=discord.Color.green()
-            )
+            await ctx.send("✅ Your active shiny hunt has been cleared.")
         else:
-            embed = discord.Embed(
-                description="❌ You do not have an active shiny hunt to clear.",
-                color=discord.Color.red()
-            )
-        await ctx.send(embed=embed)
+            await ctx.send("❌ You do not have an active shiny hunt to clear.")
     except Exception as e:
         print(f"Error in shiny_clear: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
+        await ctx.send(f"❌ An error occurred: `{e}`")
 
 
 # Run Bot safely from environment variables
