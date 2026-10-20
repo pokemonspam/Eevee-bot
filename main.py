@@ -64,12 +64,15 @@ if not os.path.exists(CLASSES_PATH):
     except Exception as e:
         print(f"⚠️ Could not download classes.json: {e}")
 
+CLASS_NAMES = []
 try:
     with open(CLASSES_PATH, "r") as f:
-        CLASS_NAMES = json.load(f)
-    print(f"✅ Loaded {len(CLASS_NAMES)} Pokémon class names!")
-except Exception:
-    CLASS_NAMES = []
+        data = json.load(f)
+        if isinstance(data, list):
+            CLASS_NAMES = [str(item[0]) if isinstance(item, list) else str(item) for item in data]
+    print(f"✅ Successfully loaded {len(CLASS_NAMES)} Pokémon class names into TensorFlow!")
+except Exception as e:
+    print(f"❌ Failed to parse classes.json: {e}")
 
 # --- 3. Database Connection ---
 MONGO_URI = st.secrets.get("MONGO_URI") or os.getenv("MONGO_URI")
@@ -818,8 +821,7 @@ async def wrong_cmd(ctx, *, correct_name: str = None):
 # ==========================================
 # ⚡ SPAWN LISTENER & AUTO-LEARNER
 # ==========================================
-@bot.event
-async def on_message(message: discord.Message):
+async def process_spawn_message(message: discord.Message):
     try:
         if message.author.id == bot.user.id:
             return
@@ -942,7 +944,15 @@ async def on_message(message: discord.Message):
     except Exception as e:
         print(f"Error in spawn/spy listener: {e}")
 
+@bot.event
+async def on_message(message: discord.Message):
+    await process_spawn_message(message)
     await bot.process_commands(message)
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    """Triggers identification when Pokétwo edits an incense spawn embed in place."""
+    await process_spawn_message(after)
 
 
 # ==========================================
@@ -2138,4 +2148,3 @@ if __name__ == "__main__":
     if not any(t.name == "DiscordBotThread" for t in threading.enumerate()):
         bot_thread = threading.Thread(target=run_discord_bot, name="DiscordBotThread", daemon=True)
         bot_thread.start()
-        
