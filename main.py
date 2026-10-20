@@ -220,31 +220,44 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ PURE AI IDENTIFICATION ENGINE (KAGGLE MATCHED)
+# ⚡ PURE AI IDENTIFICATION ENGINE (TF NATIVE + CROP)
 # ==========================================
 async def identify_pokemon_ai_engine(image_bytes: bytes):
     try:
-        raw_img = Image.open(io.BytesIO(image_bytes))
-        if hasattr(raw_img, "seek"):
-            raw_img.seek(0)
-            
-        spawn_img = process_image_canvas(raw_img)
-
-        # -------------------------------------------------------------
-        # 1. PRIMARY: TENSORFLOW MODEL PREDICTION
-        # -------------------------------------------------------------
         if model is not None:
             try:
-                # Match Kaggle training setup: 96x96 resize
-                model_img = spawn_img.convert("RGB").resize((96, 96))
+                # 1. Load image natively via TensorFlow
+                tf_img = tf.io.decode_image(image_bytes, channels=3, expand_animations=False)
                 
-                # Keep raw 0-255 values because model has built-in Rescaling(1./255) layer
-                img_array = np.array(model_img, dtype=np.float32)
-                img_array = np.expand_dims(img_array, axis=0)
+                # 2. Bounding-box crop to strip outer background/frame noise
+                shape = tf.shape(tf_img)
+                h, w = shape[0], shape[1]
+                
+                # Crop center 70% where the sprite actually sits
+                crop_h = tf.cast(tf.cast(h, tf.float32) * 0.70, tf.int32)
+                crop_w = tf.cast(tf.cast(w, tf.float32) * 0.70, tf.int32)
+                off_h = (h - crop_h) // 2
+                off_w = (w - crop_w) // 2
+                
+                cropped_img = tf.image.crop_to_bounding_box(tf_img, off_h, off_w, crop_h, crop_w)
+                
+                # 3. Resize using TensorFlow's native Bilinear interpolation (96x96)
+                tf_img_resized = tf.image.resize(cropped_img, [96, 96], method=tf.image.ResizeMethod.BILINEAR)
+                
+                # 4. Add batch dimension: shape becomes (1, 96, 96, 3)
+                img_array = tf.expand_dims(tf_img_resized, axis=0)
 
+                # 5. TensorFlow Prediction (raw 0-255 values for model with built-in Rescaling layer)
                 preds = model.predict(img_array, verbose=0)
-                pred_idx = np.argmax(preds[0])
+                pred_idx = int(np.argmax(preds[0]))
                 confidence = float(np.max(preds[0]))
+
+                # 6. Debug log top 3 guesses to Render logs
+                top_3 = np.argsort(preds[0])[-3:][::-1]
+                print(f"--- MODEL SPARK PREDICTION ---")
+                for idx in top_3:
+                    c_name = CLASS_NAMES[idx] if CLASS_NAMES and idx < len(CLASS_NAMES) else str(idx)
+                    print(f"  -> {c_name}: {preds[0][idx]*100:.2f}%")
 
                 if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
                     predicted_pokemon = CLASS_NAMES[pred_idx]
@@ -252,20 +265,17 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                         formatted_pred = format_pokemon_name(predicted_pokemon)
                         return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
             except Exception as tf_err:
-                print(f"TensorFlow primary inference failed: {tf_err}")
+                print(f"TensorFlow native inference failed: {tf_err}")
 
-        # -------------------------------------------------------------
-        # 2. SECONDARY: HUGGING FACE VISION API FALLBACK
-        # -------------------------------------------------------------
+        # Fallback to Hugging Face Vision API
         hf_result = await identify_pokemon_via_hf(image_bytes)
         if hf_result:
             formatted_hf = format_pokemon_name(hf_result)
-            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": []}, 50
+            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": []}, 60
 
     except Exception as e:
         print(f"AI identification error: {e}")
 
-    # ULTIMATE FAIL-SAFE: Default fallback
     return {"pokemon": "Pikachu", "shortest_name": "pikachu", "type_emojis": []}, 5
 
 # ==========================================
