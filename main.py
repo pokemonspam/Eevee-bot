@@ -7,7 +7,7 @@ import numpy as np
 import certifi
 import streamlit as st
 import tensorflow as tf
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageOps, ImageEnhance
 from aiohttp import web
 import discord
 from discord.ext import commands
@@ -69,6 +69,11 @@ try:
         data = json.load(f)
         if isinstance(data, list):
             CLASS_NAMES = [str(item[0]) if isinstance(item, list) else str(item) for item in data]
+        elif isinstance(data, dict):
+            # If indices were exported as key-value pairs
+            sorted_items = sorted(data.items(), key=lambda x: int(x[1]) if str(x[1]).isdigit() else x[0])
+            CLASS_NAMES = [str(k) for k, v in sorted_items]
+            
     print(f"✅ Successfully loaded {len(CLASS_NAMES)} Pokémon class names into TensorFlow!")
 except Exception as e:
     print(f"❌ Failed to parse classes.json: {e}")
@@ -220,7 +225,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ PURE AI IDENTIFICATION ENGINE (FULL RESIZE)
+# ⚡ PURE AI IDENTIFICATION ENGINE (PREPROCESSED)
 # ==========================================
 async def identify_pokemon_ai_engine(image_bytes: bytes):
     try:
@@ -232,19 +237,19 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
 
         if model is not None:
             try:
-                # 1. Resize directly to 96x96 using high-quality bilinear interpolation
-                model_img = spawn_img.resize((96, 96), Image.Resampling.BILINEAR)
+                # 1. Resize preserving aspect ratio with padding (prevents sprite distortion)
+                model_img = ImageOps.pad(spawn_img, (96, 96), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
                 
-                # 2. Convert to numpy array (Float32, raw 0-255 values for model with Rescaling layer)
-                img_array = np.array(model_img, dtype=np.float32)
+                # 2. Convert to float array and normalize to [0.0, 1.0]
+                img_array = np.array(model_img, dtype=np.float32) / 255.0
                 img_array = np.expand_dims(img_array, axis=0)
 
-                # 3. Predict
+                # 3. Predict probabilities
                 preds = model.predict(img_array, verbose=0)
                 pred_idx = int(np.argmax(preds[0]))
                 confidence = float(np.max(preds[0]))
 
-                # 4. Debug log top 3 guesses to your Streamlit terminal/console
+                # 4. Log top 3 guesses to console
                 top_3 = np.argsort(preds[0])[-3:][::-1]
                 print(f"--- MODEL SPARK PREDICTION ---")
                 for idx in top_3:
