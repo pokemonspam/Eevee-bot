@@ -43,11 +43,19 @@ else:
     st.warning("⚠️ DISCORD_TOKEN not found in Streamlit Secrets. Please check your app settings.")
 
 
+import os
+import streamlit as st
 import certifi
 from pymongo import MongoClient
 
-# Use certifi for SSL/TLS verification
-client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+# Load MongoDB URI securely from Streamlit Secrets or Environment
+MONGO_URI = st.secrets.get("MONGO_URI") or os.getenv("MONGO_URI")
+
+if not MONGO_URI:
+    st.error("❌ MONGO_URI not found in Streamlit Secrets!")
+else:
+    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+    print("✅ Connected to MongoDB successfully!")
 
 
 
