@@ -220,39 +220,40 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ PURE AI IDENTIFICATION ENGINE (TF NATIVE + CROP)
+# ⚡ PURE AI IDENTIFICATION ENGINE (PIL ROBUST + CROP)
 # ==========================================
 async def identify_pokemon_ai_engine(image_bytes: bytes):
     try:
+        raw_img = Image.open(io.BytesIO(image_bytes))
+        if hasattr(raw_img, "seek"):
+            raw_img.seek(0)
+            
+        spawn_img = process_image_canvas(raw_img)
+
         if model is not None:
             try:
-                # 1. Load image natively via TensorFlow
-                tf_img = tf.io.decode_image(image_bytes, channels=3, expand_animations=False)
+                # 1. Clean center-crop using PIL (removes 15% outer background border on all sides)
+                width, height = spawn_img.size
+                left = width * 0.15
+                top = height * 0.15
+                right = width * 0.85
+                bottom = height * 0.85
                 
-                # 2. Bounding-box crop to strip outer background/frame noise
-                shape = tf.shape(tf_img)
-                h, w = shape[0], shape[1]
+                cropped_img = spawn_img.crop((left, top, right, bottom))
                 
-                # Crop center 70% where the sprite actually sits
-                crop_h = tf.cast(tf.cast(h, tf.float32) * 0.70, tf.int32)
-                crop_w = tf.cast(tf.cast(w, tf.float32) * 0.70, tf.int32)
-                off_h = (h - crop_h) // 2
-                off_w = (w - crop_w) // 2
+                # 2. Resize to 96x96 using high-quality resampling (matches Kaggle setup)
+                model_img = cropped_img.resize((96, 96), Image.Resampling.BILINEAR)
                 
-                cropped_img = tf.image.crop_to_bounding_box(tf_img, off_h, off_w, crop_h, crop_w)
-                
-                # 3. Resize using TensorFlow's native Bilinear interpolation (96x96)
-                tf_img_resized = tf.image.resize(cropped_img, [96, 96], method=tf.image.ResizeMethod.BILINEAR)
-                
-                # 4. Add batch dimension: shape becomes (1, 96, 96, 3)
-                img_array = tf.expand_dims(tf_img_resized, axis=0)
+                # 3. Convert to numpy array (Float32, raw 0-255 for model with Rescaling layer)
+                img_array = np.array(model_img, dtype=np.float32)
+                img_array = np.expand_dims(img_array, axis=0)
 
-                # 5. TensorFlow Prediction (raw 0-255 values for model with built-in Rescaling layer)
+                # 4. Predict
                 preds = model.predict(img_array, verbose=0)
                 pred_idx = int(np.argmax(preds[0]))
                 confidence = float(np.max(preds[0]))
 
-                # 6. Debug log top 3 guesses to Render logs
+                # 5. Debug log top 3 guesses to your Streamlit terminal/console
                 top_3 = np.argsort(preds[0])[-3:][::-1]
                 print(f"--- MODEL SPARK PREDICTION ---")
                 for idx in top_3:
@@ -265,7 +266,7 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                         formatted_pred = format_pokemon_name(predicted_pokemon)
                         return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
             except Exception as tf_err:
-                print(f"TensorFlow native inference failed: {tf_err}")
+                print(f"TensorFlow PIL inference failed: {tf_err}")
 
         # Fallback to Hugging Face Vision API
         hf_result = await identify_pokemon_via_hf(image_bytes)
