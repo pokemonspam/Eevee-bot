@@ -2131,5 +2131,16 @@ async def shiny_clear(ctx):
         await ctx.send(f"❌ An error occurred: `{e}`")
 
 
-# Run Bot safely from environment variables
-bot.run(os.getenv("DISCORD_TOKEN"))
+import threading
+
+# Run Discord bot in a background thread so Streamlit stays active for Render/Web UI
+def run_discord_bot():
+    token = os.getenv("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
+
+if __name__ == "__main__":
+    if not any(t.name == "DiscordBotThread" for t in threading.enumerate()):
+        bot_thread = threading.Thread(target=run_discord_bot, name="DiscordBotThread", daemon=True)
+        bot_thread.start()
+
