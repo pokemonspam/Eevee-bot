@@ -10,3 +10,4 @@ python-levenshtein
 imagehash
 Pillow
 streamlit
+huggingface_hub
