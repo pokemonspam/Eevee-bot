@@ -3,7 +3,6 @@ import re
 import io
 import aiohttp
 import asyncio
-import imagehash
 import numpy as np
 import certifi
 import streamlit as st
@@ -176,7 +175,7 @@ async def on_ready():
 
 
 # ==========================================
-# 🎨 FEATURE EXTRACTOR & AUGMENTATION
+# 🎨 CANVAS PROCESSOR
 # ==========================================
 def process_image_canvas(img: Image.Image) -> Image.Image:
     """Converts transparent WEBP/PNG images to RGB by placing them on a clean white background."""
@@ -186,84 +185,6 @@ def process_image_canvas(img: Image.Image) -> Image.Image:
         canvas.alpha_composite(converted)
         return canvas.convert("RGB")
     return img.convert("RGB")
-
-def extract_visual_features(img: Image.Image):
-    img_resized = img.resize((32, 32)).convert("RGB")
-    arr = np.array(img_resized)
-    
-    h, w, _ = arr.shape
-    gh, gw = h // 4, w // 4
-    features = []
-    
-    for r in range(4):
-        for c in range(4):
-            patch = arr[r*gh:(r+1)*gh, c*gw:(c+1)*gw]
-            mean_color = patch.mean(axis=(0, 1))
-            
-            # Center-weighting: multiply middle 2x2 grid cells (where sprite sits)
-            if r in [1, 2] and c in [1, 2]:
-                mean_color *= 2.0
-                
-            features.extend(mean_color)
-            
-    features = np.array(features, dtype=float)
-    norm = np.linalg.norm(features)
-    if norm > 0:
-        features /= norm
-    return features.tolist()
-
-def calculate_color_similarity(vec1, vec2):
-    v1, v2 = np.array(vec1), np.array(vec2)
-    dot_product = np.dot(v1, v2)
-    norm_product = np.linalg.norm(v1) * np.linalg.norm(v2)
-    if norm_product == 0:
-        return 0.0
-    return float(dot_product / norm_product)
-
-def generate_exhaustive_variants(img: Image.Image):
-    """Generates a streamlined matrix of variations to stay well under 512MB RAM."""
-    variants = []
-    base = process_image_canvas(img)
-    w, h = base.size
-
-    orientations = [base, base.transpose(Image.FLIP_LEFT_RIGHT)]
-    scales = [0.90, 1.0, 1.10]
-    rotations = [-6, 0, 6]
-    brightness_levels = [0.85, 1.0, 1.15]
-    contrast_levels = [1.0, 1.25]
-
-    for b in orientations:
-        for scale in scales:
-            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-            resized = b.resize((nw, nh), resample=Image.BICUBIC)
-            canvas = Image.new("RGB", (w, h), (0, 0, 0))
-            if scale < 1.0:
-                canvas.paste(resized, ((w - nw) // 2, (h - nh) // 2))
-            else:
-                crop_x, crop_y = (nw - w) // 2, (nh - h) // 2
-                canvas = resized.crop((crop_x, crop_y, crop_x + w, crop_y + h))
-            
-            for angle in rotations:
-                rotated = canvas if angle == 0 else canvas.rotate(angle, resample=Image.BICUBIC, expand=False)
-                for b_val in brightness_levels:
-                    brightened = rotated if b_val == 1.0 else ImageEnhance.Brightness(rotated).enhance(b_val)
-                    for c_val in contrast_levels:
-                        final_img = brightened if c_val == 1.0 else ImageEnhance.Contrast(brightened).enhance(c_val)
-                        variants.append(final_img)
-
-    return variants
-
-
-def extract_all_exhaustive_variant_data(img: Image.Image):
-    all_variants = generate_exhaustive_variants(img)
-    phashes, dhashes, visual_features = [], [], []
-
-    for var_img in all_variants:
-        phashes.append(str(imagehash.phash(var_img)))
-        dhashes.append(str(imagehash.dhash(var_img)))
-        visual_features.append(extract_visual_features(var_img))
-
-    return list(dict.fromkeys(phashes)), list(dict.fromkeys(dhashes)), visual_features
 
 
 # ==========================================
@@ -299,9 +220,9 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ ULTIMATE AI-FIRST IDENTIFICATION ENGINE (NO SILENT MISSES)
+# ⚡ PURE AI IDENTIFICATION ENGINE (KAGGLE MATCHED)
 # ==========================================
-async def identify_pokemon_dual_engine(image_bytes: bytes):
+async def identify_pokemon_ai_engine(image_bytes: bytes):
     try:
         raw_img = Image.open(io.BytesIO(image_bytes))
         if hasattr(raw_img, "seek"):
@@ -310,12 +231,15 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
         spawn_img = process_image_canvas(raw_img)
 
         # -------------------------------------------------------------
-        # 1. FIRST PRIORITY: TENSORFLOW MODEL PREDICTION
+        # 1. PRIMARY: TENSORFLOW MODEL PREDICTION
         # -------------------------------------------------------------
         if model is not None:
             try:
-                model_img = raw_img.convert("RGB").resize((128, 128))
-                img_array = np.array(model_img, dtype=np.float32) / 255.0
+                # Match Kaggle training setup: 96x96 resize
+                model_img = spawn_img.convert("RGB").resize((96, 96))
+                
+                # Keep raw 0-255 values because model has built-in Rescaling(1./255) layer
+                img_array = np.array(model_img, dtype=np.float32)
                 img_array = np.expand_dims(img_array, axis=0)
 
                 preds = model.predict(img_array, verbose=0)
@@ -326,114 +250,26 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
                     predicted_pokemon = CLASS_NAMES[pred_idx]
                     if validate_species(predicted_pokemon):
                         formatted_pred = format_pokemon_name(predicted_pokemon)
-                        return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, max(10, int(confidence * 100))
+                        return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
             except Exception as tf_err:
                 print(f"TensorFlow primary inference failed: {tf_err}")
 
         # -------------------------------------------------------------
-        # 2. SECOND PRIORITY: HUGGING FACE VISION API FALLBACK
+        # 2. SECONDARY: HUGGING FACE VISION API FALLBACK
         # -------------------------------------------------------------
         hf_result = await identify_pokemon_via_hf(image_bytes)
         if hf_result:
             formatted_hf = format_pokemon_name(hf_result)
             return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": []}, 50
 
-        # -------------------------------------------------------------
-        # 3. THIRD PRIORITY: MONGODB HASHING
-        # -------------------------------------------------------------
-        flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
-        spawn_p_orig = imagehash.phash(spawn_img)
-        spawn_p_flip = imagehash.phash(flipped_spawn_img)
-
-        cursor = phash_col.find({})
-        best_doc = None
-        highest_score = -1.0
-
-        async for doc in cursor:
-            db_phashes = doc.get("phashes", [])
-            if not db_phashes and doc.get("phash"):
-                db_phashes = [doc.get("phash")]
-
-            max_p_score = 0.0
-            for p_str in db_phashes:
-                if p_str:
-                    db_p = imagehash.hex_to_hash(p_str)
-                    s_orig = max(0.0, 1.0 - ((spawn_p_orig - db_p) / 20.0))
-                    s_flip = max(0.0, 1.0 - ((spawn_p_flip - db_p) / 20.0))
-                    best_sp = max(s_orig, s_flip)
-                    if best_sp > max_p_score:
-                        max_p_score = best_sp
-
-            if max_p_score > highest_score:
-                highest_score = max_p_score
-                best_doc = doc
-
-        if best_doc and highest_score >= 0.30:
-            accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
-            return best_doc, accuracy_pct
-
     except Exception as e:
-        print(f"Dual-engine identification error: {e}")
+        print(f"AI identification error: {e}")
 
-    # ULTIMATE FAIL-SAFE: Never return None, always output a base fallback guess so it names every spawn
+    # ULTIMATE FAIL-SAFE: Default fallback
     return {"pokemon": "Pikachu", "shortest_name": "pikachu", "type_emojis": []}, 5
 
-
 # ==========================================
-# 🧠 SAFE AUTO-LEARNING ENGINE (STRICT 120 VARIANTS CAP)
-# ==========================================
-async def append_pokemon_spawn_data(formatted_name: str, spawn_img: Image.Image):
-    with io.BytesIO() as buf:
-        spawn_img.save(buf, format="PNG")
-        raw_bytes = buf.getvalue()
-    
-    new_p, new_d, new_vfs = extract_all_exhaustive_variant_data(spawn_img)
-
-    existing_doc = await phash_col.find_one({"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}})
-
-    if existing_doc:
-        old_p = existing_doc.get("phashes", [existing_doc.get("phash")] if "phash" in existing_doc else [])
-        old_d = existing_doc.get("dhashes", [existing_doc.get("dhash")] if "dhash" in existing_doc else [])
-        old_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
-
-        MAX_VARIANTS = 120
-        combined_p = list(dict.fromkeys(old_p + new_p))[:MAX_VARIANTS]
-        combined_d = list(dict.fromkeys(old_d + new_d))[:MAX_VARIANTS]
-        combined_vfs = (old_vfs + new_vfs)[:MAX_VARIANTS]
-
-        await phash_col.update_one(
-            {"_id": existing_doc["_id"]},
-            {
-                "$set": {
-                    "pokemon": formatted_name,
-                    "phash": combined_p[0],
-                    "phashes": combined_p,
-                    "dhash": combined_d[0],
-                    "dhashes": combined_d,
-                    "visual_features": combined_vfs[0],
-                    "visual_features_list": combined_vfs
-                }
-            }
-        )
-    else:
-        await phash_col.insert_one({
-            "pokemon": formatted_name,
-            "shortest_name": formatted_name.lower(),
-            "phash": new_p[0],
-            "phashes": new_p,
-            "dhash": new_d[0],
-            "dhashes": new_d,
-            "visual_features": new_vfs[0],
-            "visual_features_list": new_vfs
-        })
-
-    _, new_accuracy = await identify_pokemon_dual_engine(raw_bytes)
-    print(f"🧠 AUTO-LEARN SUCCESS: Clean variants added for '{formatted_name}'. Accuracy: {new_accuracy}%")
-    return True, new_accuracy
-
-
-# ==========================================
-# 📚 EXHAUSTIVE DUAL-ENGINE EMBED LEARNER (E!learn)
+# 📚 EMBED DEX LEARNER COMMAND (E!learn)
 # ==========================================
 @bot.command(name="learn")
 async def learn_embed(ctx):
@@ -482,7 +318,7 @@ async def learn_embed(ctx):
                 found_emojis = re.findall(r"<a?:[a-zA-Z0-9\_]+:\d+>|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\u2600-\u27bf]", line_stripped)
                 type_emojis.extend(found_emojis)
         elif current_section == "names":
-            if any(flag in line_stripped for flag in ["🇯🇵", "🇬🇧", "🇩🇪", "🇫🇷", "🇪🇸"]):
+            if any(flag in line_stripped for flag in ["🇬🇧", "🇯🇵", "🇩🇪", "🇫🇷", "🇪🇸"]):
                 parts = line_stripped.split()
                 if len(parts) >= 2:
                     alt_name = " ".join(parts[1:])
@@ -499,26 +335,6 @@ async def learn_embed(ctx):
     if not pokemon_name and alt_names:
         pokemon_name = alt_names[0]
 
-    if not embed.image or not embed.image.url:
-        await ctx.send(embed=discord.Embed(description="❌ No sprite image found in the embed.", color=discord.Color.red()))
-        return
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(embed.image.url) as resp:
-                if resp.status == 200:
-                    image_bytes = await resp.read()
-                    raw_img = Image.open(io.BytesIO(image_bytes))
-                    if hasattr(raw_img, "seek"):
-                        raw_img.seek(0)
-                    img = process_image_canvas(raw_img)
-                else:
-                    await ctx.send(embed=discord.Embed(description="❌ Failed to download sprite image.", color=discord.Color.red()))
-                    return
-    except Exception as e:
-        await ctx.send(embed=discord.Embed(description=f"❌ Error processing image: {e}", color=discord.Color.red()))
-        return
-
     if not pokemon_name:
         await ctx.send(embed=discord.Embed(description="❌ Could not parse Pokémon details from this embed layout.", color=discord.Color.red()))
         return
@@ -527,273 +343,31 @@ async def learn_embed(ctx):
     all_valid_names = [formatted_name] + alt_names
     shortest_copy_name = min(all_valid_names, key=len).lower()
 
-    new_p, new_d, new_vfs = extract_all_exhaustive_variant_data(img)
-
-    existing_doc = await phash_col.find_one({"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}})
-
-    if existing_doc:
-        old_p = existing_doc.get("phashes", [existing_doc.get("phash")] if "phash" in existing_doc else [])
-        old_d = existing_doc.get("dhashes", [existing_doc.get("dhash")] if "dhash" in existing_doc else [])
-        old_vfs = existing_doc.get("visual_features_list", [existing_doc.get("visual_features")] if "visual_features" in existing_doc else [])
-
-        MAX_VARIANTS = 120
-        combined_p = list(dict.fromkeys(old_p + new_p))[:MAX_VARIANTS]
-        combined_d = list(dict.fromkeys(old_d + new_d))[:MAX_VARIANTS]
-        combined_vfs = (old_vfs + new_vfs)[:MAX_VARIANTS]
-
-        await phash_col.update_one(
-            {"_id": existing_doc["_id"]},
-            {
-                "$set": {
-                    "pokemon": formatted_name,
-                    "alt_names": list(dict.fromkeys(existing_doc.get("alt_names", []) + alt_names)),
-                    "types": list(dict.fromkeys(existing_doc.get("types", []) + types_list)),
-                    "type_emojis": list(dict.fromkeys(existing_doc.get("type_emojis", []) + type_emojis)),
-                    "shortest_name": shortest_copy_name,
-                    "phash": combined_p[0],
-                    "phashes": combined_p,
-                    "dhash": combined_d[0],
-                    "dhashes": combined_d,
-                    "visual_features": combined_vfs[0],
-                    "visual_features_list": combined_vfs
-                }
+    # Save details & short names directly to database collection (without phash signatures)
+    await db["pokemon_dex"].update_one(
+        {"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}},
+        {
+            "$set": {
+                "pokemon": formatted_name,
+                "shortest_name": shortest_copy_name,
+                "alt_names": list(dict.fromkeys(alt_names)),
+                "types": list(dict.fromkeys(types_list)),
+                "type_emojis": list(dict.fromkeys(type_emojis))
             }
-        )
-        total_variants = len(combined_p)
-        action_msg = "Preserved historical data & merged variants"
-    else:
-        await phash_col.insert_one({
-            "pokemon": formatted_name,
-            "alt_names": alt_names,
-            "types": types_list,
-            "type_emojis": list(dict.fromkeys(type_emojis)),
-            "shortest_name": shortest_copy_name,
-            "phash": new_p[0],
-            "phashes": new_p,
-            "dhash": new_d[0],
-            "dhashes": new_d,
-            "visual_features": new_vfs[0],
-            "visual_features_list": new_vfs
-        })
-        total_variants = len(new_p)
-        action_msg = "Created new unique record"
-
-    _, verified_score = await identify_pokemon_dual_engine(image_bytes)
+        },
+        upsert=True
+    )
 
     await ctx.send(embed=discord.Embed(
-        title="🧠 High-Precision Learning Complete!",
+        title="🧠 Dex Info Learned!",
         description=(
             f"**Pokémon:** {formatted_name}\n"
             f"**Shortest Copy Name:** `{shortest_copy_name}`\n"
-            f"**Status:** {action_msg} ✅\n"
-            f"**Total Stored Signatures:** `{total_variants}` variants\n"
-            f"**Verified Target Accuracy:** `{verified_score}%`"
+            f"**Types Parsed:** {', '.join(types_list) if types_list else 'None'}\n"
+            f"**Status:** Dex info stored successfully! ✅"
         ),
         color=discord.Color.green()
     ))
-
-
-# ==========================================
-# ⚡ MANUAL SPAWN LEARNER COMMAND (E!learnspawn)
-# ==========================================
-@bot.command(name="learnspawn")
-async def learn_spawn_cmd(ctx, *, pokemon_name: str = None):
-    if not pokemon_name:
-        await ctx.send(embed=discord.Embed(description="❌ Please specify the Pokémon name! (e.g. `E!learnspawn Sobble`)", color=discord.Color.red()))
-        return
-
-    if not validate_species(pokemon_name):
-        await ctx.send(embed=discord.Embed(description=f"❌ **{pokemon_name}** is not a valid Pokémon species.", color=discord.Color.red()))
-        return
-
-    spawn_img = None
-
-    # Check if a recent spawn cache exists for this channel
-    spawn_data = bot.recent_spawns.get(ctx.channel.id)
-    if spawn_data and spawn_data.get("image_obj"):
-        spawn_img = spawn_data.get("image_obj")
-
-    # Fallback: Fetch directly from replied message embed if replied
-    if not spawn_img and ctx.message.reference:
-        try:
-            replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-            if replied_msg.embeds and replied_msg.embeds[0].image and replied_msg.embeds[0].image.url:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(replied_msg.embeds[0].image.url) as resp:
-                        if resp.status == 200:
-                            image_bytes = await resp.read()
-                            raw_spawn = Image.open(io.BytesIO(image_bytes))
-                            if hasattr(raw_spawn, "seek"):
-                                raw_spawn.seek(0)
-                            spawn_img = process_image_canvas(raw_spawn)
-        except Exception:
-            pass
-
-    if not spawn_img:
-        await ctx.send(embed=discord.Embed(description="❌ No active spawn image found in cache or replied message. Reply directly to a spawn embed!", color=discord.Color.red()))
-        return
-
-    formatted_target = format_pokemon_name(pokemon_name.lower())
-    _, accuracy = await append_pokemon_spawn_data(formatted_target, spawn_img)
-
-    await ctx.send(embed=discord.Embed(
-        title="✨ Spawn Learn Success!",
-        description=f"Successfully learned spawn sprite and mapped variants for **{formatted_target}**!\n**Current Match Accuracy:** `{accuracy}%`",
-        color=discord.Color.green()
-    ))
-
-
-# ==========================================
-# 🎯 REFINED E!correct & E!wrong COMMANDS
-# ==========================================
-@bot.command(name="correct")
-async def correct_cmd(ctx):
-    """Confirms identification and trains on the image (using cache or fetching from reference)."""
-    if not ctx.message.reference:
-        await ctx.send(embed=discord.Embed(description="❌ Reply directly to the bot's identification or testspawn message!", color=discord.Color.red()))
-        return
-
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    except Exception:
-        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
-        return
-
-    search_text = replied_msg.content or ""
-    if replied_msg.embeds:
-        for embed in replied_msg.embeds:
-            if embed.description:
-                search_text += "\n" + embed.description
-
-    # Extract target name
-    target_name = None
-    match = re.search(r"Pokémon:\s*([A-Za-z0-9\s\.\'\-]+?)(?:\s*:|\s*<|\s*\d+%)", search_text, re.IGNORECASE)
-    if match:
-        target_name = match.group(1).strip()
-    
-    if not target_name:
-        copy_match = re.search(r"c\s+([A-Za-z0-9\s\.\'\-]+)`?", search_text, re.IGNORECASE)
-        if copy_match:
-            target_name = copy_match.group(1).replace("`", "").strip()
-
-    if not target_name or not validate_species(target_name):
-        await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not parse a valid Pokémon species from that message.", 
-            color=discord.Color.red()
-        ))
-        return
-
-    # Fetch spawn image (cache or reference chain)
-    spawn_img = bot.recent_spawns.get(ctx.channel.id, {}).get("image_obj")
-
-    if not spawn_img and replied_msg.reference:
-        try:
-            spawn_msg = await ctx.channel.fetch_message(replied_msg.reference.message_id)
-            if spawn_msg.embeds and spawn_msg.embeds[0].image and spawn_msg.embeds[0].image.url:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(spawn_msg.embeds[0].image.url) as resp:
-                        if resp.status == 200:
-                            image_bytes = await resp.read()
-                            raw_spawn = Image.open(io.BytesIO(image_bytes))
-                            if hasattr(raw_spawn, "seek"):
-                                raw_spawn.seek(0)
-                            spawn_img = process_image_canvas(raw_spawn)
-        except Exception as e:
-            print(f"Fallback fetch error: {e}")
-
-    if spawn_img:
-        formatted_target = format_pokemon_name(target_name)
-        await append_pokemon_spawn_data(formatted_target, spawn_img)
-        await ctx.send(embed=discord.Embed(
-            title="🎯 Correct Match Confirmed!",
-            description=f"Successfully locked **{formatted_target}** into database memory! Accuracy set to **100%**.",
-            color=discord.Color.green()
-        ))
-    else:
-        await ctx.send(embed=discord.Embed(
-            description="❌ Active spawn image expired. Reply directly to the original Pokétwo spawn embed using `E!learnspawn <name>` instead.", 
-            color=discord.Color.red()
-        ))
-
-
-@bot.command(name="wrong")
-async def wrong_cmd(ctx, *, correct_name: str = None):
-    """Purges the incorrectly matched Pokémon name and re-trains on the correct name provided."""
-    if not ctx.message.reference:
-        await ctx.send(embed=discord.Embed(description="❌ Reply to the bot's wrong identification message! Usage: `E!wrong <Actual Pokémon Name>`", color=discord.Color.red()))
-        return
-
-    if not correct_name or not validate_species(correct_name):
-        await ctx.send(embed=discord.Embed(description="❌ Please provide a valid actual Pokémon species name! Example: `E!wrong Lillipup`", color=discord.Color.red()))
-        return
-
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    except Exception:
-        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
-        return
-
-    search_text = replied_msg.content or ""
-    if replied_msg.embeds:
-        for embed in replied_msg.embeds:
-            if embed.description:
-                search_text += "\n" + embed.description
-
-    wrong_display_name = None
-    wrong_copy_name = None
-
-    match = re.search(r"Pokémon:\s*([A-Za-z0-9\s\.\'\-]+?)(?:\s*:|\s*<|\s*\d+%)", search_text, re.IGNORECASE)
-    if match:
-        wrong_display_name = match.group(1).strip()
-
-    copy_match = re.search(r"c\s+([A-Za-z0-9\s\.\'\-]+)`?", search_text, re.IGNORECASE)
-    if copy_match:
-        wrong_copy_name = copy_match.group(1).replace("`", "").strip()
-
-    delete_queries = []
-    if wrong_display_name:
-        fmt_disp = format_pokemon_name(wrong_display_name)
-        delete_queries.append({"pokemon": {"$regex": f"^{re.escape(fmt_disp)}$", "$options": "i"}})
-    if wrong_copy_name:
-        delete_queries.append({"shortest_name": wrong_copy_name.lower()})
-        delete_queries.append({"pokemon": {"$regex": f"^{re.escape(wrong_copy_name)}$", "$options": "i"}})
-
-    if delete_queries:
-        await phash_col.delete_many({"$or": delete_queries})
-
-    spawn_img = bot.recent_spawns.get(ctx.channel.id, {}).get("image_obj")
-
-    if not spawn_img and replied_msg.reference:
-        try:
-            spawn_msg = await ctx.channel.fetch_message(replied_msg.reference.message_id)
-            if spawn_msg.embeds and spawn_msg.embeds[0].image and spawn_msg.embeds[0].image.url:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(spawn_msg.embeds[0].image.url) as resp:
-                        if resp.status == 200:
-                            image_bytes = await resp.read()
-                            raw_spawn = Image.open(io.BytesIO(image_bytes))
-                            if hasattr(raw_spawn, "seek"):
-                                raw_spawn.seek(0)
-                            spawn_img = process_image_canvas(raw_spawn)
-        except Exception as e:
-            print(f"Fallback image fetch error in wrong_cmd: {e}")
-
-    formatted_correct = format_pokemon_name(correct_name)
-
-    if spawn_img:
-        await append_pokemon_spawn_data(formatted_correct, spawn_img)
-        deleted_label = wrong_display_name or wrong_copy_name or 'Unknown'
-        await ctx.send(embed=discord.Embed(
-            title="🧠 Misidentification Fixed & Re-learned!",
-            description=f"Wiped incorrect entries for **{deleted_label}**.\nSuccessfully re-mapped this spawn image to **{formatted_correct}**!",
-            color=discord.Color.green()
-        ))
-    else:
-        deleted_label = wrong_display_name or wrong_copy_name or 'Unknown'
-        await ctx.send(embed=discord.Embed(
-            description=f"🗑️ Cleaned wrong records for **{deleted_label}**. Spawn image cache expired, please reply directly to the spawn embed with `E!learnspawn {formatted_correct}`.",
-            color=discord.Color.gold()
-        ))
 
 
 # ==========================================
@@ -805,21 +379,6 @@ async def process_spawn_message(message: discord.Message):
             return
 
         if message.guild and message.author.id == 716390085896962058:
-            
-            if message.content and "congratulations" in message.content.lower() and "you caught a" in message.content.lower():
-                if message.channel.id in bot.recent_spawns:
-                    spawn_data = bot.recent_spawns[message.channel.id]
-                    match = re.search(r"you caught a level \d+ (.+?)(?:\s*[♂♀]|\s*\()", message.content, re.IGNORECASE)
-                    if match:
-                        pokemon_name = match.group(1).strip().title()
-                        if pokemon_name and len(pokemon_name) <= 25 and validate_species(pokemon_name):
-                            formatted_catch_name = format_pokemon_name(pokemon_name)
-                            spawn_img = spawn_data.get("image_obj")
-                            if spawn_img:
-                                await append_pokemon_spawn_data(formatted_catch_name, spawn_img)
-                            del bot.recent_spawns[message.channel.id]
-                return
-
             if message.embeds:
                 embed = message.embeds[0]
                 embed_text = f"{embed.title or ''} {embed.description or ''}".lower()
@@ -845,7 +404,7 @@ async def process_spawn_message(message: discord.Message):
                                             "image_obj": spawn_img
                                         }
 
-                                        matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
+                                        matched_doc, accuracy_score = await identify_pokemon_ai_engine(image_bytes)
 
                                         if matched_doc:
                                             spawned_pokemon = matched_doc.get("pokemon")
@@ -957,7 +516,7 @@ async def test_spawn(ctx):
                     if resp.status == 200:
                         image_bytes = await resp.read()
                         
-                        matched_doc, accuracy_score = await identify_pokemon_dual_engine(image_bytes)
+                        matched_doc, accuracy_score = await identify_pokemon_ai_engine(image_bytes)
 
                         if matched_doc:
                             spawned_pokemon = matched_doc.get("pokemon")
@@ -972,7 +531,7 @@ async def test_spawn(ctx):
 
     if not spawned_pokemon:
         await ctx.send(embed=discord.Embed(
-            description=f"❌ Could not identify Pokémon. Use `E!learn` on an info embed!",
+            description=f"❌ Could not identify Pokémon.",
             color=discord.Color.red()
         ))
         return
