@@ -87,23 +87,13 @@ async def clean_database():
     # Delete corrupted records
     res1 = await phash_col.delete_one({"pokemon": {"$regex": "^sobble$", "$options": "i"}})
     res2 = await phash_col.delete_one({"pokemon": {"$regex": "^pikipek$", "$options": "i"}})
-    print(f"🗑️ Cleaned database - Sobble removed: {res1.deleted_count}, Pikipek removed: {res2.deleted_count}")
+    res = await phash_col.delete_one({"pokemon": {"$regex": "^roserade$", "$options": "i"}})
+    print(f"🗑️ Cleaned database - Sobble removed: {res1.deleted_count}, Pikipek removed: {res2.deleted_count}, Roserade removed: {res.deleted_count}")
 
 try:
     asyncio.run(clean_database())
 except RuntimeError:
     pass
-
-
-async def clean_database():
-    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
-    db = mongo_client["pokemon_bot"]
-    phash_col = db["phash_database"]
-
-    # Delete corrupted Roserade record so it re-learns cleanly
-    res = await phash_col.delete_one({"pokemon": {"$regex": "^roserade$", "$options": "i"}})
-    print(f"🗑️ Cleaned database - Roserade removed: {res.deleted_count}")
-
 
 # Import dataset helpers and registries from dataset.py
 from dataset import (
@@ -306,7 +296,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ TENSORFLOW AI + DUAL-ENGINE MATCHING (FIXED PRIORITY)
+# ⚡ TENSORFLOW AI (FIRST PRIORITY) + MONGODB HASHING (FALLBACK)
 # ==========================================
 async def identify_pokemon_dual_engine(image_bytes: bytes):
     try:
@@ -317,7 +307,27 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
         spawn_img = process_image_canvas(raw_img)
 
         # -------------------------------------------------------------
-        # 1. FIRST PRIORITY: MONGODB DUAL-ENGINE HASHING (Most Accurate)
+        # 1. FIRST PRIORITY: TENSORFLOW MODEL PREDICTION
+        # -------------------------------------------------------------
+        try:
+            model_img = spawn_img.resize((128, 128))
+            img_array = np.array(model_img, dtype=np.float32) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+
+            preds = model.predict(img_array, verbose=0)
+            pred_idx = np.argmax(preds[0])
+            confidence = float(np.max(preds[0]))
+
+            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
+                predicted_pokemon = CLASS_NAMES[pred_idx]
+                if validate_species(predicted_pokemon) and confidence >= 0.60:
+                    formatted_pred = format_pokemon_name(predicted_pokemon)
+                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
+        except Exception as tf_err:
+            print(f"TensorFlow primary inference failed: {tf_err}")
+
+        # -------------------------------------------------------------
+        # 2. SECOND PRIORITY: MONGODB DUAL-ENGINE HASHING (Fallback)
         # -------------------------------------------------------------
         flipped_spawn_img = spawn_img.transpose(Image.FLIP_LEFT_RIGHT)
         
@@ -378,33 +388,7 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
                 highest_score = total_score
                 best_doc = doc
 
-        # If database finds a solid match, return it immediately!
-        if best_doc and highest_score >= 0.45:
-            accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
-            return best_doc, accuracy_pct
-
-        # -------------------------------------------------------------
-        # 2. SECOND PRIORITY: TENSORFLOW MODEL PREDICTION (Fallback)
-        # -------------------------------------------------------------
-        try:
-            model_img = spawn_img.resize((128, 128))
-            img_array = np.array(model_img, dtype=np.float32) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
-
-            preds = model.predict(img_array, verbose=0)
-            pred_idx = np.argmax(preds[0])
-            confidence = float(np.max(preds[0]))
-
-            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
-                predicted_pokemon = CLASS_NAMES[pred_idx]
-                if validate_species(predicted_pokemon) and confidence >= 0.75:
-                    formatted_pred = format_pokemon_name(predicted_pokemon)
-                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
-        except Exception as tf_err:
-            print(f"TensorFlow fallback inference failed: {tf_err}")
-
-        # If database match existed below strict threshold but is better than nothing
-        if best_doc and highest_score >= 0.20:
+        if best_doc and highest_score >= 0.50:
             accuracy_pct = int(min(1.0, max(0.0, highest_score)) * 100)
             return best_doc, accuracy_pct
 
@@ -2154,4 +2138,3 @@ if __name__ == "__main__":
     if not any(t.name == "DiscordBotThread" for t in threading.enumerate()):
         bot_thread = threading.Thread(target=run_discord_bot, name="DiscordBotThread", daemon=True)
         bot_thread.start()
-
