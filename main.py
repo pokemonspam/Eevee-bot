@@ -17,6 +17,8 @@ from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
 from pymongo import MongoClient
 import requests
+import json
+import shutil
 
 # --- 1. Streamlit Status UI ---
 st.title("⚡ Eevee Bot Dashboard")
@@ -46,6 +48,28 @@ try:
 except Exception as e:
     st.error(f"❌ Model load error: {e}")
     model = None
+
+# --- 2.5. DOWNLOAD & LOAD CLASSES.JSON ---
+CLASSES_PATH = "classes.json"
+
+if not os.path.exists(CLASSES_PATH):
+    try:
+        class_file = hf_hub_download(
+            repo_id="Eeveebot/Eevee-dataset",
+            filename="classes.json",
+            repo_type="dataset"
+        )
+        if class_file != CLASSES_PATH:
+            shutil.copy(class_file, CLASSES_PATH)
+    except Exception as e:
+        print(f"⚠️ Could not download classes.json: {e}")
+
+try:
+    with open(CLASSES_PATH, "r") as f:
+        CLASS_NAMES = json.load(f)
+    print(f"✅ Loaded {len(CLASS_NAMES)} Pokémon class names!")
+except Exception:
+    CLASS_NAMES = []
 
 # --- 3. Database Connection ---
 MONGO_URI = st.secrets.get("MONGO_URI") or os.getenv("MONGO_URI")
@@ -293,11 +317,12 @@ async def identify_pokemon_dual_engine(image_bytes: bytes):
             pred_idx = np.argmax(preds[0])
             confidence = float(np.max(preds[0]))
 
-            # Fallback mapping or class names validation if available
-            if 'CLASS_NAMES' in globals() and CLASS_NAMES and pred_idx < len(CLASS_NAMES):
-                mapped_name = CLASS_NAMES[pred_idx]
-                if validate_species(mapped_name) and confidence >= 0.40:
-                    return {"pokemon": mapped_name, "shortest_name": mapped_name.lower(), "type_emojis": []}, int(confidence * 100)
+            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
+                predicted_pokemon = CLASS_NAMES[pred_idx]
+                print(f"Prediction: {predicted_pokemon} ({confidence * 100:.2f}%)")
+                if validate_species(predicted_pokemon) and confidence >= 0.40:
+                    formatted_pred = format_pokemon_name(predicted_pokemon)
+                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
         except Exception as tf_err:
             print(f"TensorFlow inference pass skipped/failed: {tf_err}")
 
@@ -2086,7 +2111,7 @@ async def shiny_group(ctx, *, target_mon: str = None):
     target = user_doc.get("target", "None") if user_doc else "None"
 
     # Sent as clean plain text instead of embed as requested
-    await ctx.send(f"✨ **Shiny Hunt**\nCurrent Active Hunt: ✨ **{target}**\nUse `E!sh <mon>` to set a new target.")
+    await ctx.send(f"✨ **Shiny Hunt**\nCurrent Active Hunt: ✨ **{target}**.")
 
 @shiny_group.command(name="clear")
 async def shiny_clear(ctx):
