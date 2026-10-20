@@ -9,4 +9,4 @@ dnspython
 python-levenshtein
 imagehash
 Pillow
-huggingface_hub
+streamlit
