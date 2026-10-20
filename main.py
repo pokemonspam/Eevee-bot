@@ -94,6 +94,17 @@ try:
 except RuntimeError:
     pass
 
+
+async def clean_database():
+    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
+    db = mongo_client["pokemon_bot"]
+    phash_col = db["phash_database"]
+
+    # Delete corrupted Roserade record so it re-learns cleanly
+    res = await phash_col.delete_one({"pokemon": {"$regex": "^roserade$", "$options": "i"}})
+    print(f"🗑️ Cleaned database - Roserade removed: {res.deleted_count}")
+
+
 # Import dataset helpers and registries from dataset.py
 from dataset import (
     parse_pokemon_list,
