@@ -257,12 +257,16 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                 pred_idx = int(np.argmax(preds[0]))
                 confidence = float(np.max(preds[0]))
 
+                # --- DEBUG INDEX LOGGING ---
+                mapped_prediction = CLASS_NAMES[pred_idx] if CLASS_NAMES and pred_idx < len(CLASS_NAMES) else "OUT_OF_BOUNDS"
+                print(f"🔍 DEBUG: Raw predicted index = {pred_idx} | Mapped Name = {mapped_prediction} | Confidence = {confidence*100:.2f}%")
+
                 # 4. Log top 3 guesses to console
                 top_3 = np.argsort(preds[0])[-3:][::-1]
                 print(f"--- MODEL SPARK PREDICTION ---")
                 for idx in top_3:
                     c_name = CLASS_NAMES[idx] if CLASS_NAMES and idx < len(CLASS_NAMES) else str(idx)
-                    print(f"  -> {c_name}: {preds[0][idx]*100:.2f}%")
+                    print(f"  -> [{idx}] {c_name}: {preds[0][idx]*100:.2f}%")
 
                 if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
                     predicted_pokemon = CLASS_NAMES[pred_idx]
