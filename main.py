@@ -31,7 +31,8 @@ if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
     try:
         model_file = hf_hub_download(
             repo_id="Eeveebot/Eevee-dataset",  # Replace with your HF repo ID if different
-            filename="pokemon_model.keras"
+            filename="pokemon_model.keras",
+            repo_type="dataset"
         )
         if model_file != MODEL_PATH:
             import shutil
@@ -54,7 +55,8 @@ if not os.path.exists(CLASSES_PATH):
     try:
         class_file = hf_hub_download(
             repo_id="Eeveebot/Eevee-dataset",
-            filename="classes.json"
+            filename="classes.json",
+            repo_type="dataset"
         )
         if class_file != CLASSES_PATH:
             shutil.copy(class_file, CLASSES_PATH)
