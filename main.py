@@ -31,8 +31,7 @@ if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
     try:
         model_file = hf_hub_download(
             repo_id="Eeveebot/Eevee-dataset",  # Replace with your HF repo ID if different
-            filename="pokemon_model.keras",
-            repo_type="dataset"
+            filename="pokemon_model.keras"
         )
         if model_file != MODEL_PATH:
             import shutil
@@ -55,8 +54,7 @@ if not os.path.exists(CLASSES_PATH):
     try:
         class_file = hf_hub_download(
             repo_id="Eeveebot/Eevee-dataset",
-            filename="classes.json",
-            repo_type="dataset"
+            filename="classes.json"
         )
         if class_file != CLASSES_PATH:
             shutil.copy(class_file, CLASSES_PATH)
@@ -245,8 +243,8 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
 
         if model is not None:
             try:
-                # 1. Resize preserving aspect ratio with padding (prevents sprite distortion)
-                model_img = ImageOps.pad(spawn_img, (96, 96), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
+                # 1. Resize preserving aspect ratio with padding (160x160 matches model training specs)
+                model_img = ImageOps.pad(spawn_img, (160, 160), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
                 
                 # 2. Convert to float array (RAW PIXELS 0-255 because model has internal Rescaling layer)
                 img_array = np.array(model_img, dtype=np.float32)
