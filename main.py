@@ -70,9 +70,17 @@ try:
         if isinstance(data, list):
             CLASS_NAMES = [str(item[0]) if isinstance(item, list) else str(item) for item in data]
         elif isinstance(data, dict):
-            # If indices were exported as key-value pairs
-            sorted_items = sorted(data.items(), key=lambda x: int(x[1]) if str(x[1]).isdigit() else x[0])
-            CLASS_NAMES = [str(k) for k, v in sorted_items]
+            try:
+                if all(str(v).isdigit() for v in data.values()):
+                    sorted_items = sorted(data.items(), key=lambda x: int(x[1]))
+                    CLASS_NAMES = [str(k) for k, v in sorted_items]
+                elif all(str(k).isdigit() for k in data.keys()):
+                    sorted_items = sorted(data.items(), key=lambda x: int(x[0]))
+                    CLASS_NAMES = [str(v) for k, v in sorted_items]
+                else:
+                    CLASS_NAMES = list(data.keys())
+            except Exception:
+                CLASS_NAMES = list(data.keys())
             
     print(f"✅ Successfully loaded {len(CLASS_NAMES)} Pokémon class names into TensorFlow!")
 except Exception as e:
