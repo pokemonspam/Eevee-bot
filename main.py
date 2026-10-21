@@ -240,8 +240,8 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                 # 1. Resize preserving aspect ratio with padding (prevents sprite distortion)
                 model_img = ImageOps.pad(spawn_img, (96, 96), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
                 
-                # 2. Convert to float array and normalize to [0.0, 1.0]
-                img_array = np.array(model_img, dtype=np.float32) / 255.0
+                # 2. Convert to float array (RAW PIXELS 0-255 because model has internal Rescaling layer)
+                img_array = np.array(model_img, dtype=np.float32)
                 img_array = np.expand_dims(img_array, axis=0)
 
                 # 3. Predict probabilities
