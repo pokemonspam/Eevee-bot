@@ -13,7 +13,6 @@ import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 from tensorflow.keras.models import load_model
-from tensorflow.keras.applications.efficientnet import preprocess_input
 from huggingface_hub import hf_hub_download
 from pymongo import MongoClient
 import requests
@@ -234,7 +233,7 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
 
 
 # ==========================================
-# ⚡ PURE AI IDENTIFICATION ENGINE (PREPROCESSED)
+# ⚡ PURE AI IDENTIFICATION ENGINE (RAW [0-255])
 # ==========================================
 async def identify_pokemon_ai_engine(image_bytes: bytes):
     try:
@@ -249,12 +248,9 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                 # 1. Resize preserving aspect ratio with padding (160x160 matches model training specs)
                 model_img = ImageOps.pad(spawn_img, (160, 160), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
                 
-                # 2. Convert to float array
+                # 2. Convert to float array (keeping raw [0-255] values for EfficientNet's built-in scaling layer)
                 img_array = np.array(model_img, dtype=np.float32)
                 img_array = np.expand_dims(img_array, axis=0)
-
-                # --- 🔑 APPLY EFFICIENTNET PREPROCESSING HERE ---
-                img_array = preprocess_input(img_array)
 
                 # 3. Predict probabilities
                 preds = model.predict(img_array, verbose=0)
