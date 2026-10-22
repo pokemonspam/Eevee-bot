@@ -111,7 +111,7 @@ try:
 except RuntimeError:
     pass
 
-# Import dataset helpers and registries from dataset.py
+# Import dataset helpers, registries, and type emoji lookup from dataset.py
 from dataset import (
     parse_pokemon_list,
     format_pokemon_name,
@@ -119,6 +119,7 @@ from dataset import (
     get_pokemon_variants,
     get_base_pokemon,
     validate_species,
+    get_pokemon_type_emojis,  # ✨ Imported type emoji lookup function
     POKEMON_FORMS,
     REGIONAL_FORMS
 )
@@ -242,7 +243,8 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
         hf_result = await identify_pokemon_via_hf(image_bytes)
         if hf_result:
             formatted_hf = format_pokemon_name(hf_result)
-            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": []}, 95
+            type_emojis = get_pokemon_type_emojis(formatted_hf)  # ✨ Fetch custom type emojis
+            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": type_emojis}, 95
 
         # 2. Fallback to Local TensorFlow Model if HF API is unavailable
         if model is not None:
@@ -264,12 +266,13 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                 predicted_pokemon = CLASS_NAMES[pred_idx]
                 if validate_species(predicted_pokemon):
                     formatted_pred = format_pokemon_name(predicted_pokemon)
-                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
+                    type_emojis = get_pokemon_type_emojis(formatted_pred)  # ✨ Fetch custom type emojis
+                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": type_emojis}, int(confidence * 100)
 
     except Exception as e:
         print(f"AI identification error: {e}")
 
-    return {"pokemon": "Pikachu", "shortest_name": "pikachu", "type_emojis": []}, 5
+    return {"pokemon": "Pikachu", "shortest_name": "pikachu", "type_emojis": get_pokemon_type_emojis("Pikachu")}, 5
 
 # ==========================================
 # 📚 EMBED DEX LEARNER COMMAND (E!learn)
@@ -346,7 +349,7 @@ async def learn_embed(ctx):
     all_valid_names = [formatted_name] + alt_names
     shortest_copy_name = min(all_valid_names, key=len).lower()
 
-    # Save details & short names directly to database collection (without phash signatures)
+    # Save details & short names directly to database collection
     await db["pokemon_dex"].update_one(
         {"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}},
         {
@@ -355,7 +358,7 @@ async def learn_embed(ctx):
                 "shortest_name": shortest_copy_name,
                 "alt_names": list(dict.fromkeys(alt_names)),
                 "types": list(dict.fromkeys(types_list)),
-                "type_emojis": list(dict.fromkeys(type_emojis))
+                "type_emojis": get_pokemon_type_emojis(formatted_name)  # ✨ Update stored emojis from custom set
             }
         },
         upsert=True
