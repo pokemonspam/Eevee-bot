@@ -126,9 +126,10 @@ from dataset import (
     REGIONAL_FORMS
 )
 
-# Setup Bot Client
+# Setup Bot Client with Server Members Intent Enabled
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # ✨ Required for collection and shiny pings to resolve members
 bot = commands.Bot(command_prefix=("E!", "e!"), intents=intents)
 
 # Setup MongoDB
