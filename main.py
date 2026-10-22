@@ -205,7 +205,6 @@ def process_image_canvas(img: Image.Image) -> Image.Image:
 # ==========================================
 # 🧠 HUGGING FACE VISION API HELPER (PRIMARY)
 # ==========================================
-# Updated to use a dedicated Vision Transformer model endpoint fine-tuned on Pokétwo assets
 HF_API_URL = "https://api-inference.huggingface.co/models/imzynoxprince/pokemons-image-classifier-gen1-gen9"
 
 async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
@@ -484,6 +483,7 @@ async def on_message(message: discord.Message):
 @bot.event
 async def on_message_edit(before: discord.Message, after: discord.Message):
     """Triggers identification when Pokétwo edits an incense spawn embed in place."""
+    await asyncio.sleep(0.6)  # Give Discord CDN time to update the image URL
     await process_spawn_message(after)
 
 
