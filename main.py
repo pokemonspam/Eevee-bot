@@ -202,7 +202,7 @@ def process_image_canvas(img: Image.Image) -> Image.Image:
 
 
 # ==========================================
-# 🧠 HUGGING FACE VISION API HELPER (FALLBACK)
+# 🧠 HUGGING FACE VISION API HELPER (PRIMARY)
 # ==========================================
 HF_API_URL = "https://api-inference.huggingface.co/models/merve/pokemon-classifier"
 
@@ -223,68 +223,48 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
                     if isinstance(result, list) and len(result) > 0:
                         top_pred = result[0]
                         confidence = top_pred.get("score", 0.0)
-                        if confidence >= 0.20:
+                        if confidence >= 0.10:
                             raw_name = top_pred.get("label", "").lower()
                             if validate_species(raw_name):
                                 return raw_name
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"HF API Error: {e}")
 
     return None
 
 
 # ==========================================
-# ⚡ PURE AI IDENTIFICATION ENGINE (FIXED PREPROCESSING)
+# ⚡ PURE AI IDENTIFICATION ENGINE (HF API FIRST)
 # ==========================================
 async def identify_pokemon_ai_engine(image_bytes: bytes):
     try:
-        raw_img = Image.open(io.BytesIO(image_bytes))
-        if hasattr(raw_img, "seek"):
-            raw_img.seek(0)
-            
-        spawn_img = process_image_canvas(raw_img)
-
-        if model is not None:
-            try:
-                # 1. Resize preserving aspect ratio with padding (160x160 matches model training specs)
-                model_img = ImageOps.pad(spawn_img, (160, 160), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
-                
-                # 2. Convert to float array
-                img_array = np.array(model_img, dtype=np.float32)
-                img_array = np.expand_dims(img_array, axis=0)
-
-                # 3. Apply standard EfficientNet scaling/preprocessing expected by weights
-                img_array = preprocess_input(img_array)
-
-                # 4. Predict probabilities
-                preds = model.predict(img_array, verbose=0)
-                pred_idx = int(np.argmax(preds[0]))
-                confidence = float(np.max(preds[0]))
-
-                # --- DEBUG INDEX LOGGING ---
-                mapped_prediction = CLASS_NAMES[pred_idx] if CLASS_NAMES and pred_idx < len(CLASS_NAMES) else "OUT_OF_BOUNDS"
-                print(f"🔍 DEBUG: Raw predicted index = {pred_idx} | Mapped Name = {mapped_prediction} | Confidence = {confidence*100:.2f}%")
-
-                # 5. Log top 3 guesses to console
-                top_3 = np.argsort(preds[0])[-3:][::-1]
-                print(f"--- MODEL SPARK PREDICTION ---")
-                for idx in top_3:
-                    c_name = CLASS_NAMES[idx] if CLASS_NAMES and idx < len(CLASS_NAMES) else str(idx)
-                    print(f"  -> [{idx}] {c_name}: {preds[0][idx]*100:.2f}%")
-
-                if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
-                    predicted_pokemon = CLASS_NAMES[pred_idx]
-                    if validate_species(predicted_pokemon):
-                        formatted_pred = format_pokemon_name(predicted_pokemon)
-                        return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
-            except Exception as tf_err:
-                print(f"TensorFlow inference failed: {tf_err}")
-
-        # Fallback to Hugging Face Vision API
+        # 1. Try Hugging Face Vision API First (Guaranteed Accurate Labels)
         hf_result = await identify_pokemon_via_hf(image_bytes)
         if hf_result:
             formatted_hf = format_pokemon_name(hf_result)
-            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": []}, 60
+            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": []}, 95
+
+        # 2. Fallback to Local TensorFlow Model if HF API is unavailable
+        if model is not None:
+            raw_img = Image.open(io.BytesIO(image_bytes))
+            if hasattr(raw_img, "seek"):
+                raw_img.seek(0)
+            spawn_img = process_image_canvas(raw_img)
+
+            model_img = ImageOps.pad(spawn_img, (160, 160), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
+            img_array = np.array(model_img, dtype=np.float32)
+            img_array = np.expand_dims(img_array, axis=0)
+            img_array = preprocess_input(img_array)
+
+            preds = model.predict(img_array, verbose=0)
+            pred_idx = int(np.argmax(preds[0]))
+            confidence = float(np.max(preds[0]))
+
+            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
+                predicted_pokemon = CLASS_NAMES[pred_idx]
+                if validate_species(predicted_pokemon):
+                    formatted_pred = format_pokemon_name(predicted_pokemon)
+                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": []}, int(confidence * 100)
 
     except Exception as e:
         print(f"AI identification error: {e}")
