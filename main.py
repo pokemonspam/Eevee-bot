@@ -455,7 +455,7 @@ async def process_spawn_message(message: discord.Message):
                         guild_setting = await settings_col.find_one({"guild_id": guild_id})
                         only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
-                        # ✨ Retrieve Best Name dynamically
+                        # ✨ Retrieve Best Name dynamically (no quotes)
                         best_name = get_best_name(formatted_target)
 
                         emojis_str = " ".join(type_emojis) if type_emojis else ""
@@ -463,7 +463,7 @@ async def process_spawn_message(message: discord.Message):
 
                         output_lines = [
                             header_line,
-                            f'Best name: "{best_name}"'
+                            f'Best name: {best_name}'
                         ]
                         if sh_pings:
                             output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
@@ -472,7 +472,7 @@ async def process_spawn_message(message: discord.Message):
                         if res_pings:
                             output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
 
-                        output_lines.append(f'**Click to Copy ->** `@Pokétwo#8236 c "{best_name}"`')
+                        output_lines.append(f'**Click to Copy ->** `@Pokétwo#8236 c {best_name}`')
 
                         has_pings = bool(sh_pings or col_pings or res_pings)
                         if not only_ping_mode or has_pings:
@@ -549,7 +549,7 @@ async def test_spawn(ctx):
     emojis_str = " ".join(type_emojis) if type_emojis else ""
 
     await ctx.send(embed=discord.Embed(
-        description=f'✅ **Successfully Identified!**\n**Pokémon:** {formatted_target} {emojis_str} : {accuracy_score}%\nBest name: "{best_name}"\n**Click to Copy ->** `@Pokétwo#8236 c "{best_name}"`',
+        description=f'✅ **Successfully Identified!**\n**Pokémon:** {formatted_target} {emojis_str} : {accuracy_score}%\nBest name: {best_name}\n**Click to Copy ->** `@Pokétwo#8236 c {best_name}`',
         color=discord.Color.green()
     ))
 
