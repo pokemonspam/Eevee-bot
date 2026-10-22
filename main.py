@@ -19,6 +19,7 @@ from pymongo import MongoClient
 import requests
 import json
 import shutil
+import threading
 
 # --- 1. Streamlit Status UI ---
 st.title("⚡ Eevee Bot Dashboard")
@@ -111,7 +112,7 @@ try:
 except RuntimeError:
     pass
 
-# Import dataset helpers, registries, and type emoji lookup from dataset.py
+# Import dataset helpers, registries, type emoji lookup, and best name function from dataset.py
 from dataset import (
     parse_pokemon_list,
     format_pokemon_name,
@@ -119,7 +120,8 @@ from dataset import (
     get_pokemon_variants,
     get_base_pokemon,
     validate_species,
-    get_pokemon_type_emojis,  # ✨ Imported type emoji lookup function
+    get_pokemon_type_emojis,
+    get_best_name,  # ✨ Imported best name generator function
     POKEMON_FORMS,
     REGIONAL_FORMS
 )
@@ -243,7 +245,7 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
         hf_result = await identify_pokemon_via_hf(image_bytes)
         if hf_result:
             formatted_hf = format_pokemon_name(hf_result)
-            type_emojis = get_pokemon_type_emojis(formatted_hf)  # ✨ Fetch custom type emojis
+            type_emojis = get_pokemon_type_emojis(formatted_hf)
             return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": type_emojis}, 95
 
         # 2. Fallback to Local TensorFlow Model if HF API is unavailable
@@ -266,7 +268,7 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
                 predicted_pokemon = CLASS_NAMES[pred_idx]
                 if validate_species(predicted_pokemon):
                     formatted_pred = format_pokemon_name(predicted_pokemon)
-                    type_emojis = get_pokemon_type_emojis(formatted_pred)  # ✨ Fetch custom type emojis
+                    type_emojis = get_pokemon_type_emojis(formatted_pred)
                     return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": type_emojis}, int(confidence * 100)
 
     except Exception as e:
@@ -358,7 +360,7 @@ async def learn_embed(ctx):
                 "shortest_name": shortest_copy_name,
                 "alt_names": list(dict.fromkeys(alt_names)),
                 "types": list(dict.fromkeys(types_list)),
-                "type_emojis": get_pokemon_type_emojis(formatted_name)  # ✨ Update stored emojis from custom set
+                "type_emojis": get_pokemon_type_emojis(formatted_name)
             }
         },
         upsert=True
@@ -424,8 +426,6 @@ async def process_spawn_message(message: discord.Message):
                         guild_id = message.guild.id
                         target_clean = spawned_pokemon.lower()
                         formatted_target = format_pokemon_name(target_clean)
-                        if not shortest_name:
-                            shortest_name = formatted_target.lower()
 
                         sh_pings = []
                         col_pings = []
@@ -455,10 +455,16 @@ async def process_spawn_message(message: discord.Message):
                         guild_setting = await settings_col.find_one({"guild_id": guild_id})
                         only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
+                        # ✨ Retrieve Best Name dynamically
+                        best_name = get_best_name(formatted_target)
+
                         emojis_str = " ".join(type_emojis) if type_emojis else ""
                         header_line = f"**{formatted_target}** {emojis_str} : {accuracy_score}%".strip()
 
-                        output_lines = [header_line]
+                        output_lines = [
+                            header_line,
+                            f'Best name: "{best_name}"'
+                        ]
                         if sh_pings:
                             output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
                         if col_pings:
@@ -466,7 +472,7 @@ async def process_spawn_message(message: discord.Message):
                         if res_pings:
                             output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
 
-                        output_lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {shortest_name}`")
+                        output_lines.append(f'**Click to Copy ->** `@Pokétwo#8236 c "{best_name}"`')
 
                         has_pings = bool(sh_pings or col_pings or res_pings)
                         if not only_ping_mode or has_pings:
@@ -512,7 +518,6 @@ async def test_spawn(ctx):
 
     embed = replied_msg.embeds[0]
     spawned_pokemon = None
-    shortest_name = None
     type_emojis = []
     accuracy_score = 0
 
@@ -527,11 +532,7 @@ async def test_spawn(ctx):
 
                         if matched_doc:
                             spawned_pokemon = matched_doc.get("pokemon")
-                            shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
                             type_emojis = matched_doc.get("type_emojis", [])
-
-                        if spawned_pokemon and not shortest_name:
-                            shortest_name = spawned_pokemon.lower()
 
         except Exception as e:
             print(f"Testspawn check error: {e}")
@@ -544,9 +545,11 @@ async def test_spawn(ctx):
         return
 
     formatted_target = format_pokemon_name(spawned_pokemon.lower())
+    best_name = get_best_name(formatted_target)
     emojis_str = " ".join(type_emojis) if type_emojis else ""
+
     await ctx.send(embed=discord.Embed(
-        description=f"✅ **Successfully Identified!**\n**Pokémon:** {formatted_target} {emojis_str} : {accuracy_score}%\n**Copy Command:** `@Pokétwo#8236 c {shortest_name}`",
+        description=f'✅ **Successfully Identified!**\n**Pokémon:** {formatted_target} {emojis_str} : {accuracy_score}%\nBest name: "{best_name}"\n**Click to Copy ->** `@Pokétwo#8236 c "{best_name}"`',
         color=discord.Color.green()
     ))
 
@@ -1640,7 +1643,6 @@ async def shiny_group(ctx, *, target_mon: str = None):
     user_doc = await shiny_col.find_one({"user_id": ctx.author.id})
     target = user_doc.get("target", "None") if user_doc else "None"
 
-    # Sent as clean plain text instead of embed as requested
     await ctx.send(f"✨ **Shiny Hunt**\nCurrent Active Hunt: ✨ **{target}**.")
 
 @shiny_group.command(name="clear")
@@ -1655,8 +1657,6 @@ async def shiny_clear(ctx):
         print(f"Error in shiny_clear: {e}")
         await ctx.send(f"❌ An error occurred: `{e}`")
 
-
-import threading
 
 # Run Discord bot in a background thread so Streamlit stays active for Render/Web UI
 def run_discord_bot():
