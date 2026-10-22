@@ -1,6 +1,86 @@
 import json
 import os
 import urllib.request
+import requests
+
+# Exclude list provided by user (forces bot to default to standard English catch name)
+EXCLUDE_FROM_SHORT = {
+    "blastoise", "pidgeot", "victreebel", "slowbro", "magneton", "exeggutor",
+    "hitmonlee", "rhyhorn", "typhlosion", "feraligatr", "bellossom", "quagsire",
+    "misdreavus", "girafarig", "scizor", "heracross", "skarmory", "kingdra",
+    "stantler", "tyrogue", "hitmontop", "blissey", "tyranitar", "sceptile",
+    "blaziken", "swampert", "slaking", "aggron", "flygon", "altaria", "seviper",
+    "crawdaunt", "dusknoir", "froslass", "gigalith", "conkeldurr", "seismitoad",
+    "scolipede", "krookodile", "crustle", "scrafty", "cofagrigus", "reuniclus",
+    "swanna", "vanilluxe", "sawsbuck", "escavalier", "haxorus", "cryogonal",
+    "accelgor", "mienshao", "golurk", "bisharp", "braviary", "mandibuzz",
+    "hydreigon", "volcarona", "delphox", "greninja", "pangoro", "aegislash",
+    "aromatic", "clawitzer", "tyrantrum", "aurorus", "hawlucha", "goodra", "trevenant"
+}
+
+# Explicit short catch overrides requested
+EXPLICIT_OVERRIDES = {
+    "eevee": "ibui",
+    "exeggutor": "owei",
+    "sneasel": "nyura",
+    "sylveon": "nifia",
+    "smoliv": "olini",
+    "capsakid": "pimito",
+    "squakabilly": "tapatoes",
+    "venusaur": "bisaflor"
+}
+
+# Global dictionary mapping English names to the best catch name across 1025 mons
+BEST_NAMES_MAPPING = {}
+
+def load_all_best_names():
+    """Fetches full Pokémon species data, strictly favoring English names unless German is much shorter."""
+    global BEST_NAMES_MAPPING
+    try:
+        resp = requests.get("https://raw.githubusercontent.com/fanzeyi/pokemon.json/master/pokedex.json", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            for entry in data:
+                eng_name = entry.get("name", {}).get("english", "").strip().lower()
+                deu_name = entry.get("name", {}).get("german", "").strip().lower()
+                
+                if not eng_name:
+                    continue
+
+                # 1. Check explicit manual overrides first
+                if eng_name in EXPLICIT_OVERRIDES:
+                    BEST_NAMES_MAPPING[eng_name] = EXPLICIT_OVERRIDES[eng_name]
+                # 2. Check user exclusions (forces English name)
+                elif eng_name in EXCLUDE_FROM_SHORT:
+                    BEST_NAMES_MAPPING[eng_name] = eng_name
+                else:
+                    # 3. Give high priority to English: only use German if it's *really* short (at least 3 chars shorter)
+                    if deu_name and len(deu_name) + 3 <= len(eng_name):
+                        BEST_NAMES_MAPPING[eng_name] = deu_name
+                    else:
+                        BEST_NAMES_MAPPING[eng_name] = eng_name
+            print(f"✅ Loaded {len(BEST_NAMES_MAPPING)} Pokémon best names into memory!")
+    except Exception as e:
+        print(f"⚠️ Could not load remote Pokemon names: {e}")
+
+# Trigger initial load on startup
+load_all_best_names()
+
+def get_best_name(pokemon_name: str) -> str:
+    """Returns the best catch name for any of the 1025 Pokémon and their regional forms."""
+    clean_name = pokemon_name.strip().lower()
+    
+    # Strip form prefixes (e.g., "Alolan Ninetales" -> "ninetales")
+    base_name = get_base_pokemon(clean_name) if 'get_base_pokemon' in globals() else clean_name
+    
+    if clean_name in EXPLICIT_OVERRIDES:
+        return EXPLICIT_OVERRIDES[clean_name]
+        
+    if base_name in BEST_NAMES_MAPPING:
+        return BEST_NAMES_MAPPING[base_name]
+        
+    return clean_name
+
 
 # 1. Regional Form Registry Mapping
 REGIONAL_FORMS = {
