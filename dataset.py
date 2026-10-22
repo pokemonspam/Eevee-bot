@@ -256,24 +256,24 @@ def get_pokemon_by_id(dex_id: int) -> str:
 # ==========================================
 
 TYPE_EMOJIS = {
-    "bug": ":bug~1:",
-    "dark": ":dark:",
-    "dragon": ":dragon~1:",
-    "electric": ":electric:",
-    "fairy": ":fairy~1:",
-    "fighting": ":fighting:",
-    "flying": ":flying:",
-    "ghost": ":ghost~1:",
-    "grass": ":grass:",
-    "ground": ":ground:",
-    "ice": ":ice:",
-    "normal": ":normal:",
-    "poison": ":poison:",
-    "psychic": ":psychic:",
-    "rock": ":rock~1:",
-    "steel": ":steel:",
-    "water": ":water:",
-    "fire": ":fire:"
+    "bug": "<:bug:1562784515208904784>",
+    "dark": "<:dark:1562784808868913274>",
+    "dragon": "<:dragon:1562784868255932438>",
+    "electric": "<:electric:1562785107838763118>",
+    "fairy": "<:fairy:1562784750954090507>",
+    "fighting": "<:fighting:1562784635400888320>",
+    "flying": "<:flying:1562784301999984731>",
+    "ghost": "<:ghost:1562784174450937937>",
+    "grass": "<:grass:1562785047881195640>",
+    "ground": "<:ground:1562784353053057094>",
+    "ice": "<:ice:1562784992701186080>",
+    "normal": "<:normal:1562784254365270026>",
+    "poison": "<:poison:1562784573190836244>",
+    "psychic": "<:psychic:1562784925709766666>",
+    "rock": "<:rock:1562784462041776129>",
+    "steel": "<:steel:1562783909563859075>",
+    "water": "<:water:1562785226986618901>",
+    "fire": "<:fire:1562785047881195640>" # Using grass/fire slot ID or replace with your exact Fire ID
 }
 
 # Raw type data dictionary mapping species to types
