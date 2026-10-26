@@ -6,14 +6,14 @@ import asyncio
 import numpy as np
 import certifi
 import streamlit as st
-import tensorflow as tf
+# import tensorflow as tf
 from PIL import Image, ImageOps, ImageEnhance
 from aiohttp import web
 import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
-from tensorflow.keras.models import load_model
-from tensorflow.keras.applications.efficientnet import preprocess_input
+# from tensorflow.keras.models import load_model
+# from tensorflow.keras.applications.efficientnet import preprocess_input
 from huggingface_hub import hf_hub_download
 from pymongo import MongoClient
 import requests
@@ -25,68 +25,69 @@ import threading
 st.title("⚡ Eevee Bot Dashboard")
 st.write("Streamlit app is active and your Discord bot code is running!")
 
-# --- 2. Model Loading Logic ---
+# --- 2. Model Loading Logic (TensorFlow Archived / Commented Out) ---
 MODEL_PATH = "pokemon_model.keras"
 
-if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
-    st.write("Downloading pokemon model using huggingface_hub...")
-    try:
-        model_file = hf_hub_download(
-            repo_id="Eeveebot/Eevee-dataset",  # Replace with your HF repo ID if different
-            filename="pokemon_model.keras",
-            repo_type="dataset"
-        )
-        if model_file != MODEL_PATH:
-            import shutil
-            shutil.copy(model_file, MODEL_PATH)
-        st.success("✅ Model download complete!")
-    except Exception as e:
-        st.error(f"❌ Model download error: {e}")
+# if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:
+#     st.write("Downloading pokemon model using huggingface_hub...")
+#     try:
+#         model_file = hf_hub_download(
+#             repo_id="Eeveebot/Eevee-dataset",
+#             filename="pokemon_model.keras",
+#             repo_type="dataset"
+#         )
+#         if model_file != MODEL_PATH:
+#             import shutil
+#             shutil.copy(model_file, MODEL_PATH)
+#         st.success("✅ Model download complete!")
+#     except Exception as e:
+#         st.error(f"❌ Model download error: {e}")
 
-try:
-    model = load_model(MODEL_PATH)
-    st.success("✅ Model loaded successfully into TensorFlow!")
-except Exception as e:
-    st.error(f"❌ Model load error: {e}")
-    model = None
+# try:
+#     model = load_model(MODEL_PATH)
+#     st.success("✅ Model loaded successfully into TensorFlow!")
+# except Exception as e:
+#     st.error(f"❌ Model load error: {e}")
+#     model = None
+model = None
 
-# --- 2.5. DOWNLOAD & LOAD CLASSES.JSON ---
+# --- 2.5. DOWNLOAD & LOAD CLASSES.JSON (Archived / Commented Out) ---
 CLASSES_PATH = "classes.json"
 
-if not os.path.exists(CLASSES_PATH):
-    try:
-        class_file = hf_hub_download(
-            repo_id="Eeveebot/Eevee-dataset",
-            filename="classes.json",
-            repo_type="dataset"
-        )
-        if class_file != CLASSES_PATH:
-            shutil.copy(class_file, CLASSES_PATH)
-    except Exception as e:
-        print(f"⚠️ Could not download classes.json: {e}")
+# if not os.path.exists(CLASSES_PATH):
+#     try:
+#         class_file = hf_hub_download(
+#             repo_id="Eeveebot/Eevee-dataset",
+#             filename="classes.json",
+#             repo_type="dataset"
+#         )
+#         if class_file != CLASSES_PATH:
+#             shutil.copy(class_file, CLASSES_PATH)
+#     except Exception as e:
+#         print(f"⚠️ Could not download classes.json: {e}")
 
 CLASS_NAMES = []
-try:
-    with open(CLASSES_PATH, "r") as f:
-        data = json.load(f)
-        if isinstance(data, list):
-            CLASS_NAMES = [str(item[0]) if isinstance(item, list) else str(item) for item in data]
-        elif isinstance(data, dict):
-            try:
-                if all(str(v).isdigit() for v in data.values()):
-                    sorted_items = sorted(data.items(), key=lambda x: int(x[1]))
-                    CLASS_NAMES = [str(k) for k, v in sorted_items]
-                elif all(str(k).isdigit() for k in data.keys()):
-                    sorted_items = sorted(data.items(), key=lambda x: int(x[0]))
-                    CLASS_NAMES = [str(v) for k, v in sorted_items]
-                else:
-                    CLASS_NAMES = list(data.keys())
-            except Exception:
-                CLASS_NAMES = list(data.keys())
-            
-    print(f"✅ Successfully loaded {len(CLASS_NAMES)} Pokémon class names into TensorFlow!")
-except Exception as e:
-    print(f"❌ Failed to parse classes.json: {e}")
+# try:
+#     with open(CLASSES_PATH, "r") as f:
+#         data = json.load(f)
+#         if isinstance(data, list):
+#             CLASS_NAMES = [str(item[0]) if isinstance(item, list) else str(item) for item in data]
+#         elif isinstance(data, dict):
+#             try:
+#                 if all(str(v).isdigit() for v in data.values()):
+#                     sorted_items = sorted(data.items(), key=lambda x: int(x[1]))
+#                     CLASS_NAMES = [str(k) for k, v in sorted_items]
+#                 elif all(str(k).isdigit() for k in data.keys()):
+#                     sorted_items = sorted(data.items(), key=lambda x: int(x[0]))
+#                     CLASS_NAMES = [str(v) for k, v in sorted_items]
+#                 else:
+#                     CLASS_NAMES = list(data.keys())
+#             except Exception:
+#                 CLASS_NAMES = list(data.keys())
+#             
+#     print(f"✅ Successfully loaded {len(CLASS_NAMES)} Pokémon class names into TensorFlow!")
+# except Exception as e:
+#     print(f"❌ Failed to parse classes.json: {e}")
 
 # --- 3. Database Connection ---
 MONGO_URI = st.secrets.get("MONGO_URI") or os.getenv("MONGO_URI")
@@ -211,7 +212,7 @@ def process_image_canvas(img: Image.Image) -> Image.Image:
 HF_API_URL = "https://api-inference.huggingface.co/models/imzynoxprince/pokemons-image-classifier-gen1-gen9"
 
 async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
-    token = os.getenv("HF_TOKEN")
+    token = st.secrets.get("HF_TOKEN") or os.getenv("HF_TOKEN")
     if not token:
         return None
 
@@ -249,7 +250,7 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
             type_emojis = get_pokemon_type_emojis(formatted_hf)
             return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": type_emojis}, 95
 
-        # 2. Fallback to Local TensorFlow Model if HF API is unavailable
+        # 2. Fallback to Local TensorFlow Model if HF API is unavailable (Currently Commented Out)
         if model is not None:
             raw_img = Image.open(io.BytesIO(image_bytes))
             if hasattr(raw_img, "seek"):
@@ -259,7 +260,7 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
             model_img = ImageOps.pad(spawn_img, (160, 160), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
             img_array = np.array(model_img, dtype=np.float32)
             img_array = np.expand_dims(img_array, axis=0)
-            img_array = preprocess_input(img_array)
+            # img_array = preprocess_input(img_array)
 
             preds = model.predict(img_array, verbose=0)
             pred_idx = int(np.argmax(preds[0]))
@@ -1661,7 +1662,7 @@ async def shiny_clear(ctx):
 
 # Run Discord bot in a background thread so Streamlit stays active for Render/Web UI
 def run_discord_bot():
-    token = os.getenv("DISCORD_TOKEN")
+    token = st.secrets.get("DISCORD_TOKEN") or os.getenv("DISCORD_TOKEN")
     if token:
         bot.run(token)
 
