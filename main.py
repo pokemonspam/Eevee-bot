@@ -207,9 +207,16 @@ def process_image_canvas(img: Image.Image) -> Image.Image:
 
 
 # ==========================================
-# 🧠 HUGGING FACE VISION API HELPER (PRIMARY)
+# 🧠 HUGGING FACE VISION API HELPER (REQUESTS SYNC-IN-THREAD)
 # ==========================================
 HF_API_URL = "https://api-inference.huggingface.co/models/imzynoxprince/pokemons-image-classifier-gen1-gen9"
+
+def _sync_hf_post(url, headers, image_bytes):
+    try:
+        response = requests.post(url, headers=headers, data=image_bytes, timeout=15)
+        return response.status_code, response.text
+    except Exception as e:
+        return 0, str(e)
 
 async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
     token = st.secrets.get("HF_TOKEN") or os.getenv("HF_TOKEN")
@@ -220,20 +227,20 @@ async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
         "Authorization": f"Bearer {token.strip()}"
     }
 
-    async with aiohttp.ClientSession() as session:
+    status_code, resp_text = await asyncio.to_thread(_sync_hf_post, HF_API_URL, headers, image_bytes)
+    
+    if status_code == 200:
         try:
-            async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=10) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if isinstance(result, list) and len(result) > 0:
-                        top_pred = result[0]
-                        confidence = top_pred.get("score", 0.0)
-                        if confidence >= 0.01:  # Lowered threshold to ensure predictions aren't skipped
-                            raw_name = top_pred.get("label", "").lower()
-                            if validate_species(raw_name):
-                                return raw_name
+            result = json.loads(resp_text)
+            if isinstance(result, list) and len(result) > 0:
+                top_pred = result[0]
+                confidence = top_pred.get("score", 0.0)
+                if confidence >= 0.01:
+                    raw_name = top_pred.get("label", "").lower()
+                    if validate_species(raw_name):
+                        return raw_name
         except Exception as e:
-            print(f"HF API Error: {e}")
+            print(f"HF JSON parse error: {e}")
 
     return None
 
@@ -260,7 +267,6 @@ async def identify_pokemon_ai_engine(image_bytes: bytes):
             model_img = ImageOps.pad(spawn_img, (160, 160), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
             img_array = np.array(model_img, dtype=np.float32)
             img_array = np.expand_dims(img_array, axis=0)
-            # img_array = preprocess_input(img_array)
 
             preds = model.predict(img_array, verbose=0)
             pred_idx = int(np.argmax(preds[0]))
@@ -457,7 +463,6 @@ async def process_spawn_message(message: discord.Message):
                         guild_setting = await settings_col.find_one({"guild_id": guild_id})
                         only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
-                        # ✨ Retrieve Best Name dynamically (no quotes)
                         best_name = get_best_name(formatted_target)
 
                         emojis_str = " ".join(type_emojis) if type_emojis else ""
@@ -496,7 +501,7 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
 
 
 # ==========================================
-# 🧪 TEST SPAWN COMMAND (E!testspawn - WITH CHANNEL DIAGNOSTICS)
+# 🧪 TEST SPAWN COMMAND (E!testspawn - WITH REQUESTS & DIAGNOSTICS)
 # ==========================================
 @bot.command(name="testspawn")
 async def test_spawn(ctx):
@@ -531,81 +536,67 @@ async def test_spawn(ctx):
         ))
         return
 
-    async with aiohttp.ClientSession() as session:
-        try:
+    try:
+        async with aiohttp.ClientSession() as session:
             async with session.get(embed.image.url) as img_resp:
                 if img_resp.status != 200:
                     await ctx.send(embed=discord.Embed(description=f"❌ Failed to download image from Discord CDN (Status {img_resp.status})", color=discord.Color.red()))
                     return
                 image_bytes = await img_resp.read()
-        except Exception as e:
-            await ctx.send(embed=discord.Embed(description=f"❌ Image download error: `{e}`", color=discord.Color.red()))
-            return
+    except Exception as e:
+        await ctx.send(embed=discord.Embed(description=f"❌ Image download error: `{e}`", color=discord.Color.red()))
+        return
 
-        headers = {"Authorization": f"Bearer {token.strip()}"}
+    headers = {"Authorization": f"Bearer {token.strip()}"}
+    status_code, resp_text = await asyncio.to_thread(_sync_hf_post, HF_API_URL, headers, image_bytes)
+
+    if status_code == 200:
         try:
-            async with session.post(HF_API_URL, headers=headers, data=image_bytes, timeout=15) as response:
-                resp_text = await response.text()
+            result = json.loads(resp_text)
+            if isinstance(result, list) and len(result) > 0:
+                top_pred = result[0]
+                confidence = top_pred.get("score", 0.0)
+                raw_name = top_pred.get("label", "").lower()
+                formatted_target = format_pokemon_name(raw_name)
+                best_name = get_best_name(formatted_target)
+                type_emojis = get_pokemon_type_emojis(formatted_target)
+                emojis_str = " ".join(type_emojis) if type_emojis else ""
                 
-                if response.status == 200:
-                    try:
-                        result = json.loads(resp_text)
-                        if isinstance(result, list) and len(result) > 0:
-                            top_pred = result[0]
-                            confidence = top_pred.get("score", 0.0)
-                            raw_name = top_pred.get("label", "").lower()
-                            formatted_target = format_pokemon_name(raw_name)
-                            best_name = get_best_name(formatted_target)
-                            type_emojis = get_pokemon_type_emojis(formatted_target)
-                            emojis_str = " ".join(type_emojis) if type_emojis else ""
-                            
-                            await ctx.send(embed=discord.Embed(
-                                title="🧪 Test Spawn Diagnostics (Success)",
-                                description=(
-                                    f"**Raw Label:** `{raw_name}`\n"
-                                    f"**Formatted:** {formatted_target} {emojis_str}\n"
-                                    f"**Confidence:** `{confidence*100:.1f}%`\n"
-                                    f"**Best Name:** `{best_name}`\n\n"
-                                    f"**Click to Copy ->** `@Pokétwo#8236 c {best_name}`"
-                                ),
-                                color=discord.Color.green()
-                            ))
-                            return
-                        else:
-                            await ctx.send(embed=discord.Embed(
-                                title="🧪 Test Spawn Diagnostics (Invalid JSON List)",
-                                description=f"API returned valid JSON, but not a prediction list:\n```{resp_text[:500]}```",
-                                color=discord.Color.gold()
-                            ))
-                            return
-                    except Exception as json_err:
-                        await ctx.send(embed=discord.Embed(
-                            title="🧪 Test Spawn Diagnostics (JSON Parse Error)",
-                            description=f"Error: `{json_err}`\nResponse Text:\n```{resp_text[:500]}```",
-                            color=discord.Color.gold()
-                        ))
-                        return
-                elif response.status == 503:
-                    await ctx.send(embed=discord.Embed(
-                        title="🧪 Test Spawn Diagnostics (Model Cold Start - 503)",
-                        description=f"⏳ **Hugging Face model is currently loading.** Please wait 30 seconds and try `E!testspawn` again!\n\nResponse:\n```{resp_text[:300]}```",
-                        color=discord.Color.gold()
-                    ))
-                    return
-                else:
-                    await ctx.send(embed=discord.Embed(
-                        title=f"🧪 Test Spawn Diagnostics (API Error {response.status})",
-                        description=f"Response Text:\n```{resp_text[:500]}```",
-                        color=discord.Color.red()
-                    ))
-                    return
-        except Exception as e:
+                await ctx.send(embed=discord.Embed(
+                    title="🧪 Test Spawn Diagnostics (Success)",
+                    description=(
+                        f"**Raw Label:** `{raw_name}`\n"
+                        f"**Formatted:** {formatted_target} {emojis_str}\n"
+                        f"**Confidence:** `{confidence*100:.1f}%`\n"
+                        f"**Best Name:** `{best_name}`\n\n"
+                        f"**Click to Copy ->** `@Pokétwo#8236 c {best_name}`"
+                    ),
+                    color=discord.Color.green()
+                ))
+            else:
+                await ctx.send(embed=discord.Embed(
+                    title="🧪 Test Spawn Diagnostics (Invalid JSON List)",
+                    description=f"API returned valid JSON, but not a prediction list:\n```{resp_text[:500]}```",
+                    color=discord.Color.gold()
+                ))
+        except Exception as json_err:
             await ctx.send(embed=discord.Embed(
-                title="🧪 Test Spawn Diagnostics (Connection Exception)",
-                description=f"Error: `{e}`",
-                color=discord.Color.red()
+                title="🧪 Test Spawn Diagnostics (JSON Parse Error)",
+                description=f"Error: `{json_err}`\nResponse Text:\n```{resp_text[:500]}```",
+                color=discord.Color.gold()
             ))
-            return
+    elif status_code == 503:
+        await ctx.send(embed=discord.Embed(
+            title="🧪 Test Spawn Diagnostics (Model Cold Start - 503)",
+            description=f"⏳ **Hugging Face model is currently loading.** Please wait 30 seconds and try `E!testspawn` again!\n\nResponse:\n```{resp_text[:300]}```",
+            color=discord.Color.gold()
+        ))
+    else:
+        await ctx.send(embed=discord.Embed(
+            title=f"🧪 Test Spawn Diagnostics (API Error {status_code})",
+            description=f"Response Text:\n```{resp_text[:500]}```",
+            color=discord.Color.red()
+        ))
 
 
 # ==========================================
