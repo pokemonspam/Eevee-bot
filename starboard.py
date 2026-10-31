@@ -66,14 +66,14 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Fetches sprite from Showdown repository supporting all forms and shinies."""
+        """Uses PokeAPI official artwork CDN for universal image availability."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         slug = full.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
         slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
-        folder = "sprites/dex-shiny" if is_shiny else "sprites/dex"
-        return f"https://play.pokemonshowdown.com/{folder}/{slug}.png"
+        # PokeAPI Official Artwork Repository
+        return f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/{slug}.png"
 
     def parse_pokemon_data(self, content: str, default_author_mention: str) -> dict:
         trainer_match = re.search(r"<@!?(\d+)>", content)
@@ -89,15 +89,15 @@ class Starboard(commands.Cog):
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
         raw_pokemon = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
 
-        # Clean raw pokemon name by aggressively stripping out :unknown:, :female:, tags, etc.
-        pokemon_name = re.sub(r'[:\s]*(?:unknown|:unknown:|\?|:female:|<:female:\d+>|:male:|<:male:\d+>|female|male|♀|♂)+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
-        pokemon_name = pokemon_name.replace(":unknown:", "").replace(":unknown", "").replace("unknown", "").strip(":")
+        # Clean raw pokemon name by aggressively stripping out raw discord emoji tags, :female:, :male:, unknown, etc.
+        pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
+        pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
-        # Check gender explicitly from full content or raw field
-        raw_gender = f"{content} {raw_pokemon}".lower()
-        if any(tag in raw_gender for tag in ["female", "♀", "1207734084210532483", ":female:"]):
+        # Determine gender cleanly
+        raw_gender_source = f"{content} {raw_pokemon}".lower()
+        if any(tag in raw_gender_source for tag in ["female", "♀", "1207734084210532483", ":female:"]):
             gender = f" {self.FEMALE_EMOJI}"
-        elif any(tag in raw_gender for tag in ["male", "♂", "1207734081585152101", ":male:"]):
+        elif any(tag in raw_gender_source for tag in ["male", "♂", "1207734081585152101", ":male:"]):
             gender = f" {self.MALE_EMOJI}"
         else:
             gender = " ?" # Clean question mark for genderless mons
