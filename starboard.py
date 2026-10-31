@@ -113,7 +113,9 @@ class Starboard(commands.Cog):
                 "**Available Categories:**\n"
                 "• `shiny`, `rare`, `high_iv`, `low_iv`, `regional`, `gmax`\n\n"
                 "**Check Current Mappings:**\n"
-                "```E!starboard channel or e!starboard channel```"
+                "```E!starboard channel or e!starboard channel```\n\n"
+                "**Test Starboard Embed:**\n"
+                "```E!starboardtest [category] (reply to a caught message)```"
             ),
             color=0x2B2D31
         )
@@ -192,6 +194,107 @@ class Starboard(commands.Cog):
             color=0x5865F2
         )
         await ctx.send(embed=embed)
+
+    @commands.command(name="starboardtest", aliases=["sbtest"])
+    async def starboard_test(self, ctx, category: str = None):
+        """Tests the starboard embed by parsing a replied message or creating sample data."""
+        config = await self.starboard_config.find_one({"guild_id": ctx.guild.id}) or {}
+        categories = config.get("categories", {})
+
+        if not categories:
+            await ctx.send("❌ No starboard channels configured yet! Use `E!starboard set <category> <#channel>` first.")
+            return
+
+        valid_categories = ["shiny", "rare", "high_iv", "low_iv", "regional", "gmax"]
+        if category and category.lower() not in valid_categories:
+            await ctx.send(f"❌ **Invalid Category.** Valid options are: `{', '.join(valid_categories)}`")
+            return
+
+        # Try parsing replied message first if available
+        parsed_data = None
+        jump_url = ctx.message.jump_url
+
+        if ctx.message.reference:
+            try:
+                target_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+                jump_url = target_msg.jump_url
+                content = target_msg.content
+
+                trainer_match = re.search(r"<@!?(\d+)>", content)
+                trainer_mention = trainer_match.group(0) if trainer_match else ctx.author.mention
+
+                sprite_url = None
+                if target_msg.embeds:
+                    embed_obj = target_msg.embeds[0]
+                    if embed_obj.thumbnail:
+                        sprite_url = embed_obj.thumbnail.url
+                    elif embed_obj.image:
+                        sprite_url = embed_obj.image.url
+
+                iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
+                iv_str = f"{float(iv_match.group(1)):.2f}" if iv_match else "85.50"
+
+                lvl_match = re.search(r"Level\s+(\d+)", content)
+                level_str = lvl_match.group(1) if lvl_match else "30"
+
+                pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
+                pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
+
+                gender_match = re.search(r"([♀♂])", content)
+                gender_str = gender_match.group(1) if gender_match else ""
+
+                form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
+                form_str = form_match.group(1).strip() if form_match else ""
+
+                chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
+                chain_val = chain_match.group(1) if chain_match else None
+
+                parsed_data = {
+                    "trainer_mention": trainer_mention,
+                    "pokemon": pokemon_name,
+                    "gender": gender_str,
+                    "form": form_str,
+                    "level": level_str,
+                    "iv": iv_str,
+                    "chain": chain_val,
+                    "sprite_url": sprite_url
+                }
+            except Exception as e:
+                print(f"Starboard test parse note: {e}")
+
+        # Fallback test data if no valid reply found
+        if not parsed_data:
+            parsed_data = {
+                "trainer_mention": ctx.author.mention,
+                "pokemon": "Pikachu",
+                "gender": "♂",
+                "form": "",
+                "level": "50",
+                "iv": "95.56",
+                "chain": "12",
+                "sprite_url": ctx.author.display_avatar.url
+            }
+
+        # Determine which categories to test
+        target_categories = [category.lower()] if category else list(categories.keys())
+
+        sent_count = 0
+        for cat_key in target_categories:
+            if cat_key in categories:
+                ch_id = categories[cat_key]
+                channel = ctx.guild.get_channel(ch_id)
+
+                if channel:
+                    embed = self.get_category_embed(cat_key, parsed_data, jump_url)
+                    view = discord.ui.View()
+                    view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=jump_url))
+                    await channel.send(embed=embed, view=view)
+                    sent_count += 1
+
+        if sent_count > 0:
+            await ctx.send(f"✅ **Starboard Test Sent!** Dispatched test embed(s) to configured channel(s).")
+        else:
+            await ctx.send("❌ Could not send test embeds. Make sure the target channels still exist and the bot has permission to speak there.")
 
     @commands.Cog.listener()
     async def on_message(self, message):
