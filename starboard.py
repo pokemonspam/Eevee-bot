@@ -6,7 +6,6 @@ from datetime import datetime
 class Starboard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Grabs db automatically from bot instance attached in main.py
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
@@ -36,24 +35,20 @@ class Starboard(commands.Cog):
 
         # 🌍 Regional Pokémon List
         self.regional_pokemon = {
-            # Alolan
             "alolan ninetales", "alolan vulpix", "alolan geodude", "alolan graveler", "alolan raticate", 
             "alolan rattata", "alolan persian", "alolan meowth", "alolan exeggutor", "alolan dugtrio", 
             "alolan diglett", "alolan grimer", "alolan golem", "alolan sandshrew", "alolan sandslash", 
-            "alolan marowak", "alolan raichu", "alolan muk",
-            # Galarian
-            "galarian linoone", "galarian yamask", "galarian slowpoke", "galarian slowbro", "galarian slowking", 
-            "galarian farfetch'd", "galarian rapidash", "galarian ponyta", "galarian mr. mime", "galarian weezing", 
-            "galarian zigzagoon", "galarian corsola", "galarian meowth", "galarian darumaka", "galarian stunfisk", 
-            "galarian darmanitan", "galarian zen darmanitan", "obstagoon", "sirfetch'd", "cursola", 
-            "runerigus", "mr. rime", "perrserker",
-            # Hisuian
-            "hisuian growlithe", "hisuian arcanine", "hisuian electrode", "hisuian voltorb", "hisuian typhlosion", 
-            "hisuian lilligant", "hisuian samurott", "hisuian sneasel", "hisuian decidueye", "hisuian qwilfish", 
-            "hisuian braviary", "hisuian avalugg", "hisuian zoroark", "hisuian zorua", "hisuian sliggoo", 
-            "hisuian goodra", "basculegion", "sneasler", "overqwil",
-            # Paldean
-            "paldean wooper", "combat breed tauros", "blaze breed tauros", "aqua breed tauros"
+            "alolan marowak", "alolan raichu", "alolan muk", "galarian linoone", "galarian yamask", 
+            "galarian slowpoke", "galarian slowbro", "galarian slowking", "galarian farfetch'd", 
+            "galarian rapidash", "galarian ponyta", "galarian mr. mime", "galarian weezing", 
+            "galarian zigzagoon", "galarian corsola", "galarian meowth", "galarian darumaka", 
+            "galarian stunfisk", "galarian darmanitan", "galarian zen darmanitan", "obstagoon", 
+            "sirfetch'd", "cursola", "runerigus", "mr. rime", "perrserker", "hisuian growlithe", 
+            "hisuian arcanine", "hisuian electrode", "hisuian voltorb", "hisuian typhlosion", 
+            "hisuian lilligant", "hisuian samurott", "hisuian sneasel", "hisuian decidueye", 
+            "hisuian qwilfish", "hisuian braviary", "hisuian avalugg", "hisuian zoroark", 
+            "hisuian zorua", "hisuian sliggoo", "hisuian goodra", "basculegion", "sneasler", 
+            "overqwil", "paldean wooper", "combat breed tauros", "blaze breed tauros", "aqua breed tauros"
         }
 
     def is_rare(self, pokemon_name: str) -> bool:
@@ -66,52 +61,32 @@ class Starboard(commands.Cog):
         name_clean = pokemon_name.strip().lower()
         return name_clean in self.regional_pokemon
 
-    def get_comprehensive_sprite_url(self, pokemon_name: str, form: str = "", is_shiny: bool = False) -> str:
-        """Fetches the correct sprite from Showdown supporting shinies, regional forms, and variations."""
-        clean_name = pokemon_name.lower()
-        clean_form = form.lower() if form else ""
+    def build_external_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
+        """Constructs an online sprite URL from Showdown's asset CDN, handling forms and shinies."""
+        full_name = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
+        
+        # Clean up formatting for URL compatibility
+        clean = full_name.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
+        clean = clean.replace("partner", "").replace("speed", "speed").replace("attack", "attack").replace("defense", "defense")
+        clean = re.sub(r"[^a-z0-9\-]", "", clean.replace(" ", "-"))
+        clean = re.sub(r"-+", "-", clean).strip("-")
 
-        # Normalize special prefixes & formatting
-        prefix = ""
-        if "alolan" in clean_name or "alolan" in clean_form:
-            prefix = "alola"
-        elif "galarian" in clean_name or "galarian" in clean_form:
-            prefix = "galar"
-        elif "hisuian" in clean_name or "hisuian" in clean_form:
-            prefix = "hisui"
-        elif "paldean" in clean_name or "paldean" in clean_form:
-            prefix = "paldea"
-
-        base = clean_name.replace("alolan ", "").replace("galarian ", "").replace("hisuian ", "").replace("paldean ", "")
-        base = base.replace("partner ", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
-
-        # Handle form mapping if present
-        form_suffix = ""
-        if clean_form and prefix not in clean_form:
-            form_clean = clean_form.replace(" ", "-").replace(".", "").replace("'", "")
-            form_suffix = f"-{form_clean}"
-        elif prefix and prefix not in base:
-            form_suffix = f"-{prefix}"
-
-        # Showdown URL format for shinies vs normal sprites
-        shiny_path = "shiny/" if is_shiny else ""
-        return f"https://play.pokemonshowdown.com/sprites/dex{'-shiny' if is_shiny else ''}/{base}{form_suffix}.png"
+        folder = "shiny" if is_shiny else "dex"
+        return f"https://play.pokemonshowdown.com/sprites/{folder}/{clean}.png"
 
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         
-        # Clean Pokémon name from leftover tags
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
-        pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|unknown|♀|♂|:male:|<:male:\d+>|:female:|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
+        pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|unknown|♀|♂|\?|:male:|<:male:\d+>|:female:|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Robust bulletproof unicode gender symbols (Blue ♂ and Pink ♀) which never fail
         raw_gender = str(data.get("gender", "")).lower()
-        if re.search(r'(?:<:male:\d+>|male|♂|1481707071987515392)', raw_gender) and not re.search(r'(?:<:Female:\d+>|<:female:\d+>|female|♀|1481703205103730779)', raw_gender):
-            gender = " ♂"
-        elif re.search(r'(?:<:Female:\d+>|<:female:\d+>|female|♀|1481703205103730779)', raw_gender):
+        if "♀" in raw_gender or "female" in raw_gender:
             gender = " ♀"
+        elif "♂" in raw_gender or "male" in raw_gender:
+            gender = " ♂"
         else:
-            gender = "" # Left blank if genderless
+            gender = "" # Left completely blank for genderless Pokémon
 
         form_str = data.get("form", "")
         form_info = f" ({form_str})" if form_str else ""
@@ -143,16 +118,14 @@ class Starboard(commands.Cog):
 
         embed.description = "\n".join(description_lines)
         
-        # Small clean date & time placed in footer
         now = datetime.utcnow()
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
         embed.set_footer(text=formatted_date)
         
-        # Automatically pull comprehensive sprite (handling shinies, forms, and variations) as a thumbnail on the side
+        # Pull sprite from external web host
         is_shiny = (category_key == "shiny")
-        sprite_url = self.get_comprehensive_sprite_url(pokemon_name, form_str, is_shiny)
-        if sprite_url:
-            embed.set_thumbnail(url=sprite_url)
+        sprite_url = self.build_external_sprite_url(pokemon_name, form_str, is_shiny)
+        embed.set_thumbnail(url=sprite_url)
             
         return embed
 
@@ -286,7 +259,7 @@ class Starboard(commands.Cog):
                 pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
                 pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
 
-                gender_match = re.search(r"([♀♂]|male|female|unknown|:male:|<:male:\d+>|:female:|<:female:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
+                gender_match = re.search(r"([♀♂])", content)
                 gender_str = gender_match.group(1) if gender_match else ""
 
                 form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
@@ -311,7 +284,7 @@ class Starboard(commands.Cog):
             parsed_data = {
                 "trainer_mention": ctx.author.mention,
                 "pokemon": "Pikachu",
-                "gender": "male",
+                "gender": "♂",
                 "form": "",
                 "level": "50",
                 "iv": "95.56",
@@ -367,7 +340,7 @@ class Starboard(commands.Cog):
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
         pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Unknown Pokémon"
 
-        gender_match = re.search(r"([♀♂]|male|female|unknown|:male:|<:male:\d+>|:female:|<:female:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
+        gender_match = re.search(r"([♀♂])", content)
         gender_str = gender_match.group(1) if gender_match else ""
 
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
