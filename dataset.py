@@ -18,7 +18,7 @@ EXCLUDE_FROM_SHORT = {
     "aromatic", "clawitzer", "tyrantrum", "aurorus", "hawlucha", "goodra", "trevenant"
 }
 
-# Explicit short catch overrides requested
+# Explicit short catch overrides requested (using Prefix + Base Name where applicable)
 EXPLICIT_OVERRIDES = {
     "eevee": "ibui",
     "exeggutor": "owei",
@@ -27,7 +27,45 @@ EXPLICIT_OVERRIDES = {
     "smoliv": "olini",
     "capsakid": "pimito",
     "squakabilly": "tapatoes",
-    "venusaur": "bisaflor"
+    "venusaur": "bisaflor",
+    # Specific Pokétwo Form & Punctuation Rules
+    "ho-oh": "ho-oh",
+    "ho oh": "ho-oh",
+    "jangmo-o": "jangmo-o",
+    "jangmo o": "jangmo-o",
+    "hakamo-o": "hakamo-o",
+    "hakamo o": "hakamo-o",
+    "kommo-o": "kommo-o",
+    "kommo o": "kommo-o",
+    "wo-chien": "wo-chien",
+    "wo chien": "wo-chien",
+    "chien-pao": "chien-pao",
+    "chien pao": "chien-pao",
+    "ting-lu": "ting-lu",
+    "ting lu": "ting-lu",
+    "chi-yu": "chi-yu",
+    "chi yu": "chi-yu",
+    "mr. mime": "mr. mime",
+    "mr mime": "mr. mime",
+    "mime jr.": "mime jr.",
+    "mime jr": "mime jr.",
+    "mime-jr": "mime jr.",
+    "mr. rime": "mr. rime",
+    "mr rime": "mr. rime",
+    "type: null": "type: null",
+    "type null": "type: null",
+    "nidoran f": "nidoran",
+    "nidoran m": "nidoran",
+    "nidoran-f": "nidoran",
+    "nidoran-m": "nidoran",
+    "nidoran♀": "nidoran",
+    "nidoran♂": "nidoran",
+    "lycanroc midnight": "midnight lycanroc",
+    "lycanroc dusk": "dusk lycanroc",
+    "lycanroc dawn": "dawn lycanroc",
+    "lycanroc midday": "lycanroc",
+    "meloetta pirouette": "pirouette meloetta",
+    "meloetta aria": "meloetta"
 }
 
 # Global dictionary mapping English names to the best catch name across 1025 mons
@@ -70,11 +108,14 @@ def get_best_name(pokemon_name: str) -> str:
     """Returns the best catch name for any of the 1025 Pokémon and their regional forms."""
     clean_name = pokemon_name.strip().lower()
     
+    if clean_name in EXPLICIT_OVERRIDES:
+        return EXPLICIT_OVERRIDES[clean_name]
+        
     # Strip form prefixes (e.g., "Alolan Ninetales" -> "ninetales")
     base_name = get_base_pokemon(clean_name) if 'get_base_pokemon' in globals() else clean_name
     
-    if clean_name in EXPLICIT_OVERRIDES:
-        return EXPLICIT_OVERRIDES[clean_name]
+    if base_name in EXPLICIT_OVERRIDES:
+        return EXPLICIT_OVERRIDES[base_name]
         
     if base_name in BEST_NAMES_MAPPING:
         return BEST_NAMES_MAPPING[base_name]
@@ -177,7 +218,7 @@ POKEMON_FORMS = {
     "darmanitan": ["Darmanitan", "Zen Darmanitan"],
     "basculin": ["Basculin", "White-Striped Basculin"],
     "kyurem": ["Kyurem", "White Kyurem", "Black Kyurem"],
-    "meloetta": ["Meloetta", "Pirouette Forme Meloetta"],
+    "meloetta": ["Meloetta", "Pirouette Meloetta"],
     "genesect": ["Genesect", "High-speed Flight Configuration Genesect"],
 
     # Generation 6 & Kalos Forms
@@ -198,7 +239,7 @@ POKEMON_FORMS = {
 
     # Generation 7 & Alola Forms
     "oricorio": ["Oricorio", "Pom-pom Oricorio", "Pa'u Oricorio", "Sensu Oricorio"],
-    "lycanroc": ["Lycanroc", "Midnight Lycanroc", "Dusk Lycanroc"],
+    "lycanroc": ["Lycanroc", "Midnight Lycanroc", "Dusk Lycanroc", "Dawn Lycanroc"],
     "wishiwashi": ["Wishiwashi", "School Forme Wishiwashi"],
     "silvally": [
         "Silvally", "Bug Silvally", "Dark Silvally", "Dragon Silvally", "Electric Silvally", 
@@ -266,6 +307,8 @@ def normalize_name(name: str) -> str:
 
 def format_pokemon_name(name: str) -> str:
     norm = normalize_name(name)
+    if norm in EXPLICIT_OVERRIDES:
+        return EXPLICIT_OVERRIDES[norm].title() if norm != "type: null" else "Type: Null"
     if norm in REGIONAL_FORMS:
         return REGIONAL_FORMS[norm]
     return name.strip().title()
@@ -304,6 +347,8 @@ def validate_species(name: str) -> bool:
     norm = normalize_name(name)
     clean_norm = norm.replace("all ", "").strip()
     
+    if norm in EXPLICIT_OVERRIDES or clean_norm in EXPLICIT_OVERRIDES:
+        return True
     if norm in REGIONAL_FORMS or clean_norm in REGIONAL_FORMS:
         return True
     if norm in POKEMON_DATASET or clean_norm in POKEMON_DATASET:
@@ -353,7 +398,7 @@ TYPE_EMOJIS = {
     "rock": "<:rock:1562784462041776129>",
     "steel": "<:steel:1562783909563859075>",
     "water": "<:water:1562785226986618901>",
-    "fire": "<:fire:1562785047881195640>" # Using grass/fire slot ID or replace with your exact Fire ID
+    "fire": "<:fire:1562785047881195640>"
 }
 
 # Raw type data dictionary mapping species to types
@@ -386,10 +431,9 @@ POKEMON_TYPES = {
     "raichu": "electric",
     "sandshrew": "ground",
     "sandslash": "ground",
-    "nidoran f": "poison",
+    "nidoran": "poison",
     "nidorina": "poison",
     "nidoqueen": "poison ground",
-    "nidoran m": "poison",
     "nidorino": "poison",
     "nidoking": "poison ground",
     "clefairy": "fairy",
@@ -440,6 +484,7 @@ POKEMON_TYPES = {
     "slowbro": "water psychic",
     "magnemite": "electric steel",
     "magneton": "electric steel",
+    "farfetch'd": "normal flying",
     "farfetchd": "normal flying",
     "doduo": "normal flying",
     "dodrio": "normal flying",
@@ -479,7 +524,7 @@ POKEMON_TYPES = {
     "seaking": "water",
     "staryu": "water",
     "starmie": "water psychic",
-    "mr mime": "psychic fairy",
+    "mr. mime": "psychic fairy",
     "scyther": "bug flying",
     "jynx": "ice psychic",
     "electabuzz": "electric",
@@ -607,7 +652,7 @@ POKEMON_TYPES = {
     "pupitar": "rock ground",
     "tyranitar": "rock dark",
     "lugia": "psychic flying",
-    "ho oh": "fire flying",
+    "ho-oh": "fire flying",
     "celebi": "psychic grass",
     "treecko": "grass",
     "grovyle": "grass",
@@ -743,7 +788,6 @@ POKEMON_TYPES = {
     "groudon": "ground",
     "rayquaza": "dragon flying",
     "jirachi": "steel psychic",
-    "deoxys normal": "psychic",
     "turtwig": "grass",
     "grotle": "grass",
     "torterra": "grass ground",
@@ -770,7 +814,6 @@ POKEMON_TYPES = {
     "shieldon": "rock steel",
     "bastiodon": "rock steel",
     "burmy": "bug",
-    "wormadam plant": "bug grass",
     "mothim": "bug flying",
     "combee": "bug flying",
     "vespiquen": "bug flying",
@@ -796,7 +839,7 @@ POKEMON_TYPES = {
     "bronzor": "steel psychic",
     "bronzong": "steel psychic",
     "bonsly": "rock",
-    "mime jr": "psychic fairy",
+    "mime jr.": "psychic fairy",
     "happiny": "normal",
     "chatot": "normal flying",
     "spiritomb": "ghost dark",
@@ -844,12 +887,10 @@ POKEMON_TYPES = {
     "palkia": "water dragon",
     "heatran": "fire steel",
     "regigigas": "normal",
-    "giratina altered": "ghost dragon",
     "cresselia": "psychic",
     "phione": "water",
     "manaphy": "water",
     "darkrai": "dark",
-    "shaymin land": "grass",
     "arceus": "normal",
     "victini": "psychic fire",
     "snivy": "grass",
@@ -907,12 +948,10 @@ POKEMON_TYPES = {
     "whimsicott": "grass fairy",
     "petilil": "grass",
     "lilligant": "grass",
-    "basculin red striped": "water",
     "sandile": "ground dark",
     "krokorok": "ground dark",
     "krookodile": "ground dark",
     "darumaka": "fire",
-    "darmanitan standard": "fire",
     "maractus": "grass",
     "dwebble": "bug rock",
     "crustle": "bug rock",
@@ -998,14 +1037,11 @@ POKEMON_TYPES = {
     "cobalion": "steel fighting",
     "terrakion": "rock fighting",
     "virizion": "grass fighting",
-    "tornadus incarnate": "flying",
-    "thundurus incarnate": "electric flying",
     "reshiram": "dragon fire",
     "zekrom": "dragon electric",
-    "landorus incarnate": "ground flying",
     "kyurem": "dragon ice",
-    "keldeo ordinary": "water fighting",
-    "meloetta aria": "normal psychic",
+    "meloetta": "normal psychic",
+    "pirouette meloetta": "normal fighting",
     "genesect": "bug steel",
     "chespin": "grass",
     "quilladin": "grass",
@@ -1035,10 +1071,8 @@ POKEMON_TYPES = {
     "pangoro": "fighting dark",
     "furfrou": "normal",
     "espurr": "psychic",
-    "meowstic male": "psychic",
     "honedge": "steel ghost",
     "doublade": "steel ghost",
-    "aegislash shield": "steel ghost",
     "spritzee": "fairy",
     "aromatisse": "fairy",
     "swirlix": "fairy",
@@ -1067,15 +1101,12 @@ POKEMON_TYPES = {
     "klefki": "steel fairy",
     "phantump": "ghost grass",
     "trevenant": "ghost grass",
-    "pumpkaboo average": "ghost grass",
-    "gourgeist average": "ghost grass",
     "bergmite": "ice",
     "avalugg": "ice",
     "noibat": "flying dragon",
     "noivern": "flying dragon",
     "xerneas": "fairy",
     "yveltal": "dark flying",
-    "zygarde 50": "dragon ground",
     "diancie": "rock fairy",
     "hoopa": "psychic ghost",
     "volcanion": "fire water",
@@ -1098,12 +1129,13 @@ POKEMON_TYPES = {
     "vikavolt": "bug electric",
     "crabrawler": "fighting",
     "crabominable": "fighting ice",
-    "oricorio baile": "fire flying",
     "cutiefly": "bug fairy",
     "ribombee": "bug fairy",
     "rockruff": "rock",
-    "lycanroc midday": "rock",
-    "wishiwashi solo": "water",
+    "lycanroc": "rock",
+    "midnight lycanroc": "rock",
+    "dusk lycanroc": "rock",
+    "dawn lycanroc": "rock",
     "mareanie": "poison water",
     "toxapex": "poison water",
     "mudbray": "ground",
@@ -1129,19 +1161,17 @@ POKEMON_TYPES = {
     "sandygast": "ghost ground",
     "palossand": "ghost ground",
     "pyukumuku": "water",
-    "type null": "normal",
+    "type: null": "normal",
     "silvally": "normal",
-    "minior red meteor": "rock flying",
     "komala": "normal",
     "turtonator": "fire dragon",
     "togedemaru": "electric steel",
-    "mimikyu disguised": "ghost fairy",
     "bruxish": "water psychic",
     "drampa": "normal dragon",
     "dhelmise": "ghost grass",
-    "jangmo o": "dragon",
-    "hakamo o": "dragon fighting",
-    "kommo o": "dragon fighting",
+    "jangmo-o": "dragon",
+    "hakamo-o": "dragon fighting",
+    "kommo-o": "dragon fighting",
     "tapu koko": "electric fairy",
     "tapu lele": "psychic fairy",
     "tapu bulu": "grass fairy",
@@ -1206,7 +1236,6 @@ POKEMON_TYPES = {
     "arrokuda": "water",
     "barraskewda": "water",
     "toxel": "electric poison",
-    "toxtricity amped": "electric poison",
     "sizzlipede": "fire bug",
     "centiskorch": "fire bug",
     "clobbopus": "fighting",
@@ -1222,8 +1251,6 @@ POKEMON_TYPES = {
     "obstagoon": "dark normal",
     "perrserker": "steel",
     "cursola": "ghost",
-    "sirfetchd": "fighting",
-    "mr rime": "ice psychic",
     "runerigus": "ground ghost",
     "milcery": "fairy",
     "alcremie": "fairy",
@@ -1232,9 +1259,6 @@ POKEMON_TYPES = {
     "snom": "ice bug",
     "frosmoth": "ice bug",
     "stonjourner": "rock",
-    "eiscue ice": "ice",
-    "indeedee male": "psychic normal",
-    "morpeko full belly": "electric dark",
     "cufant": "steel",
     "copperajah": "steel",
     "dracozolt": "electric dragon",
@@ -1249,7 +1273,6 @@ POKEMON_TYPES = {
     "zamazenta": "fighting",
     "eternatus": "poison dragon",
     "kubfu": "fighting",
-    "urshifu single strike": "fighting dark",
     "zarude": "dark grass",
     "regieleki": "electric",
     "regidrago": "dragon",
@@ -1259,21 +1282,17 @@ POKEMON_TYPES = {
     "wyrdeer": "normal psychic",
     "kleavor": "bug rock",
     "ursaluna": "ground normal",
-    "basculegion male": "water ghost",
     "sneasler": "fighting poison",
     "overqwil": "dark poison",
-    "enamorus incarnate": "fairy flying",
     "sprigatito": "grass",
     "floragato": "grass",
     "meowscarada": "grass dark",
     "fuecoco": "fire",
     "crocalor": "fire",
-    "skele dirge": "fire ghost",
     "quaxly": "water",
     "quaxwell": "water",
     "quaquaval": "water fighting",
     "lechonk": "normal",
-    "oinkologne male": "normal",
     "tarountula": "bug",
     "spidops": "bug",
     "nymble": "bug",
@@ -1282,13 +1301,11 @@ POKEMON_TYPES = {
     "pawmo": "electric fighting",
     "pawmot": "electric fighting",
     "tandemaus": "normal",
-    "maushold family of four": "normal",
     "fidough": "fairy",
     "dachsbun": "fairy",
     "smoliv": "grass normal",
     "dolliv": "grass normal",
     "arboliva": "grass normal",
-    "squawkabilly green plumage": "normal flying",
     "nacli": "rock",
     "naclstack": "rock",
     "garganacl": "rock",
@@ -1321,7 +1338,6 @@ POKEMON_TYPES = {
     "wugtrio": "water",
     "bombirdier": "flying dark",
     "finizen": "water",
-    "palafin zero": "water",
     "varoom": "steel poison",
     "revavroom": "steel poison",
     "cyclizar": "dragon normal",
@@ -1335,11 +1351,9 @@ POKEMON_TYPES = {
     "cetitan": "ice",
     "veluza": "water psychic",
     "dondozo": "water",
-    "tatsugiri curly": "dragon water",
     "annihilape": "fighting ghost",
     "clodsire": "poison ground",
     "farigiraf": "normal psychic",
-    "dudunsparce two segment": "normal",
     "kingambit": "dark steel",
     "great tusk": "ground fighting",
     "scream tail": "fairy psychic",
@@ -1358,10 +1372,10 @@ POKEMON_TYPES = {
     "baxcalibur": "dragon ice",
     "gimmighoul": "ghost",
     "gholdengo": "steel ghost",
-    "wo chien": "dark grass",
-    "chien pao": "dark ice",
-    "ting lu": "dark ground",
-    "chi yu": "dark fire",
+    "wo-chien": "dark grass",
+    "chien-pao": "dark ice",
+    "ting-lu": "dark ground",
+    "chi-yu": "dark fire",
     "roaring moon": "dragon dark",
     "iron valiant": "fairy fighting",
     "koraidon": "fighting dragon",
