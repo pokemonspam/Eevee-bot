@@ -9,7 +9,7 @@ class Starboard(commands.Cog):
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
-        # Your exact Pokétwo gender custom emojis
+        # Your exact Pokétwo custom gender emojis
         self.MALE_EMOJI = "<:male:1207734081585152101>"
         self.FEMALE_EMOJI = "<:female:1207734084210532483>"
 
@@ -66,32 +66,62 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Uses Smogon's comprehensive sprite repository which has 100% coverage for every form, variant, and shiny."""
+        """Fetches sprite from Showdown repository supporting all forms and shinies."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         slug = full.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
         slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
-        # Smogon/Showdown comprehensive repository supports every single variant cleanly
         folder = "sprites/dex-shiny" if is_shiny else "sprites/dex"
         return f"https://play.pokemonshowdown.com/{folder}/{slug}.png"
 
-    def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
-        trainer_mention = data.get("trainer_mention", "Unknown Trainer")
-        
-        # Clean Pokémon name
-        raw_pokemon_field = data.get("pokemon", "Unknown Pokémon")
-        pokemon_name = re.sub(r'[:\s]*(?::female:|<:female:\d+>|:male:|<:male:\d+>|female|male|unknown|♀|♂|\?)+$', '', raw_pokemon_field, flags=re.IGNORECASE).strip()
-        
-        # Explicit Gender Matching
-        raw_gender = f"{data.get('gender', '')} {raw_pokemon_field}".lower()
+    def parse_pokemon_data(self, content: str, default_author_mention: str) -> dict:
+        trainer_match = re.search(r"<@!?(\d+)>", content)
+        trainer_mention = trainer_match.group(0) if trainer_match else default_author_mention
+
+        iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
+        iv_str = f"{float(iv_match.group(1)):.2f}" if iv_match else "N/A"
+
+        lvl_match = re.search(r"Level\s+(\d+)", content)
+        level_str = lvl_match.group(1) if lvl_match else "N/A"
+
+        # Extract raw name match
+        pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
+        raw_pokemon = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
+
+        # Clean raw pokemon name by aggressively stripping out :unknown:, :female:, tags, etc.
+        pokemon_name = re.sub(r'[:\s]*(?:unknown|:unknown:|\?|:female:|<:female:\d+>|:male:|<:male:\d+>|female|male|♀|♂)+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
+        pokemon_name = pokemon_name.replace(":unknown:", "").replace(":unknown", "").replace("unknown", "").strip(":")
+
+        # Check gender explicitly from full content or raw field
+        raw_gender = f"{content} {raw_pokemon}".lower()
         if any(tag in raw_gender for tag in ["female", "♀", "1207734084210532483", ":female:"]):
             gender = f" {self.FEMALE_EMOJI}"
         elif any(tag in raw_gender for tag in ["male", "♂", "1207734081585152101", ":male:"]):
             gender = f" {self.MALE_EMOJI}"
         else:
-            gender = " ?" # Shows ? for genderless Pokémon
+            gender = " ?" # Clean question mark for genderless mons
 
+        form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
+        form_str = form_match.group(1).strip() if form_match else ""
+
+        chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
+        chain_val = chain_match.group(1) if chain_match else None
+
+        return {
+            "trainer_mention": trainer_mention,
+            "pokemon": pokemon_name,
+            "gender": gender,
+            "form": form_str,
+            "level": level_str,
+            "iv": iv_str,
+            "chain": chain_val
+        }
+
+    def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
+        trainer_mention = data.get("trainer_mention", "Unknown Trainer")
+        pokemon_name = data.get("pokemon", "Unknown Pokémon")
+        gender = data.get("gender", "")
         form_str = data.get("form", "")
         form_info = f" ({form_str})" if form_str else ""
         level = data.get("level", "N/A")
@@ -249,38 +279,7 @@ class Starboard(commands.Cog):
             try:
                 target_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
                 jump_url = target_msg.jump_url
-                content = target_msg.content
-
-                trainer_match = re.search(r"<@!?(\d+)>", content)
-                trainer_mention = trainer_match.group(0) if trainer_match else ctx.author.mention
-
-                iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
-                iv_str = f"{float(iv_match.group(1)):.2f}" if iv_match else "85.50"
-
-                lvl_match = re.search(r"Level\s+(\d+)", content)
-                level_str = lvl_match.group(1) if lvl_match else "30"
-
-                pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
-                pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
-
-                gender_match = re.search(r"([♀♂]|:female:|<:female:\d+>|:male:|<:male:\d+>|female|male)", content, re.IGNORECASE)
-                gender_str = gender_match.group(1) if gender_match else ""
-
-                form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
-                form_str = form_match.group(1).strip() if form_match else ""
-
-                chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
-                chain_val = chain_match.group(1) if chain_match else None
-
-                parsed_data = {
-                    "trainer_mention": trainer_mention,
-                    "pokemon": pokemon_name,
-                    "gender": gender_str,
-                    "form": form_str,
-                    "level": level_str,
-                    "iv": iv_str,
-                    "chain": chain_val
-                }
+                parsed_data = self.parse_pokemon_data(target_msg.content, ctx.author.mention)
             except Exception as e:
                 print(f"Starboard test parse note: {e}")
 
@@ -288,7 +287,7 @@ class Starboard(commands.Cog):
             parsed_data = {
                 "trainer_mention": ctx.author.mention,
                 "pokemon": "Pikachu",
-                "gender": "male",
+                "gender": f" {self.MALE_EMOJI}",
                 "form": "",
                 "level": "50",
                 "iv": "95.56",
@@ -327,41 +326,12 @@ class Starboard(commands.Cog):
         config = await self.starboard_config.find_one({"guild_id": message.guild.id}) or {}
         categories = config.get("categories", {})
 
-        trainer_match = re.search(r"<@!?(\d+)>", content)
-        trainer_mention = trainer_match.group(0) if trainer_match else "Trainer"
-
-        iv_value = None
-        iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
-        if iv_match:
-            try:
-                iv_value = float(iv_match.group(1))
-            except ValueError:
-                iv_value = None
-
-        lvl_match = re.search(r"Level\s+(\d+)", content)
-        level_str = lvl_match.group(1) if lvl_match else "N/A"
-
-        pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
-        pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Unknown Pokémon"
-
-        gender_match = re.search(r"([♀♂]|:female:|<:female:\d+>|:male:|<:male:\d+>|female|male)", content, re.IGNORECASE)
-        gender_str = gender_match.group(1) if gender_match else ""
-
-        form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
-        form_str = form_match.group(1).strip() if form_match else ""
-
-        chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
-        chain_val = chain_match.group(1) if chain_match else None
-
-        data = {
-            "trainer_mention": trainer_mention,
-            "pokemon": pokemon_name,
-            "gender": gender_str,
-            "form": form_str,
-            "level": level_str,
-            "iv": f"{iv_value:.2f}" if iv_value is not None else "N/A",
-            "chain": chain_val
-        }
+        data = self.parse_pokemon_data(content, "Trainer")
+        pokemon_name = data["pokemon"]
+        try:
+            iv_value = float(data["iv"])
+        except ValueError:
+            iv_value = None
 
         detected_categories = []
 
