@@ -47,13 +47,17 @@ EXPLICIT_OVERRIDES = {
     "chi yu": "chi-yu",
     "mr. mime": "mr. mime",
     "mr mime": "mr. mime",
+    "mrmime": "mr. mime",
     "mime jr.": "mime jr.",
     "mime jr": "mime jr.",
     "mime-jr": "mime jr.",
+    "mimejr": "mime jr.",
     "mr. rime": "mr. rime",
     "mr rime": "mr. rime",
+    "mrrime": "mr. rime",
     "type: null": "type: null",
     "type null": "type: null",
+    "typenull": "type: null",
     "nidoran f": "nidoran",
     "nidoran m": "nidoran",
     "nidoran-f": "nidoran",
@@ -345,7 +349,8 @@ def get_base_pokemon(species: str) -> str:
 
 def validate_species(name: str) -> bool:
     norm = normalize_name(name)
-    clean_norm = norm.replace("all ", "").strip()
+    # Normalize punctuation differences like periods in mr.mime / mime jr.
+    clean_norm = norm.replace(".", "").replace("  ", " ").replace("all ", "").strip()
     
     if norm in EXPLICIT_OVERRIDES or clean_norm in EXPLICIT_OVERRIDES:
         return True
@@ -367,6 +372,7 @@ def parse_pokemon_list(raw_text: str) -> list[str]:
     """Helper to parse a raw string of comma-separated Pokémon names."""
     if not raw_text:
         return []
+    # Split items and preserve compatibility while cleaning spacing
     return [m.strip().lower() for m in raw_text.split(",") if m.strip()]
 
 def get_pokemon_by_id(dex_id: int) -> str:
