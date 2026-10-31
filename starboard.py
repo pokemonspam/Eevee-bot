@@ -12,7 +12,7 @@ class Starboard(commands.Cog):
 
         # 🦅 Rare Pokémon List (Normalized lowercase for exact/partial matching)
         self.rare_pokemon = {
-            "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", 
+            "articuno", "zapdos", "moltries", "mewtwo", "mew", "raikou", "entei", "suicune", 
             "lugia", "ho-oh", "celebi", "regirock", "regice", "registeel", "latias", "latios", 
             "kyogre", "groudon", "rayquaza", "jirachi", "deoxys", "attack deoxys", "defense deoxys", 
             "speed deoxys", "uxie", "mesprit", "azelf", "dialga", "palkia", "heatran", "regigigas", 
@@ -71,14 +71,14 @@ class Starboard(commands.Cog):
         
         # Clean Pokémon name from any accidental raw gender text tags
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
-        pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|♀|♂|<:male:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
+        pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|♀|♂|<:male:\d+>|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Custom Discord emoji replacement for gender
+        # Custom Discord emoji replacement for gender using user's exact IDs
         raw_gender = data.get("gender", "")
-        if raw_gender.lower() in ["male", "m", "♂", "<:male:1510903424047386784>"]:
-            gender = " <:male:1510903424047386784>"
-        elif raw_gender.lower() in ["female", "f", "♀", "<:Female:1510903384180523028>"]:
-            gender = " <:Female:1510903384180523028>"
+        if raw_gender.lower() in ["male", "m", "♂", "1566140157306872048", "<:male:1566140157306872048>", "<:male:1510903424047386784>"]:
+            gender = " <:male:1566140157306872048>"
+        elif raw_gender.lower() in ["female", "f", "♀", "1566140573298069665", "<:female:1566140573298069665>", "<:Female:1510903384180523028>"]:
+            gender = " <:female:1566140573298069665>"
         else:
             gender = f" {raw_gender}" if raw_gender else ""
 
@@ -98,9 +98,8 @@ class Starboard(commands.Cog):
 
         theme = category_themes.get(category_key, {"title": "🌟 Starboard Catch Detected!", "color": 0x7289DA})
         
-        # Discord timestamp handles user region time automatically
         now = datetime.utcnow()
-        embed = discord.Embed(title=theme["title"], color=theme["color"], timestamp=now)
+        embed = discord.Embed(title=theme["title"], color=theme["color"])
 
         description_lines = [
             f"**Trainer:** {trainer_mention}",
@@ -113,13 +112,10 @@ class Starboard(commands.Cog):
 
         embed.description = "\n".join(description_lines)
         
-        # Ensures Pokémon picture/sprite is explicitly assigned as thumbnail or image
+        # Sets Pokémon picture/sprite as thumbnail
         if data.get("sprite_url"):
             embed.set_thumbnail(url=data["sprite_url"])
             
-        # Format date & time cleanly in footer based on local generation time
-        date_str = now.strftime("%d %B %Y at %H:%M")
-        embed.set_footer(text=date_str)
         return embed
 
     @commands.group(name="starboard", invoke_without_command=True, case_insensitive=True)
@@ -264,7 +260,7 @@ class Starboard(commands.Cog):
                 pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
                 pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
 
-                gender_match = re.search(r"([♀♂]|male|female|<:male:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
+                gender_match = re.search(r"([♀♂]|male|female|<:male:\d+>|<:female:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
                 gender_str = gender_match.group(1) if gender_match else ""
 
                 form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
@@ -290,11 +286,11 @@ class Starboard(commands.Cog):
             parsed_data = {
                 "trainer_mention": ctx.author.mention,
                 "pokemon": "Pikachu",
-                "gender": "<:male:1510903424047386784>",
+                "gender": "<:male:1566140157306872048>",
                 "form": "",
                 "level": "50",
                 "iv": "95.56",
-                "chain": "12",
+                "chain": "102",
                 "sprite_url": ctx.author.display_avatar.url
             }
 
@@ -359,7 +355,7 @@ class Starboard(commands.Cog):
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
         pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Unknown Pokémon"
 
-        gender_match = re.search(r"([♀♂]|male|female|<:male:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
+        gender_match = re.search(r"([♀♂]|male|female|<:male:\d+>|<:female:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
         gender_str = gender_match.group(1) if gender_match else ""
 
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
