@@ -70,13 +70,6 @@ class Starboard(commands.Cog):
         name_clean = pokemon_name.strip().lower()
         return name_clean in self.regional_pokemon
 
-    def get_online_sprite_url(self, pokemon_name: str, is_shiny: bool = False) -> str:
-        """Fallback online repository loader with shiny support if message link is absent."""
-        clean = pokemon_name.lower().replace("alolan ", "").replace("galarian ", "").replace("hisuian ", "").replace("paldean ", "")
-        clean = clean.replace("partner ", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
-        folder = "shiny/" if is_shiny else ""
-        return f"https://play.pokemonshowdown.com/sprites/dex/{clean}.png"
-
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         
@@ -127,11 +120,10 @@ class Starboard(commands.Cog):
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
         embed.set_footer(text=formatted_date)
         
-        # Use exact captured sprite URL (preserves shiny/gmax form) or fallback
-        is_shiny = (category_key == "shiny")
-        sprite_url = data.get("sprite_url") or self.get_online_sprite_url(pokemon_name, is_shiny)
+        # Uses exact sprite URL captured from Pokétwo message (guarantees shiny/form/gmax accuracy) and places it on the side via thumbnail
+        sprite_url = data.get("sprite_url")
         if sprite_url:
-            embed.set_image(url=sprite_url) # Big image display matching reference layout
+            embed.set_thumbnail(url=sprite_url)
             
         return embed
 
