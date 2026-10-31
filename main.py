@@ -1666,7 +1666,7 @@ async def shiny_group(ctx, *, target_mon: str = None):
     user_doc = await shiny_col.find_one({"user_id": ctx.author.id})
     target = user_doc.get("target", "None") if user_doc else "None"
 
-    await ctx.send(f"✨ **Shiny Hunt**\nCurrent Active Hunt: ✨ **{target}**.")
+    await ctx.send(f" **Shiny Hunt**\nCurrent Active Hunt: ✨ **{target}**.")
 
 @shiny_group.command(name="clear")
 async def shiny_clear(ctx):
