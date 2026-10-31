@@ -10,10 +10,6 @@ class Starboard(commands.Cog):
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
-        # Hardcoded Custom Discord Emojis
-        self.MALE_EMOJI = "<:male:1481707071987515392>"
-        self.FEMALE_EMOJI = "<:Female:1481703205103730779>"
-
         # 🦅 Rare Pokémon List (Normalized lowercase for exact/partial matching)
         self.rare_pokemon = {
             "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", 
@@ -70,23 +66,55 @@ class Starboard(commands.Cog):
         name_clean = pokemon_name.strip().lower()
         return name_clean in self.regional_pokemon
 
+    def get_comprehensive_sprite_url(self, pokemon_name: str, form: str = "", is_shiny: bool = False) -> str:
+        """Fetches the correct sprite from Showdown supporting shinies, regional forms, and variations."""
+        clean_name = pokemon_name.lower()
+        clean_form = form.lower() if form else ""
+
+        # Normalize special prefixes & formatting
+        prefix = ""
+        if "alolan" in clean_name or "alolan" in clean_form:
+            prefix = "alola"
+        elif "galarian" in clean_name or "galarian" in clean_form:
+            prefix = "galar"
+        elif "hisuian" in clean_name or "hisuian" in clean_form:
+            prefix = "hisui"
+        elif "paldean" in clean_name or "paldean" in clean_form:
+            prefix = "paldea"
+
+        base = clean_name.replace("alolan ", "").replace("galarian ", "").replace("hisuian ", "").replace("paldean ", "")
+        base = base.replace("partner ", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
+
+        # Handle form mapping if present
+        form_suffix = ""
+        if clean_form and prefix not in clean_form:
+            form_clean = clean_form.replace(" ", "-").replace(".", "").replace("'", "")
+            form_suffix = f"-{form_clean}"
+        elif prefix and prefix not in base:
+            form_suffix = f"-{prefix}"
+
+        # Showdown URL format for shinies vs normal sprites
+        shiny_path = "shiny/" if is_shiny else ""
+        return f"https://play.pokemonshowdown.com/sprites/dex{'-shiny' if is_shiny else ''}/{base}{form_suffix}.png"
+
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         
-        # Clean Pokémon name from any leftover text tags
+        # Clean Pokémon name from leftover tags
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|unknown|♀|♂|:male:|<:male:\d+>|:female:|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Precise Gender matching using user's specific custom emojis
+        # Robust bulletproof unicode gender symbols (Blue ♂ and Pink ♀) which never fail
         raw_gender = str(data.get("gender", "")).lower()
-        if re.search(r'(?:<:male:\d+>|male|♂)', raw_gender) and not re.search(r'(?:<:Female:\d+>|<:female:\d+>|female|♀)', raw_gender):
-            gender = f" {self.MALE_EMOJI}"
-        elif re.search(r'(?:<:Female:\d+>|<:female:\d+>|female|♀)', raw_gender):
-            gender = f" {self.FEMALE_EMOJI}"
+        if re.search(r'(?:<:male:\d+>|male|♂|1481707071987515392)', raw_gender) and not re.search(r'(?:<:Female:\d+>|<:female:\d+>|female|♀|1481703205103730779)', raw_gender):
+            gender = " ♂"
+        elif re.search(r'(?:<:Female:\d+>|<:female:\d+>|female|♀|1481703205103730779)', raw_gender):
+            gender = " ♀"
         else:
-            gender = "" # Leaves it blank if genderless
+            gender = "" # Left blank if genderless
 
-        form_info = f" ({data['form']})" if data.get("form") else ""
+        form_str = data.get("form", "")
+        form_info = f" ({form_str})" if form_str else ""
         level = data.get("level", "N/A")
         iv = data.get("iv", "N/A")
         chain = data.get("chain", None)
@@ -120,8 +148,9 @@ class Starboard(commands.Cog):
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
         embed.set_footer(text=formatted_date)
         
-        # Uses exact sprite URL captured from Pokétwo message (guarantees shiny/form/gmax accuracy) and places it on the side via thumbnail
-        sprite_url = data.get("sprite_url")
+        # Automatically pull comprehensive sprite (handling shinies, forms, and variations) as a thumbnail on the side
+        is_shiny = (category_key == "shiny")
+        sprite_url = self.get_comprehensive_sprite_url(pokemon_name, form_str, is_shiny)
         if sprite_url:
             embed.set_thumbnail(url=sprite_url)
             
@@ -248,16 +277,6 @@ class Starboard(commands.Cog):
                 trainer_match = re.search(r"<@!?(\d+)>", content)
                 trainer_mention = trainer_match.group(0) if trainer_match else ctx.author.mention
 
-                sprite_url = None
-                if target_msg.embeds:
-                    for embed_obj in target_msg.embeds:
-                        if embed_obj.thumbnail and embed_obj.thumbnail.url:
-                            sprite_url = embed_obj.thumbnail.url
-                            break
-                        elif embed_obj.image and embed_obj.image.url:
-                            sprite_url = embed_obj.image.url
-                            break
-
                 iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
                 iv_str = f"{float(iv_match.group(1)):.2f}" if iv_match else "85.50"
 
@@ -283,8 +302,7 @@ class Starboard(commands.Cog):
                     "form": form_str,
                     "level": level_str,
                     "iv": iv_str,
-                    "chain": chain_val,
-                    "sprite_url": sprite_url
+                    "chain": chain_val
                 }
             except Exception as e:
                 print(f"Starboard test parse note: {e}")
@@ -297,8 +315,7 @@ class Starboard(commands.Cog):
                 "form": "",
                 "level": "50",
                 "iv": "95.56",
-                "chain": "102",
-                "sprite_url": None
+                "chain": "102"
             }
 
         target_categories = [category.lower()] if category else list(categories.keys())
@@ -336,16 +353,6 @@ class Starboard(commands.Cog):
         trainer_match = re.search(r"<@!?(\d+)>", content)
         trainer_mention = trainer_match.group(0) if trainer_match else "Trainer"
 
-        sprite_url = None
-        if message.embeds:
-            for embed_obj in message.embeds:
-                if embed_obj.thumbnail and embed_obj.thumbnail.url:
-                    sprite_url = embed_obj.thumbnail.url
-                    break
-                elif embed_obj.image and embed_obj.image.url:
-                    sprite_url = embed_obj.image.url
-                    break
-
         iv_value = None
         iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
         if iv_match:
@@ -376,8 +383,7 @@ class Starboard(commands.Cog):
             "form": form_str,
             "level": level_str,
             "iv": f"{iv_value:.2f}" if iv_value is not None else "N/A",
-            "chain": chain_val,
-            "sprite_url": sprite_url
+            "chain": chain_val
         }
 
         detected_categories = []
