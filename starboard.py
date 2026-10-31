@@ -68,7 +68,10 @@ class Starboard(commands.Cog):
 
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
+        
+        # Clean Pokémon name from any accidental raw gender text tags
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
+        pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|♀|♂|<:male:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
         # Custom Discord emoji replacement for gender
         raw_gender = data.get("gender", "")
@@ -94,7 +97,10 @@ class Starboard(commands.Cog):
         }
 
         theme = category_themes.get(category_key, {"title": "🌟 Starboard Catch Detected!", "color": 0x7289DA})
-        embed = discord.Embed(title=theme["title"], color=theme["color"], timestamp=datetime.utcnow())
+        
+        # Discord timestamp handles user region time automatically
+        now = datetime.utcnow()
+        embed = discord.Embed(title=theme["title"], color=theme["color"], timestamp=now)
 
         description_lines = [
             f"**Trainer:** {trainer_mention}",
@@ -107,11 +113,13 @@ class Starboard(commands.Cog):
 
         embed.description = "\n".join(description_lines)
         
-        # Ensures Pokémon picture/sprite is explicitly assigned as thumbnail
+        # Ensures Pokémon picture/sprite is explicitly assigned as thumbnail or image
         if data.get("sprite_url"):
             embed.set_thumbnail(url=data["sprite_url"])
             
-        embed.set_footer(text="Catch Detection System")
+        # Format date & time cleanly in footer based on local generation time
+        date_str = now.strftime("%d %B %Y at %H:%M")
+        embed.set_footer(text=date_str)
         return embed
 
     @commands.group(name="starboard", invoke_without_command=True, case_insensitive=True)
@@ -237,11 +245,15 @@ class Starboard(commands.Cog):
 
                 sprite_url = None
                 if target_msg.embeds:
-                    embed_obj = target_msg.embeds[0]
-                    if embed_obj.thumbnail:
-                        sprite_url = embed_obj.thumbnail.url
-                    elif embed_obj.image:
-                        sprite_url = embed_obj.image.url
+                    for embed_obj in target_msg.embeds:
+                        if embed_obj.thumbnail and embed_obj.thumbnail.url:
+                            sprite_url = embed_obj.thumbnail.url
+                            break
+                        elif embed_obj.image and embed_obj.image.url:
+                            sprite_url = embed_obj.image.url
+                            break
+                if not sprite_url and target_msg.attachments:
+                    sprite_url = target_msg.attachments[0].url
 
                 iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
                 iv_str = f"{float(iv_match.group(1)):.2f}" if iv_match else "85.50"
@@ -323,11 +335,15 @@ class Starboard(commands.Cog):
 
         sprite_url = None
         if message.embeds:
-            embed_obj = message.embeds[0]
-            if embed_obj.thumbnail:
-                sprite_url = embed_obj.thumbnail.url
-            elif embed_obj.image:
-                sprite_url = embed_obj.image.url
+            for embed_obj in message.embeds:
+                if embed_obj.thumbnail and embed_obj.thumbnail.url:
+                    sprite_url = embed_obj.thumbnail.url
+                    break
+                elif embed_obj.image and embed_obj.image.url:
+                    sprite_url = embed_obj.image.url
+                    break
+        if not sprite_url and message.attachments:
+            sprite_url = message.attachments[0].url
 
         iv_value = None
         iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
