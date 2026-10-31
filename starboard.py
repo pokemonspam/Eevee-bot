@@ -66,27 +66,27 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_pokepc_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Fetches sprites from PokéPC's asset pipeline supporting forms and shinies."""
+        """Constructs the exact PokéPC asset URL for normal/shiny sprites and alternate forms."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         slug = full.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
         slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
         path = "shiny" if is_shiny else "home"
-        base_url = "https://raw.githubusercontent.com/pokepc/dataset/main/assets/sprites/pokemon"
-        return f"{base_url}/{path}/{slug}.png"
+        return f"https://raw.githubusercontent.com/pokepc/dataset/main/assets/sprites/pokemon/{path}/{slug}.png"
 
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         
+        # Clean Pokémon name from literal text tags
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|unknown|♀|♂|\?|:male:|<:male:\d+>|:female:|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Explicit gender check: ignores '?' / 'unknown' for genderless mons
+        # Parse and apply your custom Discord emojis properly
         raw_gender = str(data.get("gender", "")).lower()
-        if any(g in raw_gender for g in ["female", "f", "♀", "1481703205103730779"]):
+        if any(g in raw_gender for g in ["female", "f", "♀", "1481703205103730779", ":female:", ":c_female:"]):
             gender = f" {self.FEMALE_EMOJI}"
-        elif any(g in raw_gender for g in ["male", "m", "♂", "1481707071987515392"]):
+        elif any(g in raw_gender for g in ["male", "m", "♂", "1481707071987515392", ":male:", ":c_male:"]):
             gender = f" {self.MALE_EMOJI}"
         else:
             gender = "" # Left blank for genderless Pokémon
@@ -262,7 +262,7 @@ class Starboard(commands.Cog):
                 pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
                 pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
 
-                gender_match = re.search(r"([♀♂\?]|unknown|female|male|<:Female:\d+>|<:female:\d+>|<:male:\d+>)", content, re.IGNORECASE)
+                gender_match = re.search(r"([♀♂\?]|unknown|female|male|<:Female:\d+>|<:female:\d+>|<:male:\d+>|:female:|:male:)", content, re.IGNORECASE)
                 gender_str = gender_match.group(1) if gender_match else ""
 
                 form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
@@ -343,7 +343,7 @@ class Starboard(commands.Cog):
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
         pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Unknown Pokémon"
 
-        gender_match = re.search(r"([♀♂\?]|unknown|female|male|<:Female:\d+>|<:female:\d+>|<:male:\d+>)", content, re.IGNORECASE)
+        gender_match = re.search(r"([♀♂\?]|unknown|female|male|<:Female:\d+>|<:female:\d+>|<:male:\d+>|:female:|:male:)", content, re.IGNORECASE)
         gender_str = gender_match.group(1) if gender_match else ""
 
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
