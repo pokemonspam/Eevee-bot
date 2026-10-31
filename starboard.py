@@ -12,7 +12,7 @@ class Starboard(commands.Cog):
 
         # 🦅 Rare Pokémon List (Normalized lowercase for exact/partial matching)
         self.rare_pokemon = {
-            "articuno", "zapdos", "moltries", "mewtwo", "mew", "raikou", "entei", "suicune", 
+            "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", 
             "lugia", "ho-oh", "celebi", "regirock", "regice", "registeel", "latias", "latios", 
             "kyogre", "groudon", "rayquaza", "jirachi", "deoxys", "attack deoxys", "defense deoxys", 
             "speed deoxys", "uxie", "mesprit", "azelf", "dialga", "palkia", "heatran", "regigigas", 
@@ -66,6 +66,11 @@ class Starboard(commands.Cog):
         name_clean = pokemon_name.strip().lower()
         return name_clean in self.regional_pokemon
 
+    def get_fallback_sprite_url(self, pokemon_name: str) -> str:
+        """Falls back to online repository assets if message thumbnail is missing."""
+        clean = pokemon_name.lower().replace(" ", "-").replace(".", "").replace("'", "")
+        return f"https://play.pokemonshowdown.com/sprites/dex/{clean}.png"
+
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         
@@ -73,7 +78,7 @@ class Starboard(commands.Cog):
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|♀|♂|<:male:\d+>|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Custom Discord emoji replacement for gender using user's exact IDs
+        # Custom Discord emoji replacement for gender
         raw_gender = data.get("gender", "")
         if raw_gender.lower() in ["male", "m", "♂", "1566140157306872048", "<:male:1566140157306872048>", "<:male:1510903424047386784>"]:
             gender = " <:male:1566140157306872048>"
@@ -98,7 +103,6 @@ class Starboard(commands.Cog):
 
         theme = category_themes.get(category_key, {"title": "🌟 Starboard Catch Detected!", "color": 0x7289DA})
         
-        now = datetime.utcnow()
         embed = discord.Embed(title=theme["title"], color=theme["color"])
 
         description_lines = [
@@ -110,11 +114,16 @@ class Starboard(commands.Cog):
         if chain is not None:
             description_lines.append(f"**Chain:** {chain}")
 
+        # Add region-relative interactive timestamp
+        timestamp_int = int(datetime.utcnow().timestamp())
+        description_lines.append(f"\n📅 <t:{timestamp_int}:f>")
+
         embed.description = "\n".join(description_lines)
         
-        # Sets Pokémon picture/sprite as thumbnail
-        if data.get("sprite_url"):
-            embed.set_thumbnail(url=data["sprite_url"])
+        # Ensure image is present via embedded thumbnail or online fallback
+        sprite_url = data.get("sprite_url") or self.get_fallback_sprite_url(pokemon_name)
+        if sprite_url:
+            embed.set_thumbnail(url=sprite_url)
             
         return embed
 
@@ -291,7 +300,7 @@ class Starboard(commands.Cog):
                 "level": "50",
                 "iv": "95.56",
                 "chain": "102",
-                "sprite_url": ctx.author.display_avatar.url
+                "sprite_url": None
             }
 
         target_categories = [category.lower()] if category else list(categories.keys())
