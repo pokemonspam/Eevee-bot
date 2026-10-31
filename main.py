@@ -850,26 +850,46 @@ async def collection_add(ctx, *, mons: str = None):
         if final_mons:
             unique_mons = list(dict.fromkeys(final_mons))
             unique_display = list(dict.fromkeys(display_names))
-            await collections_col.update_one(
-                {"user_id": ctx.author.id},
-                {"$addToSet": {"pokemon": {"$each": unique_mons}}},
-                upsert=True
-            )
-            added_str = ", ".join(unique_display)
-            embed = discord.Embed(
-                description=f"✅ Added to your collection: **{added_str}**",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
 
-        if invalid_items:
-            bad_words = ", ".join([f'"{w}"' for w in invalid_items])
-            embed = discord.Embed(
-                description=f"⚠️ Added valid Pokémon, but ignored invalid items: {bad_words}",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
+            # Fetch user's current collection to check for duplicates
+            user_doc = await collections_col.find_one({"user_id": ctx.author.id})
+            existing_collection = set(user_doc.get("pokemon", [])) if user_doc else set()
+
+            newly_added = []
+            already_owned = []
+
+            for mon, display in zip(unique_mons, unique_display):
+                if mon in existing_collection:
+                    already_owned.append(display)
+                else:
+                    newly_added.append(mon)
+
+            # Update DB with only the newly added ones
+            if newly_added:
+                await collections_col.update_one(
+                    {"user_id": ctx.author.id},
+                    {"$addToSet": {"pokemon": {"$each": newly_added}}},
+                    upsert=True
+                )
+
+            # Build Response Message lines
+            response_lines = []
+            if newly_added:
+                added_displays = [format_pokemon_name(m) for m in newly_added]
+                response_lines.append(f"✅ Added to your collection: **{', '.join(added_displays)}**")
             
+            if already_owned:
+                response_lines.append(f"-# Already in your collection: {', '.join(already_owned)}")
+
+            if invalid_items:
+                bad_words = ", ".join([f'"{w}"' for w in invalid_items])
+                response_lines.append(f"-# Ignored invalid items: {bad_words}")
+
+            if response_lines:
+                await ctx.send("\n".join(response_lines))
+            else:
+                await ctx.send(embed=discord.Embed(description="⚠️ No valid Pokémon were processed.", color=discord.Color.gold()))
+
     except Exception as e:
         print(f"Error in collection_add: {e}")
         await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
