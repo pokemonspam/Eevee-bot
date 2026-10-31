@@ -31,20 +31,28 @@ EXPLICIT_OVERRIDES = {
     # Specific Pokétwo Form & Punctuation Rules
     "ho-oh": "ho-oh",
     "ho oh": "ho-oh",
+    "hooh": "ho-oh",
     "jangmo-o": "jangmo-o",
     "jangmo o": "jangmo-o",
+    "jangmoo": "jangmo-o",
     "hakamo-o": "hakamo-o",
     "hakamo o": "hakamo-o",
+    "hakamoo": "hakamo-o",
     "kommo-o": "kommo-o",
     "kommo o": "kommo-o",
+    "kommoo": "kommo-o",
     "wo-chien": "wo-chien",
     "wo chien": "wo-chien",
+    "wochien": "wo-chien",
     "chien-pao": "chien-pao",
     "chien pao": "chien-pao",
+    "chienpao": "chien-pao",
     "ting-lu": "ting-lu",
     "ting lu": "ting-lu",
+    "tinglu": "ting-lu",
     "chi-yu": "chi-yu",
     "chi yu": "chi-yu",
+    "chiyu": "chi-yu",
     "mr. mime": "mr. mime",
     "mr mime": "mr. mime",
     "mrmime": "mr. mime",
@@ -72,12 +80,21 @@ EXPLICIT_OVERRIDES = {
     "meloetta aria": "meloetta"
 }
 
+# Reverse mapping dictionary to resolve any alternative catch name / German name back to official English name
+ALT_NAME_TO_CANONICAL = {}
+
 # Global dictionary mapping English names to the best catch name across 1025 mons
 BEST_NAMES_MAPPING = {}
 
 def load_all_best_names():
     """Fetches full Pokémon species data, strictly favoring English names unless German is much shorter."""
-    global BEST_NAMES_MAPPING
+    global BEST_NAMES_MAPPING, ALT_NAME_TO_CANONICAL
+    
+    # Pre-populate alt mapping from manual overrides
+    for eng_key, alt_val in EXPLICIT_OVERRIDES.items():
+        ALT_NAME_TO_CANONICAL[alt_val.lower()] = eng_key.lower()
+        ALT_NAME_TO_CANONICAL[eng_key.lower()] = eng_key.lower()
+
     try:
         resp = requests.get("https://raw.githubusercontent.com/fanzeyi/pokemon.json/master/pokedex.json", timeout=10)
         if resp.status_code == 200:
@@ -88,6 +105,11 @@ def load_all_best_names():
                 
                 if not eng_name:
                     continue
+
+                # Map alternative names back to English canonical species
+                ALT_NAME_TO_CANONICAL[eng_name] = eng_name
+                if deu_name:
+                    ALT_NAME_TO_CANONICAL[deu_name] = eng_name
 
                 # 1. Check explicit manual overrides first
                 if eng_name in EXPLICIT_OVERRIDES:
@@ -115,7 +137,6 @@ def get_best_name(pokemon_name: str) -> str:
     if clean_name in EXPLICIT_OVERRIDES:
         return EXPLICIT_OVERRIDES[clean_name]
         
-    # Strip form prefixes (e.g., "Alolan Ninetales" -> "ninetales")
     base_name = get_base_pokemon(clean_name) if 'get_base_pokemon' in globals() else clean_name
     
     if base_name in EXPLICIT_OVERRIDES:
@@ -306,16 +327,40 @@ def load_dataset():
 
 
 def normalize_name(name: str) -> str:
-    return name.strip().lower()
+    """Normalizes alternative catch/German names back to English canonical species."""
+    clean = name.strip().lower()
+    
+    # Resolve alt names (like "ibui" -> "eevee")
+    if clean in ALT_NAME_TO_CANONICAL:
+        clean = ALT_NAME_TO_CANONICAL[clean]
+        
+    if clean in EXPLICIT_OVERRIDES:
+        clean = EXPLICIT_OVERRIDES[clean]
+
+    return clean
 
 
 def format_pokemon_name(name: str) -> str:
+    """Formats Pokémon names cleanly (Capitalizes 1st letter ONLY, preserving hyphens cleanly)."""
     norm = normalize_name(name)
-    if norm in EXPLICIT_OVERRIDES:
-        return EXPLICIT_OVERRIDES[norm].title() if norm != "type: null" else "Type: Null"
     if norm in REGIONAL_FORMS:
         return REGIONAL_FORMS[norm]
-    return name.strip().title()
+        
+    if norm == "type: null":
+        return "Type: Null"
+        
+    # Split by space, capitalize only the first letter of words, keep hyphens lowercase after hyphen
+    words = norm.split(" ")
+    formatted_words = []
+    for word in words:
+        if "-" in word:
+            parts = word.split("-")
+            # First part capitalized, second part lowercase (e.g. Jangmo-o, Ho-oh)
+            formatted_words.append(parts[0].capitalize() + "-" + "-".join(parts[1:]).lower())
+        else:
+            formatted_words.append(word.capitalize())
+            
+    return " ".join(formatted_words)
 
 
 def get_evolution_family(species: str) -> list[str]:
@@ -348,10 +393,12 @@ def get_base_pokemon(species: str) -> str:
 
 
 def validate_species(name: str) -> bool:
+    clean_raw = name.strip().lower()
     norm = normalize_name(name)
-    # Normalize punctuation differences like periods in mr.mime / mime jr.
     clean_norm = norm.replace(".", "").replace("  ", " ").replace("all ", "").strip()
     
+    if clean_raw in ALT_NAME_TO_CANONICAL or norm in ALT_NAME_TO_CANONICAL:
+        return True
     if norm in EXPLICIT_OVERRIDES or clean_norm in EXPLICIT_OVERRIDES:
         return True
     if norm in REGIONAL_FORMS or clean_norm in REGIONAL_FORMS:
@@ -372,7 +419,6 @@ def parse_pokemon_list(raw_text: str) -> list[str]:
     """Helper to parse a raw string of comma-separated Pokémon names."""
     if not raw_text:
         return []
-    # Split items and preserve compatibility while cleaning spacing
     return [m.strip().lower() for m in raw_text.split(",") if m.strip()]
 
 def get_pokemon_by_id(dex_id: int) -> str:
