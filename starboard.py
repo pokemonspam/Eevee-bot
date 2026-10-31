@@ -9,7 +9,7 @@ class Starboard(commands.Cog):
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
-        # Your updated Pokétwo custom gender emojis
+        # Your exact Pokétwo custom gender emojis
         self.MALE_EMOJI = "<:male:1566169579300851852>"
         self.FEMALE_EMOJI = "<:Female:1566169649249263627>"
 
@@ -72,8 +72,12 @@ class Starboard(commands.Cog):
         slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
-        # PokeAPI Official Artwork Repository
-        return f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/{slug}.png"
+        # PokeAPI Official Artwork Repository (Shiny variant paths map via official artwork naming or standard fallback)
+        subfolder = "shiny" if is_shiny else ""
+        base = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork"
+        if subfolder:
+            return f"{base}/shiny/{slug}.png"
+        return f"{base}/{slug}.png"
 
     def parse_pokemon_data(self, content: str, default_author_mention: str) -> dict:
         trainer_match = re.search(r"<@!?(\d+)>", content)
@@ -156,10 +160,10 @@ class Starboard(commands.Cog):
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
         embed.set_footer(text=formatted_date)
         
-        # Load sprite big on the side as thumbnail
+        # Load big full-width image at the bottom of the embed card
         is_shiny = (category_key == "shiny")
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
-        embed.set_thumbnail(url=sprite_url)
+        embed.set_image(url=sprite_url)
             
         return embed
 
