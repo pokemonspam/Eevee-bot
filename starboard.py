@@ -71,7 +71,6 @@ class Starboard(commands.Cog):
         clean = pokemon_name.lower().replace("alolan ", "").replace("galarian ", "").replace("hisuian ", "").replace("paldean ", "")
         clean = clean.replace("partner ", "").replace(" ", "-").replace(".", "").replace("'", "")
         
-        # Use Pokémon Showdown sprite repo which hosts clean transparent sprites directly
         shiny_folder = "shiny/" if is_shiny else ""
         return f"https://play.pokemonshowdown.com/sprites/dex/{clean}.png"
 
@@ -82,12 +81,12 @@ class Starboard(commands.Cog):
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|♀|♂|<:male:\d+>|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Custom Discord Emojis mapped properly
+        # Direct clean outline gender unicode symbols
         raw_gender = data.get("gender", "")
         if raw_gender.lower() in ["male", "m", "♂", "1566140157306872048", "<:male:1566140157306872048>", "<:male:1510903424047386784>"]:
-            gender = " <:male:1566140157306872048>"
+            gender = " ♂"
         elif raw_gender.lower() in ["female", "f", "♀", "1566140573298069665", "<:female:1566140573298069665>", "<:Female:1510903384180523028>"]:
-            gender = " <:female:1566140573298069665>"
+            gender = " ♀"
         else:
             gender = f" {raw_gender}" if raw_gender else ""
 
@@ -118,18 +117,18 @@ class Starboard(commands.Cog):
         if chain is not None:
             description_lines.append(f"**Chain:** {chain}")
 
-        # Solid text date/time format (DD/MM/YYYY at HH:MM)
-        now = datetime.utcnow()
-        formatted_date = now.strftime("%d/%m/%Y at %H:%M")
-        description_lines.append(f"\n**{formatted_date}**")
-
         embed.description = "\n".join(description_lines)
         
-        # Access sprite online directly based on the Pokémon name
+        # Small clean date & time placed in footer (small font automatically by Discord)
+        now = datetime.utcnow()
+        formatted_date = now.strftime("%d/%m/%Y at %H:%M")
+        embed.set_footer(text=formatted_date)
+        
+        # Forces the Pokémon picture to be BIG across the embed using set_image instead of thumbnail
         is_shiny = (category_key == "shiny")
         sprite_url = data.get("sprite_url") or self.get_online_sprite_url(pokemon_name, is_shiny)
         if sprite_url:
-            embed.set_thumbnail(url=sprite_url)
+            embed.set_image(url=sprite_url)
             
         return embed
 
@@ -289,7 +288,7 @@ class Starboard(commands.Cog):
             parsed_data = {
                 "trainer_mention": ctx.author.mention,
                 "pokemon": "Pikachu",
-                "gender": "<:male:1566140157306872048>",
+                "gender": "male",
                 "form": "",
                 "level": "50",
                 "iv": "95.56",
@@ -394,7 +393,7 @@ class Starboard(commands.Cog):
                 if target_channel:
                     embed = self.get_category_embed(category_key, data, message.jump_url)
                     view = discord.ui.View()
-                    view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=message.jump_url))
+                    view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=jump_url))
                     await target_channel.send(embed=embed, view=view)
 
 async def setup(bot):
