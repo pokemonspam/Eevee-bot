@@ -78,7 +78,7 @@ class Starboard(commands.Cog):
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|♀|♂|<:male:\d+>|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Custom Discord emoji replacement for gender
+        # Custom Discord emoji mapping for gender using your exact IDs
         raw_gender = data.get("gender", "")
         if raw_gender.lower() in ["male", "m", "♂", "1566140157306872048", "<:male:1566140157306872048>", "<:male:1510903424047386784>"]:
             gender = " <:male:1566140157306872048>"
@@ -114,13 +114,14 @@ class Starboard(commands.Cog):
         if chain is not None:
             description_lines.append(f"**Chain:** {chain}")
 
-        # Add region-relative interactive timestamp
-        timestamp_int = int(datetime.utcnow().timestamp())
-        description_lines.append(f"\n📅 <t:{timestamp_int}:f>")
+        # Format small date & time strictly as requested: 12/05/2026 at 16:48
+        now = datetime.utcnow()
+        formatted_date = now.strftime("%d/%m/%Y at %H:%M")
+        description_lines.append(f"\n-# {formatted_date}")
 
         embed.description = "\n".join(description_lines)
         
-        # Ensure image is present via embedded thumbnail or online fallback
+        # Ensures Pokémon picture/sprite is explicitly assigned as thumbnail
         sprite_url = data.get("sprite_url") or self.get_fallback_sprite_url(pokemon_name)
         if sprite_url:
             embed.set_thumbnail(url=sprite_url)
