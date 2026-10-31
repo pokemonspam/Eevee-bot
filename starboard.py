@@ -66,19 +66,23 @@ class Starboard(commands.Cog):
         name_clean = pokemon_name.strip().lower()
         return name_clean in self.regional_pokemon
 
-    def get_fallback_sprite_url(self, pokemon_name: str) -> str:
-        """Falls back to online repository assets if message thumbnail is missing."""
-        clean = pokemon_name.lower().replace(" ", "-").replace(".", "").replace("'", "")
+    def get_online_sprite_url(self, pokemon_name: str, is_shiny: bool = False) -> str:
+        """Accesses online repositories directly to fetch the exact clean sprite image."""
+        clean = pokemon_name.lower().replace("alolan ", "").replace("galarian ", "").replace("hisuian ", "").replace("paldean ", "")
+        clean = clean.replace("partner ", "").replace(" ", "-").replace(".", "").replace("'", "")
+        
+        # Use Pokémon Showdown sprite repo which hosts clean transparent sprites directly
+        shiny_folder = "shiny/" if is_shiny else ""
         return f"https://play.pokemonshowdown.com/sprites/dex/{clean}.png"
 
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         
-        # Clean Pokémon name from any accidental raw gender text tags
+        # Clean Pokémon name from any accidental raw text tags
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         pokemon_name = re.sub(r'(?:[:\s]*(?:male|female|♀|♂|<:male:\d+>|<:female:\d+>|<:Female:\d+>))+$', '', pokemon_name, flags=re.IGNORECASE).strip()
         
-        # Custom Discord emoji mapping for gender using your exact IDs
+        # Custom Discord Emojis mapped properly
         raw_gender = data.get("gender", "")
         if raw_gender.lower() in ["male", "m", "♂", "1566140157306872048", "<:male:1566140157306872048>", "<:male:1510903424047386784>"]:
             gender = " <:male:1566140157306872048>"
@@ -114,15 +118,16 @@ class Starboard(commands.Cog):
         if chain is not None:
             description_lines.append(f"**Chain:** {chain}")
 
-        # Format small date & time strictly as requested: 12/05/2026 at 16:48
+        # Solid text date/time format (DD/MM/YYYY at HH:MM)
         now = datetime.utcnow()
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
-        description_lines.append(f"\n-# {formatted_date}")
+        description_lines.append(f"\n**{formatted_date}**")
 
         embed.description = "\n".join(description_lines)
         
-        # Ensures Pokémon picture/sprite is explicitly assigned as thumbnail
-        sprite_url = data.get("sprite_url") or self.get_fallback_sprite_url(pokemon_name)
+        # Access sprite online directly based on the Pokémon name
+        is_shiny = (category_key == "shiny")
+        sprite_url = data.get("sprite_url") or self.get_online_sprite_url(pokemon_name, is_shiny)
         if sprite_url:
             embed.set_thumbnail(url=sprite_url)
             
@@ -249,18 +254,6 @@ class Starboard(commands.Cog):
                 trainer_match = re.search(r"<@!?(\d+)>", content)
                 trainer_mention = trainer_match.group(0) if trainer_match else ctx.author.mention
 
-                sprite_url = None
-                if target_msg.embeds:
-                    for embed_obj in target_msg.embeds:
-                        if embed_obj.thumbnail and embed_obj.thumbnail.url:
-                            sprite_url = embed_obj.thumbnail.url
-                            break
-                        elif embed_obj.image and embed_obj.image.url:
-                            sprite_url = embed_obj.image.url
-                            break
-                if not sprite_url and target_msg.attachments:
-                    sprite_url = target_msg.attachments[0].url
-
                 iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
                 iv_str = f"{float(iv_match.group(1)):.2f}" if iv_match else "85.50"
 
@@ -287,7 +280,7 @@ class Starboard(commands.Cog):
                     "level": level_str,
                     "iv": iv_str,
                     "chain": chain_val,
-                    "sprite_url": sprite_url
+                    "sprite_url": None
                 }
             except Exception as e:
                 print(f"Starboard test parse note: {e}")
@@ -339,18 +332,6 @@ class Starboard(commands.Cog):
         trainer_match = re.search(r"<@!?(\d+)>", content)
         trainer_mention = trainer_match.group(0) if trainer_match else "Trainer"
 
-        sprite_url = None
-        if message.embeds:
-            for embed_obj in message.embeds:
-                if embed_obj.thumbnail and embed_obj.thumbnail.url:
-                    sprite_url = embed_obj.thumbnail.url
-                    break
-                elif embed_obj.image and embed_obj.image.url:
-                    sprite_url = embed_obj.image.url
-                    break
-        if not sprite_url and message.attachments:
-            sprite_url = message.attachments[0].url
-
         iv_value = None
         iv_match = re.search(r"(\d+(?:\.\d+)?)%", content)
         if iv_match:
@@ -382,7 +363,7 @@ class Starboard(commands.Cog):
             "level": level_str,
             "iv": f"{iv_value:.2f}" if iv_value is not None else "N/A",
             "chain": chain_val,
-            "sprite_url": sprite_url
+            "sprite_url": None
         }
 
         detected_categories = []
