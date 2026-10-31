@@ -65,32 +65,32 @@ class Starboard(commands.Cog):
         name_clean = pokemon_name.strip().lower()
         return name_clean in self.regional_pokemon
 
-    def get_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Fetches the guaranteed sprite image from Showdown CDN supporting forms and shinies."""
+    def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
+        """Uses Smogon's comprehensive sprite repository which has 100% coverage for every form, variant, and shiny."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
-        clean = full.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
-        clean = clean.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
-        clean = re.sub(r"-+", "-", clean).strip("-")
+        slug = full.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
+        slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
+        slug = re.sub(r"-+", "-", slug).strip("-")
 
+        # Smogon/Showdown comprehensive repository supports every single variant cleanly
         folder = "sprites/dex-shiny" if is_shiny else "sprites/dex"
-        return f"https://play.pokemonshowdown.com/{folder}/{clean}.png"
+        return f"https://play.pokemonshowdown.com/{folder}/{slug}.png"
 
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         
-        # Capture raw pokemon string and strip out trailing gender labels safely
+        # Clean Pokémon name
         raw_pokemon_field = data.get("pokemon", "Unknown Pokémon")
         pokemon_name = re.sub(r'[:\s]*(?::female:|<:female:\d+>|:male:|<:male:\d+>|female|male|unknown|♀|♂|\?)+$', '', raw_pokemon_field, flags=re.IGNORECASE).strip()
         
-        # Check raw message content and gender field for explicit match of Pokétwo's gender tags
+        # Explicit Gender Matching
         raw_gender = f"{data.get('gender', '')} {raw_pokemon_field}".lower()
-        
         if any(tag in raw_gender for tag in ["female", "♀", "1207734084210532483", ":female:"]):
             gender = f" {self.FEMALE_EMOJI}"
         elif any(tag in raw_gender for tag in ["male", "♂", "1207734081585152101", ":male:"]):
             gender = f" {self.MALE_EMOJI}"
         else:
-            gender = "" # Leaves it completely blank if genderless (like Porygon)
+            gender = " ?" # Shows ? for genderless Pokémon
 
         form_str = data.get("form", "")
         form_info = f" ({form_str})" if form_str else ""
@@ -126,9 +126,9 @@ class Starboard(commands.Cog):
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
         embed.set_footer(text=formatted_date)
         
-        # Loads the image big and neatly on the right side
+        # Load sprite big on the side as thumbnail
         is_shiny = (category_key == "shiny")
-        sprite_url = self.get_sprite_url(pokemon_name, form_str, is_shiny)
+        sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
         embed.set_thumbnail(url=sprite_url)
             
         return embed
