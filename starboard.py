@@ -9,9 +9,9 @@ class Starboard(commands.Cog):
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
-        # Your exact Pokétwo custom gender emojis
-        self.MALE_EMOJI = "<:male:1207734081585152101>"
-        self.FEMALE_EMOJI = "<:female:1207734084210532483>"
+        # Your updated Pokétwo custom gender emojis
+        self.MALE_EMOJI = "<:male:1566169579300851852>"
+        self.FEMALE_EMOJI = "<:Female:1566169649249263627>"
 
         # 🦅 Rare Pokémon List
         self.rare_pokemon = {
@@ -95,9 +95,9 @@ class Starboard(commands.Cog):
 
         # Determine gender cleanly
         raw_gender_source = f"{content} {raw_pokemon}".lower()
-        if any(tag in raw_gender_source for tag in ["female", "♀", "1207734084210532483", ":female:"]):
+        if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
             gender = f" {self.FEMALE_EMOJI}"
-        elif any(tag in raw_gender_source for tag in ["male", "♂", "1207734081585152101", ":male:"]):
+        elif any(tag in raw_gender_source for tag in ["male", "♂", "1566169579300851852", "1207734081585152101", ":male:"]):
             gender = f" {self.MALE_EMOJI}"
         else:
             gender = " ?" # Clean question mark for genderless mons
