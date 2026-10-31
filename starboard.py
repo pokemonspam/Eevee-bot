@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import re
+from datetime import datetime
 
 class Starboard(commands.Cog):
     def __init__(self, bot):
@@ -68,7 +69,16 @@ class Starboard(commands.Cog):
     def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
-        gender = f" {data['gender']}" if data.get("gender") else ""
+        
+        # Custom Discord emoji replacement for gender
+        raw_gender = data.get("gender", "")
+        if raw_gender.lower() in ["male", "m", "♂", "<:male:1510903424047386784>"]:
+            gender = " <:male:1510903424047386784>"
+        elif raw_gender.lower() in ["female", "f", "♀", "<:Female:1510903384180523028>"]:
+            gender = " <:Female:1510903384180523028>"
+        else:
+            gender = f" {raw_gender}" if raw_gender else ""
+
         form_info = f" ({data['form']})" if data.get("form") else ""
         level = data.get("level", "N/A")
         iv = data.get("iv", "N/A")
@@ -84,7 +94,7 @@ class Starboard(commands.Cog):
         }
 
         theme = category_themes.get(category_key, {"title": "🌟 Starboard Catch Detected!", "color": 0x7289DA})
-        embed = discord.Embed(title=theme["title"], color=theme["color"])
+        embed = discord.Embed(title=theme["title"], color=theme["color"], timestamp=datetime.utcnow())
 
         description_lines = [
             f"**Trainer:** {trainer_mention}",
@@ -96,8 +106,11 @@ class Starboard(commands.Cog):
             description_lines.append(f"**Chain:** {chain}")
 
         embed.description = "\n".join(description_lines)
+        
+        # Ensures Pokémon picture/sprite is explicitly assigned as thumbnail
         if data.get("sprite_url"):
             embed.set_thumbnail(url=data["sprite_url"])
+            
         embed.set_footer(text="Catch Detection System")
         return embed
 
@@ -210,7 +223,6 @@ class Starboard(commands.Cog):
             await ctx.send(f"❌ **Invalid Category.** Valid options are: `{', '.join(valid_categories)}`")
             return
 
-        # Try parsing replied message first if available
         parsed_data = None
         jump_url = ctx.message.jump_url
 
@@ -240,7 +252,7 @@ class Starboard(commands.Cog):
                 pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
                 pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
 
-                gender_match = re.search(r"([♀♂])", content)
+                gender_match = re.search(r"([♀♂]|male|female|<:male:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
                 gender_str = gender_match.group(1) if gender_match else ""
 
                 form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
@@ -262,12 +274,11 @@ class Starboard(commands.Cog):
             except Exception as e:
                 print(f"Starboard test parse note: {e}")
 
-        # Fallback test data if no valid reply found
         if not parsed_data:
             parsed_data = {
                 "trainer_mention": ctx.author.mention,
                 "pokemon": "Pikachu",
-                "gender": "♂",
+                "gender": "<:male:1510903424047386784>",
                 "form": "",
                 "level": "50",
                 "iv": "95.56",
@@ -275,7 +286,6 @@ class Starboard(commands.Cog):
                 "sprite_url": ctx.author.display_avatar.url
             }
 
-        # Determine which categories to test
         target_categories = [category.lower()] if category else list(categories.keys())
 
         sent_count = 0
@@ -333,7 +343,7 @@ class Starboard(commands.Cog):
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
         pokemon_name = pokemon_match.group(1).strip() if pokemon_match else "Unknown Pokémon"
 
-        gender_match = re.search(r"([♀♂])", content)
+        gender_match = re.search(r"([♀♂]|male|female|<:male:\d+>|<:Female:\d+>)", content, re.IGNORECASE)
         gender_str = gender_match.group(1) if gender_match else ""
 
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
