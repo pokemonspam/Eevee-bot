@@ -410,7 +410,8 @@ class Starboard(commands.Cog):
         if "These colors seem unusual..." in content or "✨" in content:
             detected_categories.append("shiny")
 
-        if "Woah! It seems that this pokémon has the Gigantamax Factor..." in content:
+        # FIXED: Check catch message strings properly for Gmax factor instead of spawn text
+        if "Gigantamax Factor" in content or "gmax" in content.lower() or "gigantamax" in content.lower():
             detected_categories.append("gmax")
 
         if iv_value is not None:
