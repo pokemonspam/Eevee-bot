@@ -67,7 +67,7 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Fully automated, universal sprite resolver mapping forms correctly for Showdown CDN."""
+        """Fully automated sprite resolver, utilizing static sprites for Gmax Urshifu forms."""
         combined = f"{form_str} {pokemon_name}".strip().lower()
         combined = combined.replace("é", "e")
 
@@ -119,8 +119,15 @@ class Starboard(commands.Cog):
             else:
                 slug = slug + "-gmax"
 
-        folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
-        return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
+        # Fallback to static sprites for Gmax Urshifu since animated Gmax GIFs do not exist on Showdown CDN
+        is_urshifu_gmax = "urshifu" in slug and "gmax" in slug
+        
+        if is_urshifu_gmax:
+            folder = "sprites/shiny" if is_shiny else "sprites/pokemon"
+        else:
+            folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
+
+        return f"https://play.pokemonshowdown.com/{folder}/{slug}.png" if is_urshifu_gmax else f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
 
     def parse_pokemon_data(self, content: str, default_author_mention: str) -> dict:
         trainer_match = re.search(r"<@!?(\d+)>", content)
@@ -167,7 +174,7 @@ class Starboard(commands.Cog):
             if "gmax" not in form_str.lower():
                 form_str = f"{form_str} gmax".strip()
 
-        chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
+        chain_match = re.search(r"(?:chain:?\s*|streak reset!\s*\(\*\*?)(\d+)", content, re.IGNORECASE)
         chain_val = chain_match.group(1) if chain_match else None
 
         return {
@@ -193,12 +200,11 @@ class Starboard(commands.Cog):
         iv = data.get("iv", "N/A")
         chain = data.get("chain", None)
 
-        has_shiny = all_detected_categories and "shiny" in all_detected_categories
-        has_gmax = all_detected_categories and "gmax" in all_detected_categories
+        has_shiny = (all_detected_categories and "shiny" in all_detected_categories) or category_key.lower() == "shiny"
+        has_gmax = (all_detected_categories and "gmax" in all_detected_categories) or ("gmax" in form_str.lower())
         is_shiny = (category_key.lower() == "shiny")
         is_gmax_cat = (category_key.lower() == "gmax")
 
-        # ABSOLUTE PRIORITY: If BOTH shiny and gmax are present anywhere in the catch, title is Shiny Gmax!
         if has_shiny and has_gmax:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
@@ -425,9 +431,45 @@ class Starboard(commands.Cog):
         if self.is_rare(pokemon_name):
             detected_categories.append("rare")
 
-        for category_key in detected_categories:
+        # STRICT PRIORITY ROUTING LOGIC:
+        # 1. If shiny is detected, it takes absolute precedence. Suppress gmax, high_iv, low_iv.
+        # 2. Rare and regional ALWAYS get dispatched to their respective channels regardless of shiny/gmax/iv.
+        final_categories_to_dispatch = []
+
+        is_shiny_catch = "shiny" in detected_categories
+        is_gmax_catch = "gmax" in detected_categories
+
+        if is_shiny_catch:
+            # Shiny goes to shiny channel
+            if "shiny" in categories:
+                final_categories_to_dispatch.append("shiny")
+        elif is_gmax_catch:
+            # Gmax goes to gmax channel (if shiny isn't present)
+            if "gmax" in categories:
+                final_categories_to_dispatch.append("gmax")
+        else:
+            # Check IVs if no shiny or gmax
+            if "high_iv" in detected_categories and "high_iv" in categories:
+                final_categories_to_dispatch.append("high_iv")
+            elif "low_iv" in detected_categories and "low_iv" in categories:
+                final_categories_to_dispatch.append("low_iv")
+
+        # Rare and Regional ALWAYS get their own channels independently if configured
+        if "regional" in detected_categories and "regional" in categories:
+            final_categories_to_dispatch.append("regional")
+        if "rare" in detected_categories and "rare" in categories:
+            final_categories_to_dispatch.append("rare")
+
+        processed_channels = set()
+
+        for category_key in final_categories_to_dispatch:
             if category_key in categories:
                 target_channel_id = categories[category_key]
+                
+                if target_channel_id in processed_channels:
+                    continue
+                processed_channels.add(target_channel_id)
+
                 target_channel = message.guild.get_channel(target_channel_id)
 
                 if target_channel:
