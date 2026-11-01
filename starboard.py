@@ -144,8 +144,9 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
-        # Clean out (gmax) or gmax text from displayed pokemon name
+        # Clean out (gmax) and form prefixes like Low Key / Amped from display name
         pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
+        pokemon_name = re.sub(r'^(low key|amped)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
         raw_gender_source = f"{content} {raw_pokemon}".lower()
         if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
@@ -157,6 +158,15 @@ class Starboard(commands.Cog):
 
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
         form_str = form_match.group(1).strip() if form_match else ""
+
+        # Capture Toxtricity/Urshifu forms if inside raw_pokemon string
+        raw_lower = raw_pokemon.lower()
+        if "low key" in raw_lower and not form_str:
+            form_str = "Low Key"
+        elif "rapid strike" in raw_lower and not form_str:
+            form_str = "Rapid Strike"
+        elif "single strike" in raw_lower and not form_str:
+            form_str = "Single Strike"
 
         if "Gigantamax Factor" in content or "gmax" in content.lower() or "(gmax)" in raw_pokemon.lower():
             if "gmax" not in form_str.lower():
@@ -193,9 +203,9 @@ class Starboard(commands.Cog):
         chain = data.get("chain", None)
 
         is_shiny = (category_key.lower() == "shiny")
+        is_gmax_cat = (category_key.lower() == "gmax")
 
         # Dynamic Titles mapping Shiny + Gmax combination cleanly
-        is_gmax_cat = (category_key.lower() == "gmax")
         if is_gmax_cat and is_shiny:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         else:
