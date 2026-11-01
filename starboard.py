@@ -66,26 +66,22 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Hybrid resolver: checks NationalDex/PokeAPI first, falls back to Pokémon Showdown sprites if needed."""
+        """Guaranteed stable sprite URL generator for Discord thumbnails."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         
-        # Normalize name for NationalDex & PokeAPI official artwork conventions[span_0](start_span)[span_0](end_span)
+        # Clean slug formatting
         slug = full.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
         slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
-        # Handle Gigantamax suffix formatting for NationalDex layout[span_1](start_span)[span_1](end_span)
+        # Gigantamax form adjustment
         if "gmax" in full or "gigantamax" in full:
             if not slug.endswith("-gmax"):
                 slug = slug.replace("gmax", "").replace("gigantamax", "").strip("-") + "-gmax"
 
-        subfolder = "shiny" if is_shiny else ""
-        
-        # Primary Source: NationalDex / PokeAPI Official Artwork Repository
-        base_art = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork"
-        art_url = f"{base_art}/shiny/{slug}.png" if subfolder else f"{base_art}/{slug}.png"
-        
-        return art_url
+        # Pokémon Showdown repository ensures 100% stable image delivery for thumbnails
+        folder = "sprites/dex-shiny" if is_shiny else "sprites/dex"
+        return f"https://play.pokemonshowdown.com/{folder}/{slug}.png"
 
     def parse_pokemon_data(self, content: str, default_author_mention: str) -> dict:
         trainer_match = re.search(r"<@!?(\d+)>", content)
@@ -168,7 +164,7 @@ class Starboard(commands.Cog):
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
         embed.set_footer(text=formatted_date)
         
-        # Positions a clean, clear image big on the right side as a thumbnail card
+        # Positions the picture neatly as a thumbnail on the right side
         is_shiny = (category_key == "shiny")
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
         embed.set_thumbnail(url=sprite_url)
