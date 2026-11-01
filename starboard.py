@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands
 import re
-from datetime import datetime
 
 class Starboard(commands.Cog):
     def __init__(self, bot):
@@ -9,11 +8,11 @@ class Starboard(commands.Cog):
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
-        # Your exact Pokétwo custom gender emojis
+        # Custom gender emojis
         self.MALE_EMOJI = "<:male:1566169579300851852>"
         self.FEMALE_EMOJI = "<:Female:1566169649249263627>"
 
-        # 🦅 Rare Pokémon List
+        # Rare Pokémon List
         self.rare_pokemon = {
             "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", 
             "lugia", "ho-oh", "celebi", "regirock", "regice", "registeel", "latias", "latios", 
@@ -32,12 +31,12 @@ class Starboard(commands.Cog):
             "galarian moltres", "galarian zapdos"
         }
 
-        # 🦅 Special "All <Species>" Rare Families
+        # Special Rare Families
         self.rare_families = {
             "arceus", "ogerpon", "xerneas", "zygarde", "silvally", "urshifu", "koraidon", "miraidon"
         }
 
-        # 🌍 Regional Pokémon List
+        # Regional Pokémon List
         self.regional_pokemon = {
             "alolan ninetales", "alolan vulpix", "alolan geodude", "alolan graveler", "alolan raticate", 
             "alolan rattata", "alolan persian", "alolan meowth", "alolan exeggutor", "alolan dugtrio", 
@@ -52,7 +51,9 @@ class Starboard(commands.Cog):
             "hisuian lilligant", "hisuian samurott", "hisuian sneasel", "hisuian decidueye", 
             "hisuian qwilfish", "hisuian braviary", "hisuian avalugg", "hisuian zoroark", 
             "hisuian zorua", "hisuian sliggoo", "hisuian goodra", "basculegion", "sneasler", 
-            "overqwil", "paldean wooper", "combat breed tauros", "blaze breed tauros", "aqua breed tauros"
+            "overqwil", "paldean wooper", "combat breed tauros", "blaze breed tauros", "aqua breed tauros",
+            "star trim furfrou", "pharaoh trim furfrou", "kabuki trim furfrou", "la reine trim furfrou", 
+            "matron trim furfrou", "dandy trim furfrou", "debutante trim furfrou", "heart trim furfrou", "diamond trim furfrou"
         }
 
     def is_rare(self, pokemon_name: str) -> bool:
@@ -66,38 +67,45 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Converts name & forms to Pokémon Showdown's exact animated gif asset slugs."""
-        full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
+        """Resolves parsed dataset names and forms to valid Showdown animated GIF URLs."""
+        raw = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
+
+        # Handle Trim forms: "Star Trim Furfrou" -> species: furfrou, form: star -> "furfrou-star"
+        if "trim" in raw:
+            match = re.search(r"(\w+)\s+trim\s+(\w+)", raw)
+            if match:
+                trim_type, species = match.group(1), match.group(2)
+                raw = f"{species}-{trim_type}"
+
+        # Handle form prefixes: "Speed Deoxys" -> "deoxys-speed"
+        for form_prefix in ["speed", "attack", "defense"]:
+            if raw.startswith(f"{form_prefix} "):
+                raw = raw.replace(f"{form_prefix} ", "") + f"-{form_prefix}"
+
+        # Handle regional prefixes: "Alolan Vulpix" -> "vulpix-alola"
+        region_map = {
+            "alolan": "-alola",
+            "galarian": "-galar",
+            "hisuian": "-hisui",
+            "paldean": "-paldea"
+        }
         
-        # Handle prefix forms (e.g. "attack deoxys" -> "deoxys-attack")
-        if "attack" in full:
-            full = "deoxys-attack"
-        elif "defense" in full:
-            full = "deoxys-defense"
-        elif "speed" in full:
-            full = "deoxys-speed"
+        region_found = ""
+        for reg_key, reg_suffix in region_map.items():
+            if reg_key in raw:
+                raw = raw.replace(reg_key, "").strip()
+                region_found = reg_suffix
+                break
 
-        # Standard clean slug
-        slug = full.replace("alolan", "").replace("galarian", "").replace("hisuian", "").replace("paldean", "")
-        slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
-        slug = re.sub(r"-+", "-", slug).strip("-")
+        # Sanitize slug
+        slug = raw.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
+        slug = re.sub(r"-+", "-", slug).strip("-") + region_found
 
-        # Re-attach regional suffixes cleanly for Showdown (e.g. "alolan vulpix" -> "vulpix-alola")
-        if "alolan" in f"{form_str} {pokemon_name}".lower():
-            slug += "-alola"
-        elif "galarian" in f"{form_str} {pokemon_name}".lower():
-            slug += "-galar"
-        elif "hisuian" in f"{form_str} {pokemon_name}".lower():
-            slug += "-hisui"
-        elif "paldean" in f"{form_str} {pokemon_name}".lower():
-            slug += "-paldea"
-
-        # Gigantamax form adjustment
-        if "gmax" in full or "gigantamax" in full:
+        # Handle Gigantamax
+        if "gmax" in raw or "gigantamax" in raw:
             if not slug.endswith("-gmax"):
                 slug = slug.replace("gmax", "").replace("gigantamax", "").strip("-") + "-gmax"
 
-        # Showdown animated sprite folders
         folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
         return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
 
@@ -111,22 +119,19 @@ class Starboard(commands.Cog):
         lvl_match = re.search(r"Level\s+(\d+)", content)
         level_str = lvl_match.group(1) if lvl_match else "N/A"
 
-        # Extract raw name match
         pokemon_match = re.search(r"caught a Level \d+ (.*?)(?:!|\.|\()", content)
         raw_pokemon = pokemon_match.group(1).strip() if pokemon_match else "Pikachu"
 
-        # Clean raw pokemon name by aggressively stripping out raw discord emoji tags, :female:, :male:, unknown, etc.
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
-        # Determine gender cleanly
         raw_gender_source = f"{content} {raw_pokemon}".lower()
         if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
             gender = f" {self.FEMALE_EMOJI}"
         elif any(tag in raw_gender_source for tag in ["male", "♂", "1566169579300851852", "1207734081585152101", ":male:"]):
             gender = f" {self.MALE_EMOJI}"
         else:
-            gender = " ?" # Clean question mark for genderless mons
+            gender = " ?"
 
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
         form_str = form_match.group(1).strip() if form_match else ""
@@ -178,11 +183,9 @@ class Starboard(commands.Cog):
 
         embed.description = "\n".join(description_lines)
         
-        now = datetime.utcnow()
-        formatted_date = now.strftime("%d/%m/%Y at %H:%M")
-        embed.set_footer(text=formatted_date)
+        # Native Discord Timestamp (automatically shows local timezone in Discord client)
+        embed.timestamp = discord.utils.utcnow()
         
-        # Positions the animated GIF thumbnail on the right side
         is_shiny = (category_key == "shiny")
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
         embed.set_thumbnail(url=sprite_url)
@@ -285,7 +288,6 @@ class Starboard(commands.Cog):
 
     @commands.command(name="starboardtest", aliases=["sbtest"])
     async def starboard_test(self, ctx, category: str = None):
-        """Tests the starboard embed by parsing a replied message or creating sample data."""
         config = await self.starboard_config.find_one({"guild_id": ctx.guild.id}) or {}
         categories = config.get("categories", {})
 
