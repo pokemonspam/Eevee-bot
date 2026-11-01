@@ -98,11 +98,9 @@ class Starboard(commands.Cog):
             slug = tokens[0] + region_found
         else:
             # Multi-word forms (e.g., ['yellow', 'flabebe'], ['star', 'furfrou'], ['dragon', 'arceus'], ['speed', 'deoxys'])
-            # We assume the base species is the LAST word unless it's a known form structure
             base_species = tokens[-1]
             modifier_parts = tokens[:-1]
             
-            # Recombine into Showdown format: species-modifier (e.g., flabebe-yellow, furfrou-star, arceus-dragon)
             modifier_slug = "-".join(modifier_parts)
             slug = f"{base_species}-{modifier_slug}" + region_found
 
@@ -145,6 +143,11 @@ class Starboard(commands.Cog):
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
         form_str = form_match.group(1).strip() if form_match else ""
 
+        # Automatically tag Gmax if found in message text
+        if "Gigantamax Factor" in content or "gmax" in content.lower():
+            if "gmax" not in form_str.lower():
+                form_str = f"{form_str} gmax".strip()
+
         chain_match = re.search(r"chain:?\s*(\d+)", content, re.IGNORECASE)
         chain_val = chain_match.group(1) if chain_match else None
 
@@ -163,6 +166,11 @@ class Starboard(commands.Cog):
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         gender = data.get("gender", "")
         form_str = data.get("form", "")
+
+        # Force gmax keyword into form if category is gmax
+        if category_key.lower() == "gmax" and "gmax" not in form_str.lower():
+            form_str = f"{form_str} gmax".strip()
+
         form_info = f" ({form_str})" if form_str else ""
         level = data.get("level", "N/A")
         iv = data.get("iv", "N/A")
