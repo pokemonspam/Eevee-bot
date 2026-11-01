@@ -67,49 +67,51 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Fully automated, universal sprite resolver mapping forms correctly for Showdown."""
-        full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
-        full = full.replace("é", "e")
+        """Fully automated, universal sprite resolver mapping forms correctly for Showdown CDN."""
+        combined = f"{form_str} {pokemon_name}".strip().lower()
+        combined = combined.replace("é", "e")
 
-        is_gmax = "gmax" in full or "gigantamax" in full or "gmax" in form_str.lower()
-        clean_full = full.replace("(gmax)", "").replace("gmax", "").replace("gigantamax", "").strip()
+        is_gmax = "gmax" in combined or "gigantamax" in combined or "eternamax" in combined
 
-        # Handle specific prefix/form mappings for Showdown
-        if "rapid strike" in clean_full:
+        # Precise slug routing
+        if "rapid strike" in combined:
             slug = "urshifu-rapidstrike"
-        elif "single strike" in clean_full:
+        elif "single strike" in combined:
             slug = "urshifu"
-        elif "low key" in clean_full and "toxtricity" in clean_full:
-            slug = "toxtricity-lowkey"
-        elif "toxtricity" in clean_full:
-            slug = "toxtricity"
-        elif "eternatus" in clean_full:
+        elif "toxtricity" in combined:
+            # If it's a Gmax Toxtricity (Amped or Low Key), map cleanly to the base Gmax sprite with a gif
+            if is_gmax:
+                slug = "toxtricity"
+            elif "low key" in combined:
+                slug = "toxtricity-lowkey"
+            else:
+                slug = "toxtricity"
+        elif "eternatus" in combined:
             slug = "eternatus-eternamax" if is_gmax else "eternatus"
         else:
+            clean = combined.replace("(gmax)", "").replace("gmax", "").replace("gigantamax", "").strip()
             region_map = {"alolan": "alola", "galarian": "galar", "hisuian": "hisui", "paldean": "paldea"}
             region_found = ""
             for reg_key, reg_val in region_map.items():
-                if reg_key in clean_full:
+                if reg_key in clean:
                     region_found = f"-{reg_val}"
-                    clean_full = clean_full.replace(reg_key, "").strip()
+                    clean = clean.replace(reg_key, "").strip()
 
             noise_words = {"flower", "trim", "breed", "form", "forme", "mode", "partner", "size"}
-            tokens = [t for t in clean_full.split() if t not in noise_words]
+            tokens = [t for t in clean.split() if t not in noise_words]
             
             if not tokens:
                 slug = pokemon_name.lower().replace(" ", "")
             elif len(tokens) == 1:
                 slug = tokens[0] + region_found
             else:
-                base_species = tokens[-1]
-                modifier_parts = tokens[:-1]
-                slug = f"{base_species}-" + "-".join(modifier_parts) + region_found
+                slug = f"{tokens[-1]}-" + "-".join(tokens[:-1]) + region_found
 
         slug = slug.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
         if is_gmax and not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
-            slug = slug + "-gmax"
+            slug = "eternatus-eternamax" if "eternatus" in slug else slug + "-gmax"
 
         folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
         return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
@@ -130,8 +132,11 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
+        # Clean display name: for Toxtricity specifically, strip low key / amped prefixes
         pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
-        pokemon_name = re.sub(r'^(low key|amped|rapid strike|single strike)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
+        if "toxtricity" in pokemon_name.lower():
+            pokemon_name = re.sub(r'^(low key|amped)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
+        pokemon_name = re.sub(r'^(rapid strike|single strike)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
         raw_gender_source = f"{content} {raw_pokemon}".lower()
         if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
@@ -188,7 +193,7 @@ class Starboard(commands.Cog):
         is_gmax_cat = (category_key.lower() == "gmax")
         has_shiny_detected = all_detected_categories and "shiny" in all_detected_categories
 
-        # Dynamic Titles
+        # Heading rules: If Gmax catch is also shiny, title must explicitly read Shiny Gmax Catch Detected!
         if is_gmax_cat and has_shiny_detected:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
@@ -218,7 +223,9 @@ class Starboard(commands.Cog):
         embed.description = "\n".join(description_lines)
         embed.timestamp = discord.utils.utcnow()
         
-        sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
+        # Ensure thumbnail fetches shiny variant if shiny is detected anywhere in the event
+        sprite_is_shiny = is_shiny or has_shiny_detected
+        sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, sprite_is_shiny)
         embed.set_thumbnail(url=sprite_url)
             
         return embed
