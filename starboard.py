@@ -79,8 +79,12 @@ class Starboard(commands.Cog):
             full = "urshifu-rapidstrike"
         elif "single strike" in full:
             full = "urshifu"
-        elif "eternatus" in full and "eternamax" in full or "eternatus" in full:
-            # Eternatus Gmax form on Showdown uses the eternamax suffix
+        elif "toxtricity" in full:
+            if "low key" in full:
+                full = "toxtricity-lowkey"
+            else:
+                full = "toxtricity"
+        elif "eternatus" in full:
             if "gmax" in f"{form_str}".lower():
                 full = "eternatus-eternamax"
 
@@ -191,7 +195,8 @@ class Starboard(commands.Cog):
         is_shiny = (category_key.lower() == "shiny")
 
         # Dynamic Titles mapping Shiny + Gmax combination cleanly
-        if category_key.lower() == "gmax" and is_shiny:
+        is_gmax_cat = (category_key.lower() == "gmax")
+        if is_gmax_cat and is_shiny:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         else:
             category_themes = {
