@@ -108,7 +108,6 @@ class Starboard(commands.Cog):
         slug = slug.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
-        # Append gmax suffix properly if applicable
         if is_gmax and not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
             slug = slug + "-gmax"
 
@@ -148,6 +147,8 @@ class Starboard(commands.Cog):
         raw_lower = raw_pokemon.lower()
         if "low key" in raw_lower and not form_str:
             form_str = "Low Key"
+        elif "amped" in raw_lower and not form_str:
+            form_str = "Amped"
         elif "rapid strike" in raw_lower and not form_str:
             form_str = "Rapid Strike"
         elif "single strike" in raw_lower and not form_str:
