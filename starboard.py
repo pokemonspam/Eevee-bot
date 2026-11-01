@@ -79,7 +79,6 @@ class Starboard(commands.Cog):
         elif "single strike" in combined:
             slug = "urshifu"
         elif "toxtricity" in combined:
-            # If it's a Gmax Toxtricity (Amped or Low Key), map cleanly to the base Gmax sprite with a gif
             if is_gmax:
                 slug = "toxtricity"
             elif "low key" in combined:
@@ -132,11 +131,11 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
-        # Clean display name: for Toxtricity specifically, strip low key / amped prefixes
         pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
+        
+        # Strip prefixes for Toxtricity only, preserve Urshifu styles cleanly
         if "toxtricity" in pokemon_name.lower():
             pokemon_name = re.sub(r'^(low key|amped)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
-        pokemon_name = re.sub(r'^(rapid strike|single strike)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
         raw_gender_source = f"{content} {raw_pokemon}".lower()
         if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
@@ -192,9 +191,10 @@ class Starboard(commands.Cog):
         is_shiny = (category_key.lower() == "shiny")
         is_gmax_cat = (category_key.lower() == "gmax")
         has_shiny_detected = all_detected_categories and "shiny" in all_detected_categories
+        has_gmax_detected = all_detected_categories and "gmax" in all_detected_categories
 
-        # Heading rules: If Gmax catch is also shiny, title must explicitly read Shiny Gmax Catch Detected!
-        if is_gmax_cat and has_shiny_detected:
+        # Heading rules: If Gmax catch OR Shiny catch happens on a Gmax Pokémon, show Shiny Gmax heading!
+        if (is_gmax_cat or is_shiny) and has_shiny_detected and has_gmax_detected:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
             theme = {"title": "⚔️ Gmax Catch Detected ⚔️", "color": 0xE74C3C}
@@ -223,7 +223,6 @@ class Starboard(commands.Cog):
         embed.description = "\n".join(description_lines)
         embed.timestamp = discord.utils.utcnow()
         
-        # Ensure thumbnail fetches shiny variant if shiny is detected anywhere in the event
         sprite_is_shiny = is_shiny or has_shiny_detected
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, sprite_is_shiny)
         embed.set_thumbnail(url=sprite_url)
