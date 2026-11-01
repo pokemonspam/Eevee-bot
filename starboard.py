@@ -110,7 +110,14 @@ class Starboard(commands.Cog):
         slug = re.sub(r"-+", "-", slug).strip("-")
 
         if is_gmax and not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
-            slug = "eternatus-eternamax" if "eternatus" in slug else slug + "-gmax"
+            if "eternatus" in slug:
+                slug = "eternatus-eternamax"
+            elif "urshifu-rapidstrike" in slug:
+                slug = "urshifu-rapidstrike-gmax"
+            elif "urshifu" in slug:
+                slug = "urshifu-gmax"
+            else:
+                slug = slug + "-gmax"
 
         folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
         return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
@@ -132,8 +139,6 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
         pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
-        
-        # Strip prefixes for Toxtricity only, preserve Urshifu styles cleanly
         if "toxtricity" in pokemon_name.lower():
             pokemon_name = re.sub(r'^(low key|amped)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
@@ -190,11 +195,10 @@ class Starboard(commands.Cog):
 
         is_shiny = (category_key.lower() == "shiny")
         is_gmax_cat = (category_key.lower() == "gmax")
-        has_shiny_detected = all_detected_categories and "shiny" in all_detected_categories
-        has_gmax_detected = all_detected_categories and "gmax" in all_detected_categories
+        has_shiny = all_detected_categories and "shiny" in all_detected_categories
+        has_gmax = all_detected_categories and "gmax" in all_detected_categories
 
-        # Heading rules: If Gmax catch OR Shiny catch happens on a Gmax Pokémon, show Shiny Gmax heading!
-        if (is_gmax_cat or is_shiny) and has_shiny_detected and has_gmax_detected:
+        if has_shiny and has_gmax:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
             theme = {"title": "⚔️ Gmax Catch Detected ⚔️", "color": 0xE74C3C}
@@ -223,7 +227,7 @@ class Starboard(commands.Cog):
         embed.description = "\n".join(description_lines)
         embed.timestamp = discord.utils.utcnow()
         
-        sprite_is_shiny = is_shiny or has_shiny_detected
+        sprite_is_shiny = is_shiny or has_shiny
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, sprite_is_shiny)
         embed.set_thumbnail(url=sprite_url)
             
@@ -421,6 +425,10 @@ class Starboard(commands.Cog):
             detected_categories.append("rare")
 
         for category_key in detected_categories:
+            # If it's a shiny Gmax, block it from posting in the separate Gmax channel so it goes ONLY to the shiny channel
+            if "shiny" in detected_categories and "gmax" in detected_categories and category_key == "gmax":
+                continue
+
             if category_key in categories:
                 target_channel_id = categories[category_key]
                 target_channel = message.guild.get_channel(target_channel_id)
