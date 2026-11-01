@@ -66,22 +66,40 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Guaranteed stable sprite URL generator for Discord thumbnails."""
+        """Converts name & forms to Pokémon Showdown's exact animated gif asset slugs."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         
-        # Clean slug formatting
-        slug = full.replace("alolan", "alola").replace("galarian", "galar").replace("hisuian", "hisui").replace("paldean", "paldea")
+        # Handle prefix forms (e.g. "attack deoxys" -> "deoxys-attack")
+        if "attack" in full:
+            full = "deoxys-attack"
+        elif "defense" in full:
+            full = "deoxys-defense"
+        elif "speed" in full:
+            full = "deoxys-speed"
+
+        # Standard clean slug
+        slug = full.replace("alolan", "").replace("galarian", "").replace("hisuian", "").replace("paldean", "")
         slug = slug.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
         slug = re.sub(r"-+", "-", slug).strip("-")
+
+        # Re-attach regional suffixes cleanly for Showdown (e.g. "alolan vulpix" -> "vulpix-alola")
+        if "alolan" in f"{form_str} {pokemon_name}".lower():
+            slug += "-alola"
+        elif "galarian" in f"{form_str} {pokemon_name}".lower():
+            slug += "-galar"
+        elif "hisuian" in f"{form_str} {pokemon_name}".lower():
+            slug += "-hisui"
+        elif "paldean" in f"{form_str} {pokemon_name}".lower():
+            slug += "-paldea"
 
         # Gigantamax form adjustment
         if "gmax" in full or "gigantamax" in full:
             if not slug.endswith("-gmax"):
                 slug = slug.replace("gmax", "").replace("gigantamax", "").strip("-") + "-gmax"
 
-        # Pokémon Showdown repository ensures 100% stable image delivery for thumbnails
-        folder = "sprites/dex-shiny" if is_shiny else "sprites/dex"
-        return f"https://play.pokemonshowdown.com/{folder}/{slug}.png"
+        # Showdown animated sprite folders
+        folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
+        return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
 
     def parse_pokemon_data(self, content: str, default_author_mention: str) -> dict:
         trainer_match = re.search(r"<@!?(\d+)>", content)
@@ -164,7 +182,7 @@ class Starboard(commands.Cog):
         formatted_date = now.strftime("%d/%m/%Y at %H:%M")
         embed.set_footer(text=formatted_date)
         
-        # Positions the picture neatly as a thumbnail on the right side
+        # Positions the animated GIF thumbnail on the right side
         is_shiny = (category_key == "shiny")
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
         embed.set_thumbnail(url=sprite_url)
