@@ -67,49 +67,53 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Universal parser that reads dataset forms (Trims, Colors, Regions) into Showdown GIF slugs."""
+        """Fully automated, universal sprite resolver for ALL Pokémon, forms, trims, and colors."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
-        
-        # Normalize accents (e.g. Flabébé -> flabebe)
         full = full.replace("é", "e")
 
-        # 1. Handle Flower colors for Flabébé / Floette / Florges (e.g. "Blue Flower Flabebe" -> "flabebe-blue")
-        for color in ["blue", "yellow", "orange", "white", "red"]:
-            if color in full and ("flabebe" in full or "floette" in full or "florges" in full):
-                spec = "flabebe" if "flabebe" in full else ("floette" if "floette" in full else "florges")
-                slug = f"{spec}-{color}"
-                folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
-                return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
+        # Known regional mapping rules
+        region_map = {
+            "alolan": "alola",
+            "galarian": "galar",
+            "hisuian": "hisui",
+            "paldean": "paldea"
+        }
 
-        # 2. Handle Furfrou trims (e.g. "Star Trim Furfrou" -> "furfrou-star")
-        if "trim" in full:
-            parts = full.split("trim")
-            if len(parts) >= 2:
-                trim_type = parts[0].strip().replace(" ", "")
-                base_name = parts[1].strip()
-                full = f"{base_name}-{trim_type}"
+        # Check for regions
+        region_found = ""
+        for reg_key, reg_val in region_map.items():
+            if reg_key in full:
+                region_found = f"-{reg_val}"
+                full = full.replace(reg_key, "").strip()
 
-        # 3. Handle form prefixes (e.g. "Speed Deoxys" -> "deoxys-speed")
-        for prefix in ["speed", "attack", "defense"]:
-            if full.startswith(f"{prefix} "):
-                full = full.replace(f"{prefix} ", "") + f"-{prefix}"
+        # Noise words to ignore when extracting form modifiers
+        noise_words = {"flower", "trim", "breed", "form", "forme", "mode", "partner", "size"}
+        
+        # Tokenize words
+        tokens = [t for t in full.split() if t not in noise_words]
+        
+        if not tokens:
+            slug = pokemon_name.lower().replace(" ", "")
+        elif len(tokens) == 1:
+            slug = tokens[0] + region_found
+        else:
+            # Multi-word forms (e.g., ['yellow', 'flabebe'], ['star', 'furfrou'], ['dragon', 'arceus'], ['speed', 'deoxys'])
+            # We assume the base species is the LAST word unless it's a known form structure
+            base_species = tokens[-1]
+            modifier_parts = tokens[:-1]
+            
+            # Recombine into Showdown format: species-modifier (e.g., flabebe-yellow, furfrou-star, arceus-dragon)
+            modifier_slug = "-".join(modifier_parts)
+            slug = f"{base_species}-{modifier_slug}" + region_found
 
-        # 4. Region suffixes
-        region_suffix = ""
-        for reg in ["alolan", "galarian", "hisuian", "paldean"]:
-            if reg in full:
-                full = full.replace(reg, "").strip()
-                region_suffix = f"-{reg.rstrip('n')}"
-                break
+        # Sanitize final slug for Showdown
+        slug = slug.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
+        slug = re.sub(r"-+", "-", slug).strip("-")
 
-        # 5. Standard slug build and cleanup
-        slug = full.replace("partner", "").replace("flower", "").replace("size", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
-        slug = re.sub(r"-+", "-", slug).strip("-") + region_suffix
-
-        # 6. Gigantamax handling
+        # Handle Gigantamax
         if "gmax" in full or "gigantamax" in full:
             if not slug.endswith("-gmax"):
-                slug = slug.replace("gmax", "").replace("gigantamax", "").strip("-") + "-gmax"
+                slug = slug.replace("gigantamax", "").replace("gmax", "").strip("-") + "-gmax"
 
         folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
         return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
@@ -187,11 +191,8 @@ class Starboard(commands.Cog):
             description_lines.append(f"**Chain:** {chain}")
 
         embed.description = "\n".join(description_lines)
-        
-        # Native Discord Timestamp (automatically shows local timezone in Discord client)
         embed.timestamp = discord.utils.utcnow()
         
-        # Positions the animated GIF thumbnail on the right side
         is_shiny = (category_key == "shiny")
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
         embed.set_thumbnail(url=sprite_url)
