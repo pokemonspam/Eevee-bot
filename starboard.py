@@ -71,31 +71,30 @@ class Starboard(commands.Cog):
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         full = full.replace("é", "e")
 
-        # Cleanly strip out (gmax) or gmax tags from name calculation
-        full = full.replace("(gmax)", "").replace("gmax", "").strip()
+        is_gmax = "gmax" in full or "gigantamax" in full or "gmax" in form_str.lower()
+        clean_full = full.replace("(gmax)", "").replace("gmax", "").replace("gigantamax", "").strip()
 
         # Handle specific prefix/form mappings for Showdown
-        if "rapid strike" in full:
+        if "rapid strike" in clean_full:
             slug = "urshifu-rapidstrike"
-        elif "single strike" in full:
+        elif "single strike" in clean_full:
             slug = "urshifu"
-        elif "low key" in full and "toxtricity" in full:
+        elif "low key" in clean_full and "toxtricity" in clean_full:
             slug = "toxtricity-lowkey"
-        elif "amped" in full and "toxtricity" in full or "toxtricity" in full:
+        elif "toxtricity" in clean_full:
             slug = "toxtricity"
-        elif "eternatus" in full:
-            slug = "eternatus-eternamax" if ("gmax" in form_str.lower() or "gigantamax" in full) else "eternatus"
+        elif "eternatus" in clean_full:
+            slug = "eternatus-eternamax" if is_gmax else "eternatus"
         else:
-            # General fallback parser
             region_map = {"alolan": "alola", "galarian": "galar", "hisuian": "hisui", "paldean": "paldea"}
             region_found = ""
             for reg_key, reg_val in region_map.items():
-                if reg_key in full:
+                if reg_key in clean_full:
                     region_found = f"-{reg_val}"
-                    full = full.replace(reg_key, "").strip()
+                    clean_full = clean_full.replace(reg_key, "").strip()
 
             noise_words = {"flower", "trim", "breed", "form", "forme", "mode", "partner", "size"}
-            tokens = [t for t in full.split() if t not in noise_words]
+            tokens = [t for t in clean_full.split() if t not in noise_words]
             
             if not tokens:
                 slug = pokemon_name.lower().replace(" ", "")
@@ -106,12 +105,11 @@ class Starboard(commands.Cog):
                 modifier_parts = tokens[:-1]
                 slug = f"{base_species}-" + "-".join(modifier_parts) + region_found
 
-        # Sanitize final slug for Showdown
         slug = slug.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
-        # Handle Gigantamax suffix if present
-        if ("gmax" in form_str.lower() or "gigantamax" in full) and not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
+        # Append gmax suffix properly if applicable
+        if is_gmax and not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
             slug = slug + "-gmax"
 
         folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
@@ -133,7 +131,6 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
-        # Clean out (gmax) and form prefixes like Low Key / Amped / Urshifu completely so display is plain species name
         pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'^(low key|amped|rapid strike|single strike)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
@@ -173,7 +170,7 @@ class Starboard(commands.Cog):
             "chain": chain_val
         }
 
-    def get_category_embed(self, category_key: str, data: dict, jump_url: str) -> discord.Embed:
+    def get_category_embed(self, category_key: str, data: dict, jump_url: str, all_detected_categories: list = None) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         gender = data.get("gender", "")
@@ -188,16 +185,19 @@ class Starboard(commands.Cog):
 
         is_shiny = (category_key.lower() == "shiny")
         is_gmax_cat = (category_key.lower() == "gmax")
+        has_shiny_detected = all_detected_categories and "shiny" in all_detected_categories
 
-        # Dynamic Titles: Only show Shiny Gmax if the catch is strictly categorized as Gmax AND Shiny
-        if is_gmax_cat and is_shiny:
+        # Dynamic Titles
+        if is_gmax_cat and has_shiny_detected:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
+        elif is_gmax_cat:
+            theme = {"title": "⚔️ Gmax Catch Detected ⚔️", "color": 0xE74C3C}
+        elif is_shiny:
+            theme = {"title": "✨ Shiny Catch Detected! ✨", "color": 0xFFD700}
         else:
             category_themes = {
-                "shiny": {"title": "✨ Shiny Catch Detected! ✨", "color": 0xFFD700},
                 "rare": {"title": "🦅 Rare Catch Detected 🦅", "color": 0x9B59B6},
                 "regional": {"title": "🌍 Regional Catch Detected 🌍", "color": 0x1ABC9C},
-                "gmax": {"title": "⚔️ Gmax Catch Detected ⚔️", "color": 0xE74C3C},
                 "high_iv": {"title": "📈 High IV Catch Detected 📈", "color": 0x2ECC71},
                 "low_iv": {"title": "📉 Low IV Catch Detected 📉", "color": 0x3498DB}
             }
@@ -362,7 +362,8 @@ class Starboard(commands.Cog):
                 channel = ctx.guild.get_channel(ch_id)
 
                 if channel:
-                    embed = self.get_category_embed(cat_key, parsed_data, jump_url)
+                    dummy_cats = [category.lower()] if category else ["shiny", "gmax"]
+                    embed = self.get_category_embed(cat_key, parsed_data, jump_url, dummy_cats)
                     view = discord.ui.View()
                     view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=jump_url))
                     await channel.send(embed=embed, view=view)
@@ -418,7 +419,7 @@ class Starboard(commands.Cog):
                 target_channel = message.guild.get_channel(target_channel_id)
 
                 if target_channel:
-                    embed = self.get_category_embed(category_key, data, message.jump_url)
+                    embed = self.get_category_embed(category_key, data, message.jump_url, detected_categories)
                     view = discord.ui.View()
                     view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=message.jump_url))
                     await target_channel.send(embed=embed, view=view)
