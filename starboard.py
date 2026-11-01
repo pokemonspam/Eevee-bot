@@ -67,9 +67,22 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Fully automated, universal sprite resolver for ALL Pokémon, forms, trims, and colors."""
+        """Fully automated, universal sprite resolver mapping forms correctly for Showdown."""
         full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         full = full.replace("é", "e")
+
+        # Cleanly strip out (gmax) or gmax tags from name calculation
+        full = full.replace("(gmax)", "").replace("gmax", "").strip()
+
+        # Handle specific prefix/form mappings for Showdown
+        if "rapid strike" in full:
+            full = "urshifu-rapidstrike"
+        elif "single strike" in full:
+            full = "urshifu"
+        elif "eternatus" in full and "eternamax" in full or "eternatus" in full:
+            # Eternatus Gmax form on Showdown uses the eternamax suffix
+            if "gmax" in f"{form_str}".lower():
+                full = "eternatus-eternamax"
 
         # Known regional mapping rules
         region_map = {
@@ -79,7 +92,6 @@ class Starboard(commands.Cog):
             "paldean": "paldea"
         }
 
-        # Check for regions
         region_found = ""
         for reg_key, reg_val in region_map.items():
             if reg_key in full:
@@ -88,8 +100,6 @@ class Starboard(commands.Cog):
 
         # Noise words to ignore when extracting form modifiers
         noise_words = {"flower", "trim", "breed", "form", "forme", "mode", "partner", "size"}
-        
-        # Tokenize words
         tokens = [t for t in full.split() if t not in noise_words]
         
         if not tokens:
@@ -97,10 +107,8 @@ class Starboard(commands.Cog):
         elif len(tokens) == 1:
             slug = tokens[0] + region_found
         else:
-            # Multi-word forms (e.g., ['yellow', 'flabebe'], ['star', 'furfrou'], ['dragon', 'arceus'], ['speed', 'deoxys'])
             base_species = tokens[-1]
             modifier_parts = tokens[:-1]
-            
             modifier_slug = "-".join(modifier_parts)
             slug = f"{base_species}-{modifier_slug}" + region_found
 
@@ -108,10 +116,10 @@ class Starboard(commands.Cog):
         slug = slug.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
-        # Handle Gigantamax
-        if "gmax" in full or "gigantamax" in full:
-            if not slug.endswith("-gmax"):
-                slug = slug.replace("gigantamax", "").replace("gmax", "").strip("-") + "-gmax"
+        # Handle Gigantamax suffix if present
+        if "gmax" in f"{form_str}".lower() or "gigantamax" in full:
+            if not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
+                slug = slug + "-gmax"
 
         folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
         return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
@@ -132,6 +140,9 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
+        # Clean out (gmax) or gmax text from displayed pokemon name
+        pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
+
         raw_gender_source = f"{content} {raw_pokemon}".lower()
         if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
             gender = f" {self.FEMALE_EMOJI}"
@@ -143,8 +154,7 @@ class Starboard(commands.Cog):
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
         form_str = form_match.group(1).strip() if form_match else ""
 
-        # Automatically tag Gmax if found in message text
-        if "Gigantamax Factor" in content or "gmax" in content.lower():
+        if "Gigantamax Factor" in content or "gmax" in content.lower() or "(gmax)" in raw_pokemon.lower():
             if "gmax" not in form_str.lower():
                 form_str = f"{form_str} gmax".strip()
 
@@ -167,25 +177,32 @@ class Starboard(commands.Cog):
         gender = data.get("gender", "")
         form_str = data.get("form", "")
 
-        # Force gmax keyword into form if category is gmax
         if category_key.lower() == "gmax" and "gmax" not in form_str.lower():
             form_str = f"{form_str} gmax".strip()
 
-        form_info = f" ({form_str})" if form_str else ""
+        # Clean form string from displaying raw "gmax" text in description lines
+        display_form_str = re.sub(r'\bgmax\b', '', form_str, flags=re.IGNORECASE).strip()
+        form_info = f" ({display_form_str})" if display_form_str else ""
+        
         level = data.get("level", "N/A")
         iv = data.get("iv", "N/A")
         chain = data.get("chain", None)
 
-        category_themes = {
-            "shiny": {"title": "✨ Shiny Catch Detected! ✨", "color": 0xFFD700},
-            "rare": {"title": "🦅 Rare Catch Detected 🦅", "color": 0x9B59B6},
-            "regional": {"title": "🌍 Regional Catch Detected 🌍", "color": 0x1ABC9C},
-            "gmax": {"title": "⚔️ Gmax Catch Detected ⚔️", "color": 0xE74C3C},
-            "high_iv": {"title": "📈 High IV Catch Detected 📈", "color": 0x2ECC71},
-            "low_iv": {"title": "📉 Low IV Catch Detected 📉", "color": 0x3498DB}
-        }
+        is_shiny = (category_key.lower() == "shiny")
 
-        theme = category_themes.get(category_key, {"title": "🌟 Starboard Catch Detected!", "color": 0x7289DA})
+        # Dynamic Titles mapping Shiny + Gmax combination cleanly
+        if category_key.lower() == "gmax" and is_shiny:
+            theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
+        else:
+            category_themes = {
+                "shiny": {"title": "✨ Shiny Catch Detected! ✨", "color": 0xFFD700},
+                "rare": {"title": "🦅 Rare Catch Detected 🦅", "color": 0x9B59B6},
+                "regional": {"title": "🌍 Regional Catch Detected 🌍", "color": 0x1ABC9C},
+                "gmax": {"title": "⚔️ Gmax Catch Detected ⚔️", "color": 0xE74C3C},
+                "high_iv": {"title": "📈 High IV Catch Detected 📈", "color": 0x2ECC71},
+                "low_iv": {"title": "📉 Low IV Catch Detected 📉", "color": 0x3498DB}
+            }
+            theme = category_themes.get(category_key, {"title": "🌟 Starboard Catch Detected!", "color": 0x7289DA})
         
         embed = discord.Embed(title=theme["title"], color=theme["color"])
 
@@ -201,7 +218,6 @@ class Starboard(commands.Cog):
         embed.description = "\n".join(description_lines)
         embed.timestamp = discord.utils.utcnow()
         
-        is_shiny = (category_key == "shiny")
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
         embed.set_thumbnail(url=sprite_url)
             
