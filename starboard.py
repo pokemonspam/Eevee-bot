@@ -8,11 +8,11 @@ class Starboard(commands.Cog):
         self.db = bot.db
         self.starboard_config = self.db["starboard_config"]
 
-        # Custom gender emojis
+        # Your exact Pokétwo custom gender emojis
         self.MALE_EMOJI = "<:male:1566169579300851852>"
         self.FEMALE_EMOJI = "<:Female:1566169649249263627>"
 
-        # Rare Pokémon List
+        # 🦅 Rare Pokémon List
         self.rare_pokemon = {
             "articuno", "zapdos", "moltres", "mewtwo", "mew", "raikou", "entei", "suicune", 
             "lugia", "ho-oh", "celebi", "regirock", "regice", "registeel", "latias", "latios", 
@@ -31,12 +31,12 @@ class Starboard(commands.Cog):
             "galarian moltres", "galarian zapdos"
         }
 
-        # Special Rare Families
+        # 🦅 Special "All <Species>" Rare Families
         self.rare_families = {
             "arceus", "ogerpon", "xerneas", "zygarde", "silvally", "urshifu", "koraidon", "miraidon"
         }
 
-        # Regional Pokémon List
+        # 🌍 Regional Pokémon List
         self.regional_pokemon = {
             "alolan ninetales", "alolan vulpix", "alolan geodude", "alolan graveler", "alolan raticate", 
             "alolan rattata", "alolan persian", "alolan meowth", "alolan exeggutor", "alolan dugtrio", 
@@ -67,42 +67,47 @@ class Starboard(commands.Cog):
         return name_clean in self.regional_pokemon
 
     def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
-        """Resolves parsed dataset names and forms to valid Showdown animated GIF URLs."""
-        raw = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
-
-        # Handle Trim forms: "Star Trim Furfrou" -> species: furfrou, form: star -> "furfrou-star"
-        if "trim" in raw:
-            match = re.search(r"(\w+)\s+trim\s+(\w+)", raw)
-            if match:
-                trim_type, species = match.group(1), match.group(2)
-                raw = f"{species}-{trim_type}"
-
-        # Handle form prefixes: "Speed Deoxys" -> "deoxys-speed"
-        for form_prefix in ["speed", "attack", "defense"]:
-            if raw.startswith(f"{form_prefix} "):
-                raw = raw.replace(f"{form_prefix} ", "") + f"-{form_prefix}"
-
-        # Handle regional prefixes: "Alolan Vulpix" -> "vulpix-alola"
-        region_map = {
-            "alolan": "-alola",
-            "galarian": "-galar",
-            "hisuian": "-hisui",
-            "paldean": "-paldea"
-        }
+        """Universal parser that reads dataset forms (Trims, Colors, Regions) into Showdown GIF slugs."""
+        full = f"{form_str} {pokemon_name}".strip().lower() if form_str else pokemon_name.lower()
         
-        region_found = ""
-        for reg_key, reg_suffix in region_map.items():
-            if reg_key in raw:
-                raw = raw.replace(reg_key, "").strip()
-                region_found = reg_suffix
+        # Normalize accents (e.g. Flabébé -> flabebe)
+        full = full.replace("é", "e")
+
+        # 1. Handle Flower colors for Flabébé / Floette / Florges (e.g. "Blue Flower Flabebe" -> "flabebe-blue")
+        for color in ["blue", "yellow", "orange", "white", "red"]:
+            if color in full and ("flabebe" in full or "floette" in full or "florges" in full):
+                spec = "flabebe" if "flabebe" in full else ("floette" if "floette" in full else "florges")
+                slug = f"{spec}-{color}"
+                folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
+                return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
+
+        # 2. Handle Furfrou trims (e.g. "Star Trim Furfrou" -> "furfrou-star")
+        if "trim" in full:
+            parts = full.split("trim")
+            if len(parts) >= 2:
+                trim_type = parts[0].strip().replace(" ", "")
+                base_name = parts[1].strip()
+                full = f"{base_name}-{trim_type}"
+
+        # 3. Handle form prefixes (e.g. "Speed Deoxys" -> "deoxys-speed")
+        for prefix in ["speed", "attack", "defense"]:
+            if full.startswith(f"{prefix} "):
+                full = full.replace(f"{prefix} ", "") + f"-{prefix}"
+
+        # 4. Region suffixes
+        region_suffix = ""
+        for reg in ["alolan", "galarian", "hisuian", "paldean"]:
+            if reg in full:
+                full = full.replace(reg, "").strip()
+                region_suffix = f"-{reg.rstrip('n')}"
                 break
 
-        # Sanitize slug
-        slug = raw.replace("partner", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
-        slug = re.sub(r"-+", "-", slug).strip("-") + region_found
+        # 5. Standard slug build and cleanup
+        slug = full.replace("partner", "").replace("flower", "").replace("size", "").replace(" ", "-").replace(".", "").replace("'", "").replace(":", "")
+        slug = re.sub(r"-+", "-", slug).strip("-") + region_suffix
 
-        # Handle Gigantamax
-        if "gmax" in raw or "gigantamax" in raw:
+        # 6. Gigantamax handling
+        if "gmax" in full or "gigantamax" in full:
             if not slug.endswith("-gmax"):
                 slug = slug.replace("gmax", "").replace("gigantamax", "").strip("-") + "-gmax"
 
@@ -186,6 +191,7 @@ class Starboard(commands.Cog):
         # Native Discord Timestamp (automatically shows local timezone in Discord client)
         embed.timestamp = discord.utils.utcnow()
         
+        # Positions the animated GIF thumbnail on the right side
         is_shiny = (category_key == "shiny")
         sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, is_shiny)
         embed.set_thumbnail(url=sprite_url)
@@ -288,6 +294,7 @@ class Starboard(commands.Cog):
 
     @commands.command(name="starboardtest", aliases=["sbtest"])
     async def starboard_test(self, ctx, category: str = None):
+        """Tests the starboard embed by parsing a replied message or creating sample data."""
         config = await self.starboard_config.find_one({"guild_id": ctx.guild.id}) or {}
         categories = config.get("categories", {})
 
