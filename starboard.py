@@ -143,7 +143,7 @@ class Starboard(commands.Cog):
             pokemon_name = re.sub(r'^(low key|amped)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
         raw_gender_source = f"{content} {raw_pokemon}".lower()
-        if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
+        if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:", "1510903384180523028"]):
             gender = f" {self.FEMALE_EMOJI}"
         elif any(tag in raw_gender_source for tag in ["male", "♂", "1566169579300851852", "1207734081585152101", ":male:"]):
             gender = f" {self.MALE_EMOJI}"
@@ -163,7 +163,7 @@ class Starboard(commands.Cog):
         elif "single strike" in raw_lower and not form_str:
             form_str = "Single Strike"
 
-        if "Gigantamax Factor" in content or "gmax" in content.lower() or "(gmax)" in raw_pokemon.lower():
+        if "gigantamax factor" in content.lower() or "gmax" in content.lower() or "gigantamax" in content.lower() or "1504098787658961028" in content:
             if "gmax" not in form_str.lower():
                 form_str = f"{form_str} gmax".strip()
 
@@ -198,7 +198,6 @@ class Starboard(commands.Cog):
         has_shiny = all_detected_categories and "shiny" in all_detected_categories
         has_gmax = all_detected_categories and "gmax" in all_detected_categories
 
-        # FIXED: Global check for any embed generated for a shiny gmax catch to show Shiny Gmax title
         if has_shiny and has_gmax:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
@@ -407,11 +406,11 @@ class Starboard(commands.Cog):
 
         detected_categories = []
 
-        if "These colors seem unusual..." in content or "✨" in content:
+        if "These colors seem unusual..." in content or "✨" in content or "unusual" in content.lower():
             detected_categories.append("shiny")
 
-        # FIXED: Check catch message strings properly for Gmax factor instead of spawn text
-        if "Gigantamax Factor" in content or "gmax" in content.lower() or "gigantamax" in content.lower():
+        # Explicitly check for the exact catch lines containing Gigantamax Factor or Gmax emoji/text
+        if "gigantamax factor" in content.lower() or "gmax" in content.lower() or "gigantamax" in content.lower() or "1504098787658961028" in content:
             detected_categories.append("gmax")
 
         if iv_value is not None:
