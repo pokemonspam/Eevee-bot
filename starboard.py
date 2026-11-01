@@ -198,6 +198,7 @@ class Starboard(commands.Cog):
         has_shiny = all_detected_categories and "shiny" in all_detected_categories
         has_gmax = all_detected_categories and "gmax" in all_detected_categories
 
+        # FIXED: Global check for any embed generated for a shiny gmax catch to show Shiny Gmax title
         if has_shiny and has_gmax:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
@@ -425,7 +426,7 @@ class Starboard(commands.Cog):
             detected_categories.append("rare")
 
         for category_key in detected_categories:
-            # If it's a shiny Gmax, block it from posting in the separate Gmax channel so it goes ONLY to the shiny channel
+            # Route shiny gmax catches only to shiny channel
             if "shiny" in detected_categories and "gmax" in detected_categories and category_key == "gmax":
                 continue
 
