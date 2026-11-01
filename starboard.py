@@ -193,11 +193,12 @@ class Starboard(commands.Cog):
         iv = data.get("iv", "N/A")
         chain = data.get("chain", None)
 
-        is_shiny = (category_key.lower() == "shiny")
-        is_gmax_cat = (category_key.lower() == "gmax")
         has_shiny = all_detected_categories and "shiny" in all_detected_categories
         has_gmax = all_detected_categories and "gmax" in all_detected_categories
+        is_shiny = (category_key.lower() == "shiny")
+        is_gmax_cat = (category_key.lower() == "gmax")
 
+        # ABSOLUTE PRIORITY: If BOTH shiny and gmax are detected, title is Shiny Gmax!
         if has_shiny and has_gmax:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
@@ -409,7 +410,6 @@ class Starboard(commands.Cog):
         if "These colors seem unusual..." in content or "✨" in content or "unusual" in content.lower():
             detected_categories.append("shiny")
 
-        # Explicitly check for the exact catch lines containing Gigantamax Factor or Gmax emoji/text
         if "gigantamax factor" in content.lower() or "gmax" in content.lower() or "gigantamax" in content.lower() or "1504098787658961028" in content:
             detected_categories.append("gmax")
 
