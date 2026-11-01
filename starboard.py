@@ -144,9 +144,9 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
-        # Clean out (gmax) and form prefixes like Low Key / Amped from display name
+        # Clean out (gmax) and form prefixes like Low Key / Amped / Urshifu from display name
         pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
-        pokemon_name = re.sub(r'^(low key|amped)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
+        pokemon_name = re.sub(r'^(low key|amped|rapid strike|single strike)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
         raw_gender_source = f"{content} {raw_pokemon}".lower()
         if any(tag in raw_gender_source for tag in ["female", "♀", "1566169649249263627", "1207734084210532483", ":female:"]):
@@ -159,7 +159,7 @@ class Starboard(commands.Cog):
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
         form_str = form_match.group(1).strip() if form_match else ""
 
-        # Capture Toxtricity/Urshifu forms if inside raw_pokemon string
+        # Capture forms if inside raw_pokemon string
         raw_lower = raw_pokemon.lower()
         if "low key" in raw_lower and not form_str:
             form_str = "Low Key"
@@ -194,9 +194,8 @@ class Starboard(commands.Cog):
         if category_key.lower() == "gmax" and "gmax" not in form_str.lower():
             form_str = f"{form_str} gmax".strip()
 
-        # Clean form string from displaying raw "gmax" text in description lines
-        display_form_str = re.sub(r'\bgmax\b', '', form_str, flags=re.IGNORECASE).strip()
-        form_info = f" ({display_form_str})" if display_form_str else ""
+        # Do not display form text in description lines for forms like Rapid Strike / Low Key / Gmax
+        display_form_str = ""
         
         level = data.get("level", "N/A")
         iv = data.get("iv", "N/A")
@@ -223,7 +222,7 @@ class Starboard(commands.Cog):
 
         description_lines = [
             f"**Trainer:** {trainer_mention}",
-            f"**Pokémon:** {pokemon_name}{gender}{form_info}",
+            f"**Pokémon:** {pokemon_name}{gender}",
             f"**Level:** {level}",
             f"**IV:** {iv}%"
         ]
@@ -428,6 +427,7 @@ class Starboard(commands.Cog):
         if self.is_rare(pokemon_name):
             detected_categories.append("rare")
 
+        # Ensure Shiny Gmax triggers both and respects the combined title check
         for category_key in detected_categories:
             if category_key in categories:
                 target_channel_id = categories[category_key]
