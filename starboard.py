@@ -198,7 +198,7 @@ class Starboard(commands.Cog):
         is_shiny = (category_key.lower() == "shiny")
         is_gmax_cat = (category_key.lower() == "gmax")
 
-        # ABSOLUTE PRIORITY: If BOTH shiny and gmax are detected, title is Shiny Gmax!
+        # ABSOLUTE PRIORITY: If BOTH shiny and gmax are present anywhere in the catch, title is Shiny Gmax!
         if has_shiny and has_gmax:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         elif is_gmax_cat:
@@ -426,10 +426,6 @@ class Starboard(commands.Cog):
             detected_categories.append("rare")
 
         for category_key in detected_categories:
-            # Route shiny gmax catches only to shiny channel
-            if "shiny" in detected_categories and "gmax" in detected_categories and category_key == "gmax":
-                continue
-
             if category_key in categories:
                 target_channel_id = categories[category_key]
                 target_channel = message.guild.get_channel(target_channel_id)
