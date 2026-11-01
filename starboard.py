@@ -66,7 +66,19 @@ class Starboard(commands.Cog):
         name_clean = pokemon_name.strip().lower()
         return name_clean in self.regional_pokemon
 
-    def get_universal_sprite_url(self, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
+    async def get_universal_sprite_url(self, guild_id: int, pokemon_name: str, form_str: str = "", is_shiny: bool = False) -> str:
+        clean_name = pokemon_name.strip().lower()
+
+        # 1. Check custom saved database sprites first
+        config = await self.starboard_config.find_one({"guild_id": guild_id}) or {}
+        custom_sprites = config.get("custom_sprites", {})
+        if clean_name in custom_sprites:
+            status = "shiny" if is_shiny else "normal"
+            saved_url = custom_sprites[clean_name].get(status)
+            if saved_url:
+                return saved_url
+
+        # 2. Standard Showdown & PokéAPI Fallback Logic
         combined = f"{form_str} {pokemon_name}".strip().lower()
         combined = combined.replace("é", "e")
 
@@ -80,12 +92,7 @@ class Starboard(commands.Cog):
             pokeapi_id = 10226 if is_gmax else 892
         elif "toxtricity" in combined:
             pokeapi_id = 10219 if is_gmax else 849
-            if is_gmax:
-                slug = "toxtricity"
-            elif "low key" in combined:
-                slug = "toxtricity-lowkey"
-            else:
-                slug = "toxtricity"
+            slug = "toxtricity" if is_gmax else ("toxtricity-lowkey" if "low key" in combined else "toxtricity")
         elif "eternatus" in combined:
             pokeapi_id = 10225 if is_gmax else 890
             slug = "eternatus-eternamax" if is_gmax else "eternatus"
@@ -186,7 +193,7 @@ class Starboard(commands.Cog):
             "chain": chain_val
         }
 
-    def get_category_embed(self, category_key: str, data: dict, jump_url: str, all_detected_categories: list = None) -> discord.Embed:
+    async def get_category_embed(self, guild_id: int, category_key: str, data: dict, jump_url: str, all_detected_categories: list = None) -> discord.Embed:
         trainer_mention = data.get("trainer_mention", "Unknown Trainer")
         pokemon_name = data.get("pokemon", "Unknown Pokémon")
         gender = data.get("gender", "")
@@ -235,7 +242,7 @@ class Starboard(commands.Cog):
         embed.timestamp = discord.utils.utcnow()
         
         sprite_is_shiny = is_shiny or has_shiny
-        sprite_url = self.get_universal_sprite_url(pokemon_name, form_str, sprite_is_shiny)
+        sprite_url = await self.get_universal_sprite_url(guild_id, pokemon_name, form_str, sprite_is_shiny)
         embed.set_thumbnail(url=sprite_url)
             
         return embed
@@ -246,15 +253,14 @@ class Starboard(commands.Cog):
             title="📋 Starboard Configuration Commands List",
             description=(
                 "**Link category to channel:**\n"
-                "```E!starboard set <category> <#channel> or e!starboard set <category> <#channel>```\n"
+                "```E!starboard set <category> <#channel>```\n"
                 "**Unlink/Clear a category:**\n"
-                "```E!starboard clear <category> or e!starboard clear <category>```\n\n"
+                "```E!starboard clear <category>```\n\n"
+                "**Custom Variant Sprite Saving:**\n"
+                "• Reply to Dex card + `E!starsavenormal <mon name>`\n"
+                "• Reply to Dex card + `E!starsaveshiny <mon name>`\n\n"
                 "**Available Categories:**\n"
-                "• `shiny`, `rare`, `high_iv`, `low_iv`, `regional`, `gmax`\n\n"
-                "**Check Current Mappings:**\n"
-                "```E!starboard channel or e!starboard channel```\n\n"
-                "**Test Starboard Embed:**\n"
-                "```E!starboardtest [category] (reply to a caught message)```"
+                "• `shiny`, `rare`, `high_iv`, `low_iv`, `regional`, `gmax`"
             ),
             color=0x2B2D31
         )
@@ -334,6 +340,68 @@ class Starboard(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @commands.command(name="starsavenormal")
+    async def star_save_normal(self, ctx, *, pokemon_name: str):
+        if not ctx.message.reference:
+            await ctx.send("❌ Please **reply** to a Pokétwo Dex/Info message containing the image you want to save!")
+            return
+
+        try:
+            target_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            image_url = None
+            if target_msg.embeds:
+                embed = target_msg.embeds[0]
+                if embed.thumbnail and embed.thumbnail.url:
+                    image_url = embed.thumbnail.url
+                elif embed.image and embed.image.url:
+                    image_url = embed.image.url
+
+            if not image_url:
+                await ctx.send("❌ Could not find an image/thumbnail in the replied message.")
+                return
+
+            clean_name = pokemon_name.strip().lower()
+            await self.starboard_config.update_one(
+                {"guild_id": ctx.guild.id},
+                {"$set": {f"custom_sprites.{clean_name}.normal": image_url}},
+                upsert=True
+            )
+
+            await ctx.send(f"✅ Successfully saved the **Normal** sprite for **{pokemon_name}**!")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to save normal sprite: {e}")
+
+    @commands.command(name="starsaveshiny")
+    async def star_save_shiny(self, ctx, *, pokemon_name: str):
+        if not ctx.message.reference:
+            await ctx.send("❌ Please **reply** to a Pokétwo Dex/Info message containing the image you want to save!")
+            return
+
+        try:
+            target_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            image_url = None
+            if target_msg.embeds:
+                embed = target_msg.embeds[0]
+                if embed.thumbnail and embed.thumbnail.url:
+                    image_url = embed.thumbnail.url
+                elif embed.image and embed.image.url:
+                    image_url = embed.image.url
+
+            if not image_url:
+                await ctx.send("❌ Could not find an image/thumbnail in the replied message.")
+                return
+
+            clean_name = pokemon_name.strip().lower()
+            await self.starboard_config.update_one(
+                {"guild_id": ctx.guild.id},
+                {"$set": {f"custom_sprites.{clean_name}.shiny": image_url}},
+                upsert=True
+            )
+
+            await ctx.send(f"✅ Successfully saved the **Shiny** sprite for **{pokemon_name}**!")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to save shiny sprite: {e}")
+
     @commands.command(name="starboardtest", aliases=["sbtest"])
     async def starboard_test(self, ctx, category: str = None):
         config = await self.starboard_config.find_one({"guild_id": ctx.guild.id}) or {}
@@ -362,12 +430,12 @@ class Starboard(commands.Cog):
         if not parsed_data:
             parsed_data = {
                 "trainer_mention": ctx.author.mention,
-                "pokemon": "Pikachu",
+                "pokemon": "Peakychu",
                 "gender": f" {self.MALE_EMOJI}",
                 "form": "",
                 "level": "50",
                 "iv": "95.56",
-                "chain": "102"
+                "chain": "1230"
             }
 
         target_categories = [category.lower()] if category else list(categories.keys())
@@ -379,8 +447,8 @@ class Starboard(commands.Cog):
                 channel = ctx.guild.get_channel(ch_id)
 
                 if channel:
-                    dummy_cats = [category.lower()] if category else ["shiny", "gmax"]
-                    embed = self.get_category_embed(cat_key, parsed_data, jump_url, dummy_cats)
+                    dummy_cats = [category.lower()] if category else ["shiny"]
+                    embed = await self.get_category_embed(ctx.guild.id, cat_key, parsed_data, jump_url, dummy_cats)
                     view = discord.ui.View()
                     view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=jump_url))
                     await channel.send(embed=embed, view=view)
@@ -389,7 +457,7 @@ class Starboard(commands.Cog):
         if sent_count > 0:
             await ctx.send(f"✅ **Starboard Test Sent!** Dispatched test embed(s) to configured channel(s).")
         else:
-            await ctx.send("❌ Could not send test embeds. Make sure the target channels still exist and the bot has permission to speak there.")
+            await ctx.send("❌ Could not send test embeds. Make sure target channels exist and bot has permissions.")
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -431,7 +499,6 @@ class Starboard(commands.Cog):
             detected_categories.append("rare")
 
         final_categories_to_dispatch = []
-
         is_shiny_catch = "shiny" in detected_categories
         is_gmax_catch = "gmax" in detected_categories
 
@@ -457,15 +524,13 @@ class Starboard(commands.Cog):
         for category_key in final_categories_to_dispatch:
             if category_key in categories:
                 target_channel_id = categories[category_key]
-                
                 if target_channel_id in processed_channels:
                     continue
                 processed_channels.add(target_channel_id)
 
                 target_channel = message.guild.get_channel(target_channel_id)
-
                 if target_channel:
-                    embed = self.get_category_embed(category_key, data, message.jump_url, detected_categories)
+                    embed = await self.get_category_embed(message.guild.id, category_key, data, message.jump_url, detected_categories)
                     view = discord.ui.View()
                     view.add_item(discord.ui.Button(label="Jump to Catch 🔗", url=message.jump_url))
                     await target_channel.send(embed=embed, view=view)
