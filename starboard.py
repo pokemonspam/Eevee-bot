@@ -76,54 +76,43 @@ class Starboard(commands.Cog):
 
         # Handle specific prefix/form mappings for Showdown
         if "rapid strike" in full:
-            full = "urshifu-rapidstrike"
+            slug = "urshifu-rapidstrike"
         elif "single strike" in full:
-            full = "urshifu"
-        elif "toxtricity" in full:
-            if "low key" in full:
-                full = "toxtricity-lowkey"
-            else:
-                full = "toxtricity"
+            slug = "urshifu"
+        elif "low key" in full and "toxtricity" in full:
+            slug = "toxtricity-lowkey"
+        elif "amped" in full and "toxtricity" in full or "toxtricity" in full:
+            slug = "toxtricity"
         elif "eternatus" in full:
-            if "gmax" in f"{form_str}".lower():
-                full = "eternatus-eternamax"
-
-        # Known regional mapping rules
-        region_map = {
-            "alolan": "alola",
-            "galarian": "galar",
-            "hisuian": "hisui",
-            "paldean": "paldea"
-        }
-
-        region_found = ""
-        for reg_key, reg_val in region_map.items():
-            if reg_key in full:
-                region_found = f"-{reg_val}"
-                full = full.replace(reg_key, "").strip()
-
-        # Noise words to ignore when extracting form modifiers
-        noise_words = {"flower", "trim", "breed", "form", "forme", "mode", "partner", "size"}
-        tokens = [t for t in full.split() if t not in noise_words]
-        
-        if not tokens:
-            slug = pokemon_name.lower().replace(" ", "")
-        elif len(tokens) == 1:
-            slug = tokens[0] + region_found
+            slug = "eternatus-eternamax" if ("gmax" in form_str.lower() or "gigantamax" in full) else "eternatus"
         else:
-            base_species = tokens[-1]
-            modifier_parts = tokens[:-1]
-            modifier_slug = "-".join(modifier_parts)
-            slug = f"{base_species}-{modifier_slug}" + region_found
+            # General fallback parser
+            region_map = {"alolan": "alola", "galarian": "galar", "hisuian": "hisui", "paldean": "paldea"}
+            region_found = ""
+            for reg_key, reg_val in region_map.items():
+                if reg_key in full:
+                    region_found = f"-{reg_val}"
+                    full = full.replace(reg_key, "").strip()
+
+            noise_words = {"flower", "trim", "breed", "form", "forme", "mode", "partner", "size"}
+            tokens = [t for t in full.split() if t not in noise_words]
+            
+            if not tokens:
+                slug = pokemon_name.lower().replace(" ", "")
+            elif len(tokens) == 1:
+                slug = tokens[0] + region_found
+            else:
+                base_species = tokens[-1]
+                modifier_parts = tokens[:-1]
+                slug = f"{base_species}-" + "-".join(modifier_parts) + region_found
 
         # Sanitize final slug for Showdown
         slug = slug.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
         slug = re.sub(r"-+", "-", slug).strip("-")
 
         # Handle Gigantamax suffix if present
-        if "gmax" in f"{form_str}".lower() or "gigantamax" in full:
-            if not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
-                slug = slug + "-gmax"
+        if ("gmax" in form_str.lower() or "gigantamax" in full) and not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
+            slug = slug + "-gmax"
 
         folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
         return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
@@ -144,7 +133,7 @@ class Starboard(commands.Cog):
         pokemon_name = re.sub(r'(?:<:\w+:\d+>|[:\s]*(?:unknown|:unknown:|\?|:female:|:male:|female|male|♀|♂))+$', '', raw_pokemon, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'<@!?\d+>', '', pokemon_name).strip(" :?<>")
 
-        # Clean out (gmax) and form prefixes like Low Key / Amped / Urshifu from display name
+        # Clean out (gmax) and form prefixes like Low Key / Amped / Urshifu completely so display is plain species name
         pokemon_name = re.sub(r'\s*\(?gmax\)?', '', pokemon_name, flags=re.IGNORECASE).strip()
         pokemon_name = re.sub(r'^(low key|amped|rapid strike|single strike)\s+', '', pokemon_name, flags=re.IGNORECASE).strip()
 
@@ -159,7 +148,6 @@ class Starboard(commands.Cog):
         form_match = re.search(r"\((.*?form.*?)\)", content, re.IGNORECASE)
         form_str = form_match.group(1).strip() if form_match else ""
 
-        # Capture forms if inside raw_pokemon string
         raw_lower = raw_pokemon.lower()
         if "low key" in raw_lower and not form_str:
             form_str = "Low Key"
@@ -193,9 +181,6 @@ class Starboard(commands.Cog):
 
         if category_key.lower() == "gmax" and "gmax" not in form_str.lower():
             form_str = f"{form_str} gmax".strip()
-
-        # Do not display form text in description lines for forms like Rapid Strike / Low Key / Gmax
-        display_form_str = ""
         
         level = data.get("level", "N/A")
         iv = data.get("iv", "N/A")
@@ -204,7 +189,7 @@ class Starboard(commands.Cog):
         is_shiny = (category_key.lower() == "shiny")
         is_gmax_cat = (category_key.lower() == "gmax")
 
-        # Dynamic Titles mapping Shiny + Gmax combination cleanly
+        # Dynamic Titles: Only show Shiny Gmax if the catch is strictly categorized as Gmax AND Shiny
         if is_gmax_cat and is_shiny:
             theme = {"title": "✨⚔️ Shiny Gmax Catch Detected! ⚔️✨", "color": 0xFFD700}
         else:
@@ -427,7 +412,6 @@ class Starboard(commands.Cog):
         if self.is_rare(pokemon_name):
             detected_categories.append("rare")
 
-        # Ensure Shiny Gmax triggers both and respects the combined title check
         for category_key in detected_categories:
             if category_key in categories:
                 target_channel_id = categories[category_key]
