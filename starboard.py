@@ -74,9 +74,12 @@ class Starboard(commands.Cog):
 
         if "rapid strike" in combined:
             slug = "urshifu-rapidstrike"
+            pokeapi_id = 10227 if is_gmax else 10191
         elif "single strike" in combined:
             slug = "urshifu"
+            pokeapi_id = 10226 if is_gmax else 892
         elif "toxtricity" in combined:
+            pokeapi_id = 10219 if is_gmax else 849
             if is_gmax:
                 slug = "toxtricity"
             elif "low key" in combined:
@@ -84,8 +87,10 @@ class Starboard(commands.Cog):
             else:
                 slug = "toxtricity"
         elif "eternatus" in combined:
+            pokeapi_id = 10225 if is_gmax else 890
             slug = "eternatus-eternamax" if is_gmax else "eternatus"
         else:
+            pokeapi_id = None
             clean = combined.replace("(gmax)", "").replace("gmax", "").replace("gigantamax", "").strip()
             region_map = {"alolan": "alola", "galarian": "galar", "hisuian": "hisui", "paldean": "paldea"}
             region_found = ""
@@ -108,23 +113,20 @@ class Starboard(commands.Cog):
         slug = re.sub(r"-+", "-", slug).strip("-")
 
         if is_gmax and not slug.endswith("-gmax") and not slug.endswith("-eternamax"):
-            if "eternatus" in slug:
-                slug = "eternatus-eternamax"
-            elif "urshifu-rapidstrike" in slug:
-                slug = "urshifu-rapidstrike-gmax"
-            elif "urshifu" in slug:
-                slug = "urshifu-gmax"
-            else:
-                slug = slug + "-gmax"
+            slug = slug + "-gmax"
 
-        is_urshifu_gmax = "urshifu" in slug and "gmax" in slug
-        
-        if is_urshifu_gmax:
-            folder = "sprites/shiny" if is_shiny else "sprites/pokemon"
-            return f"https://play.pokemonshowdown.com/{folder}/{slug}.png"
-        else:
+        is_missing_gif = "urshifu" in slug and "gmax" in slug
+
+        if not is_missing_gif:
             folder = "sprites/ani-shiny" if is_shiny else "sprites/ani"
             return f"https://play.pokemonshowdown.com/{folder}/{slug}.gif"
+
+        if pokeapi_id:
+            shiny_path = "shiny/" if is_shiny else ""
+            return f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/home/{shiny_path}{pokeapi_id}.png"
+        else:
+            folder = "sprites/home-shiny" if is_shiny else "sprites/home"
+            return f"https://play.pokemonshowdown.com/{folder}/{slug}.png"
 
     def parse_pokemon_data(self, content: str, default_author_mention: str) -> dict:
         trainer_match = re.search(r"<@!?(\d+)>", content)
@@ -171,7 +173,6 @@ class Starboard(commands.Cog):
             if "gmax" not in form_str.lower():
                 form_str = f"{form_str} gmax".strip()
 
-        # Fixed regex supporting periods or exclamation marks on streak resets
         chain_match = re.search(r"(?:chain:?\s*|streak:?\s*|streak reset[.!]\s*\(?\*\*?)(\d+)", content, re.IGNORECASE)
         chain_val = chain_match.group(1) if chain_match else None
 
