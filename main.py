@@ -342,6 +342,77 @@ async def learn_embed(ctx):
 
 
 # ==========================================
+# 🖼️ STATIC SPRITE RESOLVER & SPAWN ALERT UI
+# ==========================================
+async def resolve_spawn_sprite_url(guild_id: int, pokemon_name: str) -> str:
+    clean_name = pokemon_name.strip().lower()
+
+    # 1. Check saved custom sprites in MongoDB first (e.g., Peakychu, Prof Tangrowth)
+    config = await db["starboard_config"].find_one({"guild_id": guild_id}) or {}
+    custom_sprites = config.get("custom_sprites", {})
+    if clean_name in custom_sprites and custom_sprites[clean_name].get("normal"):
+        return custom_sprites[clean_name]["normal"]
+
+    # 2. Build Showdown static PNG slug
+    clean = clean_name.replace("é", "e")
+    region_map = {
+        "alolan": "alola",
+        "galarian": "galar",
+        "hisuian": "hisui",
+        "paldean": "paldea",
+    }
+    region_found = ""
+    for reg_key, reg_val in region_map.items():
+        if clean.startswith(f"{reg_key} "):
+            region_found = f"-{reg_val}"
+            clean = clean[len(reg_key) + 1 :].strip()
+
+    slug = clean.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
+    slug = re.sub(r"-+", "-", slug).strip("-") + region_found
+
+    return f"https://play.pokemonshowdown.com/sprites/pokemon/{slug}.png"
+
+
+def build_spawn_alert_message(
+    formatted_target: str,
+    emojis_str: str,
+    accuracy_score: int,
+    best_name: str,
+    sh_pings: list[str],
+    col_pings: list[str],
+    res_pings: list[str],
+    thumbnail_url: str | None = None,
+) -> tuple[str, discord.Embed]:
+    header_line = f"> **{formatted_target}** {emojis_str} : **{accuracy_score}%**".strip()
+    best_name_line = f"> **Best name:** {best_name}"
+
+    lines = [f"{header_line}\n{best_name_line}"]
+
+    ping_section = []
+    if sh_pings:
+        ping_section.append(f"**Shiny hunt pings:** {', '.join(sh_pings)}")
+    if col_pings:
+        ping_section.append(f"**Collection pings:** {', '.join(col_pings)}")
+    if res_pings:
+        ping_section.append(f"**Reserved pings:** {', '.join(res_pings)}")
+
+    if ping_section:
+        lines.append("\n".join(ping_section))
+
+    lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {best_name}`")
+
+    side_embed = discord.Embed(
+        title=formatted_target,
+        description=f"**Copy Below**\n`@Pokétwo#8236 c {best_name}`",
+        color=0x2B2D31,
+    )
+    if thumbnail_url:
+        side_embed.set_thumbnail(url=thumbnail_url)
+
+    return "\n\n".join(lines), side_embed
+
+
+# ==========================================
 # ⚡ SPAWN LISTENER & AUTO-LEARNER
 # ==========================================
 async def process_spawn_message(message: discord.Message):
@@ -419,26 +490,22 @@ async def process_spawn_message(message: discord.Message):
                         only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
 
                         best_name = get_best_name(formatted_target)
-
                         emojis_str = " ".join(type_emojis) if type_emojis else ""
-                        header_line = f"**{formatted_target}** {emojis_str} : {accuracy_score}%".strip()
-
-                        output_lines = [
-                            header_line,
-                            f'Best name: {best_name}'
-                        ]
-                        if sh_pings:
-                            output_lines.append(f"Shiny hunt pings: {', '.join(sh_pings)}")
-                        if col_pings:
-                            output_lines.append(f"Collection pings: {', '.join(col_pings)}")
-                        if res_pings:
-                            output_lines.append(f"Reserved pings: {', '.join(res_pings)}")
-
-                        output_lines.append(f'**Click to Copy ->** `@Pokétwo#8236 c {best_name}`')
 
                         has_pings = bool(sh_pings or col_pings or res_pings)
                         if not only_ping_mode or has_pings:
-                            await message.channel.send("\n".join(output_lines))
+                            sprite_url = await resolve_spawn_sprite_url(guild_id, formatted_target)
+                            alert_content, side_embed = build_spawn_alert_message(
+                                formatted_target=formatted_target,
+                                emojis_str=emojis_str,
+                                accuracy_score=accuracy_score,
+                                best_name=best_name,
+                                sh_pings=sh_pings,
+                                col_pings=col_pings,
+                                res_pings=res_pings,
+                                thumbnail_url=sprite_url,
+                            )
+                            await message.channel.send(content=alert_content, embed=side_embed)
 
     except Exception as e:
         print(f"Error in spawn/spy listener: {e}")
