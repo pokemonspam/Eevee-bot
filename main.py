@@ -347,7 +347,7 @@ async def learn_embed(ctx):
 async def resolve_spawn_sprite_url(guild_id: int, pokemon_name: str) -> str:
     clean_name = pokemon_name.strip().lower()
 
-    # 1. Check saved custom sprites in MongoDB first (safe against DB errors)
+    # 1. Check saved custom sprites in MongoDB first (e.g., Peakychu, Prof Tangrowth)
     try:
         config = await db["starboard_config"].find_one({"guild_id": guild_id}) or {}
         custom_sprites = config.get("custom_sprites", {})
@@ -373,7 +373,8 @@ async def resolve_spawn_sprite_url(guild_id: int, pokemon_name: str) -> str:
     slug = clean.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
     slug = re.sub(r"-+", "-", slug).strip("-") + region_found
 
-    return f"https://play.pokemonshowdown.com/sprites/pokemon/{slug}.png"
+    showdown_url = f"https://play.pokemonshowdown.com/sprites/pokemon/{slug}.png"
+    return showdown_url
 
 
 def build_spawn_alert_message(
