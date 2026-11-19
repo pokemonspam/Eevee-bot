@@ -347,11 +347,14 @@ async def learn_embed(ctx):
 async def resolve_spawn_sprite_url(guild_id: int, pokemon_name: str) -> str:
     clean_name = pokemon_name.strip().lower()
 
-    # 1. Check saved custom sprites in MongoDB first (e.g., Peakychu, Prof Tangrowth)
-    config = await db["starboard_config"].find_one({"guild_id": guild_id}) or {}
-    custom_sprites = config.get("custom_sprites", {})
-    if clean_name in custom_sprites and custom_sprites[clean_name].get("normal"):
-        return custom_sprites[clean_name]["normal"]
+    # 1. Check saved custom sprites in MongoDB first (safe against DB errors)
+    try:
+        config = await db["starboard_config"].find_one({"guild_id": guild_id}) or {}
+        custom_sprites = config.get("custom_sprites", {})
+        if clean_name in custom_sprites and custom_sprites[clean_name].get("normal"):
+            return custom_sprites[clean_name]["normal"]
+    except Exception as db_err:
+        print(f"Custom sprite lookup note: {db_err}")
 
     # 2. Build Showdown static PNG slug
     clean = clean_name.replace("é", "e")
@@ -386,18 +389,14 @@ def build_spawn_alert_message(
     header_line = f"> **{formatted_target}** {emojis_str} : **{accuracy_score}%**".strip()
     best_name_line = f"> **Best name:** {best_name}"
 
-    lines = [f"{header_line}\n{best_name_line}"]
+    lines = [header_line, best_name_line]
 
-    ping_section = []
     if sh_pings:
-        ping_section.append(f"**Shiny hunt pings:** {', '.join(sh_pings)}")
+        lines.append(f"**Shiny hunt pings:** {', '.join(sh_pings)}")
     if col_pings:
-        ping_section.append(f"**Collection pings:** {', '.join(col_pings)}")
+        lines.append(f"**Collection pings:** {', '.join(col_pings)}")
     if res_pings:
-        ping_section.append(f"**Reserved pings:** {', '.join(res_pings)}")
-
-    if ping_section:
-        lines.append("\n".join(ping_section))
+        lines.append(f"**Reserved pings:** {', '.join(res_pings)}")
 
     lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {best_name}`")
 
@@ -409,7 +408,7 @@ def build_spawn_alert_message(
     if thumbnail_url:
         side_embed.set_thumbnail(url=thumbnail_url)
 
-    return "\n\n".join(lines), side_embed
+    return "\n".join(lines), side_embed
 
 
 # ==========================================
