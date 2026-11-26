@@ -1,1760 +1,712 @@
 import os
-import re
 import io
-import aiohttp
+import json
+import random
 import asyncio
-import numpy as np
-import certifi
-import streamlit as st
-# import tensorflow as tf
-from PIL import Image, ImageOps, ImageEnhance
-from aiohttp import web
+from datetime import datetime, timezone, timedelta
+import aiohttp
+from PIL import Image, ImageDraw
 import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
-# from tensorflow.keras.models import load_model
-# from tensorflow.keras.applications.efficientnet import preprocess_input
-from huggingface_hub import hf_hub_download
-from pymongo import MongoClient
-import requests
-import json
-import shutil
-import threading
 
-# --- 1. Streamlit Status UI ---
-st.title("⚡ Eevee Bot Dashboard")
-st.write("Streamlit app is active and your Discord bot code is running!")
+# ==========================================
+# ⚙️ CONFIG & DATABASE
+# ==========================================
+TOKEN = os.getenv("DISCORD_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
+# Optional: Put your Discord User ID here (or leave None for auto-detection from Discord App Owner)
+OWNER_ID = int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else None
 
-# --- 2. Model Loading Logic (TensorFlow Archived / Commented Out) ---
-MODEL_PATH = "pokemon_model.keras"
-model = None
-
-# --- 2.5. DOWNLOAD & LOAD CLASSES.JSON (Archived / Commented Out) ---
-CLASSES_PATH = "classes.json"
-CLASS_NAMES = []
-
-# --- 3. Database Connection ---
-MONGO_URI = st.secrets.get("MONGO_URI") or os.getenv("MONGO_URI")
-if MONGO_URI:
-    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-    st.success("✅ Connected to MongoDB successfully!")
-else:
-    st.error("❌ MONGO_URI not found in Streamlit Secrets!")
-
-async def clean_database():
-    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
-    db = mongo_client["pokemon_bot"]
-    phash_col = db["phash_database"]
-
-    # Delete corrupted records
-    res1 = await phash_col.delete_one({"pokemon": {"$regex": "^sobble$", "$options": "i"}})
-    res2 = await phash_col.delete_one({"pokemon": {"$regex": "^pikipek$", "$options": "i"}})
-    res = await phash_col.delete_one({"pokemon": {"$regex": "^roserade$", "$options": "i"}})
-    print(f"🗑️ Cleaned database - Sobble removed: {res1.deleted_count}, Pikipek removed: {res2.deleted_count}, Roserade removed: {res.deleted_count}")
-
-try:
-    asyncio.run(clean_database())
-except RuntimeError:
-    pass
-
-# Import dataset helpers, registries, type emoji lookup, and best name function from dataset.py
-from dataset import (
-    parse_pokemon_list,
-    format_pokemon_name,
-    get_evolution_family,
-    get_pokemon_variants,
-    get_base_pokemon,
-    validate_species,
-    get_pokemon_type_emojis,
-    get_best_name,  # ✨ Imported best name generator function
-    POKEMON_FORMS,
-    REGIONAL_FORMS
-)
-
-# Setup Bot Client with Server Members Intent Enabled
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # ✨ Required for collection and shiny pings to resolve members
-bot = commands.Bot(command_prefix=("E!", "e!"), intents=intents)
+bot = commands.Bot(command_prefix=("p!", "P!"), owner_id=OWNER_ID, intents=intents)
 
-# Setup MongoDB
-mongo_url = os.getenv("MONGO_URI")
-mongo_client = AsyncIOMotorClient(mongo_url)
-db = mongo_client["pokemon_bot"]
-bot.db = db
+mongo = AsyncIOMotorClient(MONGO_URI)
+db = mongo["poketwo_mini"]
+users_col = db["users"]
 
-# Memory cache for active channel spawns to map to naming bot outputs
-bot.recent_spawns = {}
+POKEDEX_FILE = "pokedex.json"
+POKEDEX: list[dict] = []          # [{"dex_id": 25, "name": "Pikachu", "slug": "pikachu", "rarity": 40}, ...]
+POKEDEX_BY_NAME: dict[str, dict] = {}
+EMOJI_CACHE: dict[str, str] = {}   # {"pikachu": "<:pikachu:123456789>"}
 
-# -------------------------------------------------------------
-# DUMMY PORT SERVER FOR RENDER FREE WEB SERVICE
-# -------------------------------------------------------------
-async def handle_ping(request):
-    return web.Response(text="Bot is alive!")
+STARTERS = ["Bulbasaur", "Charmander", "Squirtle", "Pikachu", "Eevee", "Rowlet", "Froakie", "Sprigatito"]
+LEGENDARY_IDS = {
+    144, 145, 146, 150, 151, 243, 244, 245, 249, 250, 251,
+    377, 378, 379, 380, 381, 382, 383, 384, 385, 386,
+    480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493,
+    494, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649,
+    716, 717, 718, 719, 720, 721, 785, 786, 787, 788, 789, 790, 791, 792, 800, 801, 802, 807, 808, 809,
+    888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898,
+    905, 1001, 1002, 1003, 1004, 1007, 1008, 1014, 1015, 1016, 1017, 1024, 1025,
+}
 
-async def start_dummy_server():
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))  # Render automatically sets PORT
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"✅ Dummy web server listening on port {port}")
+# ==========================================
+# 📚 POKÉDEX LOADER & APPLICATION EMOJI SYNC
+# ==========================================
+async def load_pokedex():
+    global POKEDEX, POKEDEX_BY_NAME
+    if os.path.exists(POKEDEX_FILE):
+        with open(POKEDEX_FILE, "r", encoding="utf-8") as f:
+            POKEDEX = json.load(f)
+    else:
+        print("⏳ Fetching 1,025 Pokémon from PokéAPI (one-time setup)...")
+        url = "https://pokeapi.co/api/v2/pokemon?limit=1025"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
 
+        entries = []
+        for idx, item in enumerate(data["results"], start=1):
+            slug = item["name"]
+            display_name = slug.replace("-", " ").title()
+            rarity = 3 if idx in LEGENDARY_IDS else 35
+            entries.append({"dex_id": idx, "name": display_name, "slug": slug, "rarity": rarity})
 
-@bot.event
-async def setup_hook():
+        with open(POKEDEX_FILE, "w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2)
+        POKEDEX = entries
+
+    POKEDEX_BY_NAME = {p["name"].lower(): p for p in POKEDEX}
+    print(f"✅ Loaded {len(POKEDEX)} Pokémon into Pokédex.")
+
+async def ensure_pokemon_emoji(mon: dict) -> str:
+    """Fetches or uploads a small box icon as a Bot Application Emoji on demand."""
+    slug = mon["slug"]
+    if slug in EMOJI_CACHE:
+        return EMOJI_CACHE[slug]
+
+    emoji_name = slug.replace("-", "_")[:32]
     try:
-        await bot.load_extension("starboard")
-        print("✅ Loaded starboard extension successfully!")
+        if not EMOJI_CACHE:
+            existing = await bot.fetch_application_emojis()
+            for e in existing:
+                EMOJI_CACHE[e.name.replace("_", "-")] = str(e)
+            if slug in EMOJI_CACHE:
+                return EMOJI_CACHE[slug]
+
+        icon_url = f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-viii/icons/{mon['dex_id']}.png"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(icon_url) as resp:
+                if resp.status == 200:
+                    img_bytes = await resp.read()
+                    created = await bot.create_application_emoji(name=emoji_name, image=img_bytes)
+                    EMOJI_CACHE[slug] = str(created)
+                    return str(created)
     except Exception as e:
-        print(f"⚠️ Starboard extension load note: {e}")
-    
-    # Launch the dummy HTTP server so Render detects an open port
-    asyncio.create_task(start_dummy_server())
+        print(f"Emoji sync note for {slug}: {e}")
 
-reserves_col = db["reserves"]
-collections_col = db["collections"]
-shiny_col = db["shiny_hunts"]
-roles_col = db["staff_roles"]
-settings_col = db["guild_settings"]
-phash_col = db["phash_database"]
+    return "🔹"
 
+async def ensure_user_doc(user_id: int) -> dict:
+    """Fetches user document or creates a fresh starter profile if needed."""
+    user = await users_col.find_one({"user_id": user_id})
+    if not user:
+        user = {
+            "user_id": user_id,
+            "selected": 1,
+            "coins": 0,
+            "shards": 0,
+            "redeems": 0,
+            "catches": 0,
+            "daily_streak": 0,
+            "last_daily": None,
+            "pokemon": [],
+        }
+        await users_col.insert_one(user)
+    return user
 
-# Helper: Check Reserve Staff Permissions
-async def is_staff(ctx):
-    if ctx.author.guild_permissions.administrator:
-        return True
-    doc = await roles_col.find_one({"guild_id": ctx.guild.id})
-    if doc and "roles" in doc:
-        user_role_ids = [role.id for role in ctx.author.roles]
-        if any(rid in doc["roles"] for rid in user_role_ids):
-            return True
-    return False
+# ==========================================
+# 🎨 SPAWN IMAGE GENERATOR (Background + Art)
+# ==========================================
+def get_sprite_url(dex_id: int, shiny: bool = False) -> str:
+    if shiny:
+        return f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/shiny/{dex_id}.png"
+    return f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/{dex_id}.png"
 
+def _generate_fallback_background(width=800, height=500) -> Image.Image:
+    """Creates a clean Pokétwo-style sky + grass field background if no local images exist."""
+    bg = Image.new("RGBA", (width, height))
+    draw = ImageDraw.Draw(bg)
+    for y in range(int(height * 0.65)):
+        r = int(110 + (y / (height * 0.65)) * 60)
+        g = int(195 + (y / (height * 0.65)) * 40)
+        b = 245
+        draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
+    for y in range(int(height * 0.65), height):
+        progress = (y - height * 0.65) / (height * 0.35)
+        r = int(76 - progress * 25)
+        g = int(175 - progress * 45)
+        b = int(80 - progress * 25)
+        draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
+    return bg
+
+async def create_spawn_banner(dex_id: int) -> discord.File:
+    bg_folder = "backgrounds"
+    if os.path.isdir(bg_folder):
+        bg_files = [f for f in os.listdir(bg_folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+    else:
+        bg_files = []
+
+    if bg_files:
+        bg = Image.open(os.path.join(bg_folder, random.choice(bg_files))).convert("RGBA").resize((800, 500))
+    else:
+        bg = _generate_fallback_background(800, 500)
+
+    art_url = get_sprite_url(dex_id, shiny=False)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(art_url) as resp:
+            art_bytes = await resp.read()
+
+    sprite = Image.open(io.BytesIO(art_bytes)).convert("RGBA").resize((290, 290), Image.Resampling.LANCZOS)
+    paste_x = (bg.width - sprite.width) // 2
+    paste_y = (bg.height - sprite.height) // 2 + 25
+    bg.alpha_composite(sprite, (paste_x, paste_y))
+
+    buf = io.BytesIO()
+    bg.convert("RGB").save(buf, format="JPEG", quality=90)
+    buf.seek(0)
+    return discord.File(fp=buf, filename="spawn.jpg")
+
+def generate_pokemon_data(mon_entry: dict) -> dict:
+    ivs = [random.randint(0, 31) for _ in range(6)]
+    iv_percent = round((sum(ivs) / 186) * 100, 2)
+    is_shiny = random.randint(1, 4096) == 1
+    return {
+        "dex_id": mon_entry["dex_id"],
+        "name": mon_entry["name"],
+        "slug": mon_entry["slug"],
+        "level": random.randint(1, 40),
+        "ivs": ivs,
+        "iv_percent": iv_percent,
+        "shiny": is_shiny,
+    }
+
+# ==========================================
+# ⚡ SPAWN & INCENSE ENGINE
+# ==========================================
+channel_state: dict[int, dict] = {}
+active_incense: set[int] = set()
+SPAWN_THRESHOLD = 15
+
+async def trigger_spawn(channel: discord.TextChannel, forced_mon: dict = None):
+    if forced_mon:
+        chosen = forced_mon
+    else:
+        weights = [p["rarity"] for p in POKEDEX]
+        chosen = random.choices(POKEDEX, weights=weights, k=1)[0]
+
+    channel_state[channel.id] = {"count": 0, "spawn": chosen}
+
+    banner_file = await create_spawn_banner(chosen["dex_id"])
+    embed = discord.Embed(
+        title="A wild pokémon has appeared!",
+        description="Guess the pokémon and type `p!catch <pokémon>` to catch it!",
+        color=0x2B2D31,
+    )
+    embed.set_image(url="attachment://spawn.jpg")
+    await channel.send(file=banner_file, embed=embed)
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
-    await bot.change_presence(activity=discord.Game(name="E!sh | E!cl | E!r | E!learn"))
-
-
-# ==========================================
-# 🎨 CANVAS PROCESSOR
-# ==========================================
-def process_image_canvas(img: Image.Image) -> Image.Image:
-    """Converts transparent WEBP/PNG images to RGB by placing them on a clean white background."""
-    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-        converted = img.convert("RGBA")
-        canvas = Image.new("RGBA", converted.size, (255, 255, 255, 255))
-        canvas.alpha_composite(converted)
-        return canvas.convert("RGB")
-    return img.convert("RGB")
-
-
-# ==========================================
-# 🧠 HUGGING FACE VISION API HELPER (SESSION & RETRY FIXED)
-# ==========================================
-HF_API_URL = "https://api-inference.huggingface.co/models/imzynoxprince/pokemons-image-classifier-gen1-gen9"
-
-def _sync_hf_post(url, headers, image_bytes):
+    await load_pokedex()
     try:
-        session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(max_retries=3)
-        session.mount("https://", adapter)
-        response = session.post(url, headers=headers, data=image_bytes, timeout=25)
-        return response.status_code, response.text
-    except requests.exceptions.RequestException as req_err:
-        return 502, f"Request Exception: {req_err}"
+        existing = await bot.fetch_application_emojis()
+        for e in existing:
+            EMOJI_CACHE[e.name.replace("_", "-")] = str(e)
+        print(f"✅ Cached {len(EMOJI_CACHE)} Pokémon Application Emojis.")
     except Exception as e:
-        return 0, str(e)
-
-async def identify_pokemon_via_hf(image_bytes: bytes) -> str:
-    token = st.secrets.get("HF_TOKEN") or os.getenv("HF_TOKEN")
-    if not token:
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {token.strip()}",
-        "Content-Type": "application/octet-stream"
-    }
-
-    status_code, resp_text = await asyncio.to_thread(_sync_hf_post, HF_API_URL, headers, image_bytes)
-    
-    if status_code == 200:
-        try:
-            result = json.loads(resp_text)
-            if isinstance(result, list) and len(result) > 0:
-                top_pred = result[0]
-                confidence = top_pred.get("score", 0.0)
-                if confidence >= 0.01:
-                    raw_name = top_pred.get("label", "").lower()
-                    if validate_species(raw_name):
-                        return raw_name
-        except Exception as e:
-            print(f"HF JSON parse error: {e}")
-    else:
-        print(f"⚠️ HF API Status {status_code}: {resp_text[:200]}")
-
-    return None
-
-
-# ==========================================
-# ⚡ PURE AI IDENTIFICATION ENGINE (HF API FIRST)
-# ==========================================
-async def identify_pokemon_ai_engine(image_bytes: bytes):
-    try:
-        # 1. Try Hugging Face Vision API First (Guaranteed Accurate Labels)
-        hf_result = await identify_pokemon_via_hf(image_bytes)
-        if hf_result:
-            formatted_hf = format_pokemon_name(hf_result)
-            type_emojis = get_pokemon_type_emojis(formatted_hf)
-            return {"pokemon": formatted_hf, "shortest_name": formatted_hf.lower(), "type_emojis": type_emojis}, 95
-
-        # 2. Fallback to Local TensorFlow Model if HF API is unavailable
-        if model is not None:
-            raw_img = Image.open(io.BytesIO(image_bytes))
-            if hasattr(raw_img, "seek"):
-                raw_img.seek(0)
-            spawn_img = process_image_canvas(raw_img)
-
-            model_img = ImageOps.pad(spawn_img, (160, 160), method=Image.Resampling.BILINEAR, color=(255, 255, 255))
-            img_array = np.array(model_img, dtype=np.float32)
-            img_array = np.expand_dims(img_array, axis=0)
-
-            preds = model.predict(img_array, verbose=0)
-            pred_idx = int(np.argmax(preds[0]))
-            confidence = float(np.max(preds[0]))
-
-            if CLASS_NAMES and pred_idx < len(CLASS_NAMES):
-                predicted_pokemon = CLASS_NAMES[pred_idx]
-                if validate_species(predicted_pokemon):
-                    formatted_pred = format_pokemon_name(predicted_pokemon)
-                    type_emojis = get_pokemon_type_emojis(formatted_pred)
-                    return {"pokemon": formatted_pred, "shortest_name": formatted_pred.lower(), "type_emojis": type_emojis}, int(confidence * 100)
-
-    except Exception as e:
-        print(f"AI identification error: {e}")
-
-    return {"pokemon": "Pikachu", "shortest_name": "pikachu", "type_emojis": get_pokemon_type_emojis("Pikachu")}, 5
-
-# ==========================================
-# 📚 EMBED DEX LEARNER COMMAND (E!learn)
-# ==========================================
-@bot.command(name="learn")
-async def learn_embed(ctx):
-    if not ctx.message.reference:
-        await ctx.send(embed=discord.Embed(description="❌ Please reply to a Pokémon info embed.", color=discord.Color.red()))
-        return
-
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    except Exception:
-        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
-        return
-
-    if not replied_msg.embeds:
-        await ctx.send(embed=discord.Embed(description="❌ The replied message does not contain an embed.", color=discord.Color.red()))
-        return
-
-    embed = replied_msg.embeds[0]
-    embed_text = embed.description or ""
-    for field in embed.fields:
-        embed_text += f"\n{field.name}\n{field.value}"
-
-    pokemon_name = None
-    alt_names = []
-    types_list = []
-    type_emojis = []
-
-    lines = embed_text.split("\n")
-    current_section = None
-
-    for line in lines:
-        line_stripped = line.strip()
-        if "Types" in line_stripped:
-            current_section = "types"
-            continue
-        elif "Names" in line_stripped:
-            current_section = "names"
-            continue
-        elif "Appearance" in line_stripped or "Region" in line_stripped or "Base Stats" in line_stripped:
-            current_section = None
-            continue
-
-        if current_section == "types":
-            if line_stripped:
-                types_list.append(line_stripped)
-                found_emojis = re.findall(r"<a?:[a-zA-Z0-9\_]+:\d+>|[\U0001f300-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\u2600-\u27bf]", line_stripped)
-                type_emojis.extend(found_emojis)
-        elif current_section == "names":
-            if any(flag in line_stripped for flag in ["🇬🇧", "🇯🇵", "🇩🇪", "🇫🇷", "🇪🇸"]):
-                parts = line_stripped.split()
-                if len(parts) >= 2:
-                    alt_name = " ".join(parts[1:])
-                    if re.match(r"^[A-Za-z\s\.\'\-]+$", alt_name):
-                        alt_names.append(alt_name)
-                    if "🇬🇧" in line_stripped and re.match(r"^[A-Za-z\s\.\'\-]+$", alt_name):
-                        pokemon_name = alt_name
-
-    full_embed_header = (embed.title or "") + " " + (embed.description or "")
-    for region in ["Hisuian", "Galarian", "Alolan", "Paldean"]:
-        if region.lower() in full_embed_header.lower() and pokemon_name and not pokemon_name.lower().startswith(region.lower()):
-            pokemon_name = f"{region} {pokemon_name}"
-
-    if not pokemon_name and alt_names:
-        pokemon_name = alt_names[0]
-
-    if not pokemon_name:
-        await ctx.send(embed=discord.Embed(description="❌ Could not parse Pokémon details from this embed layout.", color=discord.Color.red()))
-        return
-
-    formatted_name = format_pokemon_name(pokemon_name.lower())
-    all_valid_names = [formatted_name] + alt_names
-    shortest_copy_name = min(all_valid_names, key=len).lower()
-
-    # Save details & short names directly to database collection
-    await db["pokemon_dex"].update_one(
-        {"pokemon": {"$regex": f"^{re.escape(formatted_name)}$", "$options": "i"}},
-        {
-            "$set": {
-                "pokemon": formatted_name,
-                "shortest_name": shortest_copy_name,
-                "alt_names": list(dict.fromkeys(alt_names)),
-                "types": list(dict.fromkeys(types_list)),
-                "type_emojis": get_pokemon_type_emojis(formatted_name)
-            }
-        },
-        upsert=True
-    )
-
-    await ctx.send(embed=discord.Embed(
-        title="🧠 Dex Info Learned!",
-        description=(
-            f"**Pokémon:** {formatted_name}\n"
-            f"**Shortest Copy Name:** `{shortest_copy_name}`\n"
-            f"**Types Parsed:** {', '.join(types_list) if types_list else 'None'}\n"
-            f"**Status:** Dex info stored successfully! ✅"
-        ),
-        color=discord.Color.green()
-    ))
-
-
-# ==========================================
-# 🖼️ STATIC SPRITE RESOLVER & SPAWN ALERT UI
-# ==========================================
-async def resolve_spawn_sprite_url(guild_id: int, pokemon_name: str) -> str:
-    clean_name = pokemon_name.strip().lower()
-
-    # 1. Check saved custom sprites in MongoDB first (e.g., Peakychu, Prof Tangrowth)
-    try:
-        config = await db["starboard_config"].find_one({"guild_id": guild_id}) or {}
-        custom_sprites = config.get("custom_sprites", {})
-        if clean_name in custom_sprites and custom_sprites[clean_name].get("normal"):
-            return custom_sprites[clean_name]["normal"]
-    except Exception as db_err:
-        print(f"Custom sprite lookup note: {db_err}")
-
-    # 2. Build Showdown static PNG slug
-    clean = clean_name.replace("é", "e")
-    region_map = {
-        "alolan": "alola",
-        "galarian": "galar",
-        "hisuian": "hisui",
-        "paldean": "paldea",
-    }
-    region_found = ""
-    for reg_key, reg_val in region_map.items():
-        if clean.startswith(f"{reg_key} "):
-            region_found = f"-{reg_val}"
-            clean = clean[len(reg_key) + 1 :].strip()
-
-    slug = clean.replace(".", "").replace("'", "").replace(":", "").replace(" ", "-")
-    slug = re.sub(r"-+", "-", slug).strip("-") + region_found
-
-    showdown_url = f"https://play.pokemonshowdown.com/sprites/pokemon/{slug}.png"
-    return showdown_url
-
-
-def build_spawn_alert_message(
-    formatted_target: str,
-    emojis_str: str,
-    accuracy_score: int,
-    best_name: str,
-    sh_pings: list[str],
-    col_pings: list[str],
-    res_pings: list[str],
-    thumbnail_url: str | None = None,
-) -> tuple[str, discord.Embed]:
-    header_line = f"> **{formatted_target}** {emojis_str} : **{accuracy_score}%**".strip()
-    best_name_line = f"> **Best name:** {best_name}"
-
-    lines = [header_line, best_name_line]
-
-    if sh_pings:
-        lines.append(f"**Shiny hunt pings:** {', '.join(sh_pings)}")
-    if col_pings:
-        lines.append(f"**Collection pings:** {', '.join(col_pings)}")
-    if res_pings:
-        lines.append(f"**Reserved pings:** {', '.join(res_pings)}")
-
-    lines.append(f"**Click to Copy ->** `@Pokétwo#8236 c {best_name}`")
-
-    side_embed = discord.Embed(
-        title=formatted_target,
-        description=f"**Copy Below**\n`@Pokétwo#8236 c {best_name}`",
-        color=0x2B2D31,
-    )
-    if thumbnail_url:
-        side_embed.set_thumbnail(url=thumbnail_url)
-
-    return "\n".join(lines), side_embed
-
-
-# ==========================================
-# ⚡ SPAWN LISTENER & AUTO-LEARNER
-# ==========================================
-async def process_spawn_message(message: discord.Message):
-    try:
-        if message.author.id == bot.user.id:
-            return
-
-        if message.guild and message.author.id == 716390085896962058:
-            if message.embeds:
-                embed = message.embeds[0]
-                embed_text = f"{embed.title or ''} {embed.description or ''}".lower()
-                if "has appeared" in embed_text:
-                    matched_doc = None
-                    spawned_pokemon = None
-                    shortest_name = None
-                    type_emojis = []
-                    accuracy_score = 0
-
-                    if embed.image and embed.image.url:
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.get(embed.image.url) as resp:
-                                    if resp.status == 200:
-                                        image_bytes = await resp.read()
-                                        raw_spawn = Image.open(io.BytesIO(image_bytes))
-                                        if hasattr(raw_spawn, "seek"):
-                                            raw_spawn.seek(0)
-                                        spawn_img = process_image_canvas(raw_spawn)
-                                        
-                                        bot.recent_spawns[message.channel.id] = {
-                                            "image_obj": spawn_img
-                                        }
-
-                                        matched_doc, accuracy_score = await identify_pokemon_ai_engine(image_bytes)
-
-                                        if matched_doc:
-                                            spawned_pokemon = matched_doc.get("pokemon")
-                                            shortest_name = matched_doc.get("shortest_name", spawned_pokemon.lower() if spawned_pokemon else "")
-                                            type_emojis = matched_doc.get("type_emojis", [])
-
-                        except Exception as hash_err:
-                            print(f"Vision processing error: {hash_err}")
-
-                    if spawned_pokemon:
-                        guild_id = message.guild.id
-                        target_clean = spawned_pokemon.lower()
-                        formatted_target = format_pokemon_name(target_clean)
-
-                        sh_pings = []
-                        col_pings = []
-                        res_pings = []
-
-                        sh_cursor = shiny_col.find({"target": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                        sh_users = await sh_cursor.to_list(length=100)
-                        for doc in sh_users:
-                            member = message.guild.get_member(doc["user_id"])
-                            if member:
-                                sh_pings.append(member.mention)
-
-                        col_cursor = collections_col.find({"pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                        col_users = await col_cursor.to_list(length=100)
-                        for doc in col_users:
-                            member = message.guild.get_member(doc["user_id"])
-                            if member:
-                                col_pings.append(member.mention)
-
-                        res_cursor = reserves_col.find({"guild_id": guild_id, "pokemon": {"$regex": f"^{re.escape(formatted_target)}$", "$options": "i"}})
-                        res_users = await res_cursor.to_list(length=100)
-                        for doc in res_users:
-                            member = message.guild.get_member(doc["user_id"])
-                            if member:
-                                res_pings.append(member.mention)
-
-                        guild_setting = await settings_col.find_one({"guild_id": guild_id})
-                        only_ping_mode = guild_setting.get("only_ping", True) if guild_setting else True
-
-                        best_name = get_best_name(formatted_target)
-                        emojis_str = " ".join(type_emojis) if type_emojis else ""
-
-                        has_pings = bool(sh_pings or col_pings or res_pings)
-                        if not only_ping_mode or has_pings:
-                            sprite_url = await resolve_spawn_sprite_url(guild_id, formatted_target)
-                            alert_content, side_embed = build_spawn_alert_message(
-                                formatted_target=formatted_target,
-                                emojis_str=emojis_str,
-                                accuracy_score=accuracy_score,
-                                best_name=best_name,
-                                sh_pings=sh_pings,
-                                col_pings=col_pings,
-                                res_pings=res_pings,
-                                thumbnail_url=sprite_url,
-                            )
-                            await message.channel.send(content=alert_content, embed=side_embed)
-
-    except Exception as e:
-        print(f"Error in spawn/spy listener: {e}")
+        print(f"Emoji cache note: {e}")
+    print(f"⚡ Pokétwo Mini online as {bot.user}")
 
 @bot.event
 async def on_message(message: discord.Message):
-    await process_spawn_message(message)
+    if message.author.bot or not message.guild:
+        return
+
+    if not message.content.lower().startswith("p!"):
+        state = channel_state.setdefault(message.channel.id, {"count": 0, "spawn": None})
+        state["count"] += 1
+        if state["count"] >= SPAWN_THRESHOLD:
+            await trigger_spawn(message.channel)
+
     await bot.process_commands(message)
 
-@bot.event
-async def on_message_edit(before: discord.Message, after: discord.Message):
-    """Triggers identification when Pokétwo edits an incense spawn embed in place."""
-    await asyncio.sleep(0.6)  # Give Discord CDN time to update the image URL
-    await process_spawn_message(after)
-
-
 # ==========================================
-# 🧪 TEST SPAWN COMMAND (E!testspawn - WITH REQUESTS & DIAGNOSTICS)
+# 🎮 STARTER, CATCHING & COLLECTION
 # ==========================================
-@bot.command(name="testspawn")
-async def test_spawn(ctx):
-    if not ctx.message.reference:
+@bot.command(name="start")
+async def start_game(ctx, *, choice: str = None):
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if user and user.get("pokemon"):
+        await ctx.send("❌ You already started! Use `p!pokemon` to view your Pokémon.")
+        return
+
+    if not choice:
+        starter_list = ", ".join(f"**{s}**" for s in STARTERS)
         embed = discord.Embed(
-            description="❌ Please reply to an existing Pokétwo spawn message to test it.",
-            color=discord.Color.red()
+            title="Welcome to Pokétwo Mini!",
+            description=f"Choose a starter using `p!start <name>`:\n\n{starter_list}",
+            color=discord.Color.green(),
         )
         await ctx.send(embed=embed)
         return
 
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    except Exception:
-        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
+    matched = next((s for s in STARTERS if s.lower() == choice.strip().lower()), None)
+    if not matched:
+        await ctx.send(f"❌ Invalid starter. Pick from: {', '.join(STARTERS)}")
         return
 
-    if not replied_msg.embeds:
-        await ctx.send(embed=discord.Embed(description="❌ The replied message does not contain an embed.", color=discord.Color.red()))
+    entry = POKEDEX_BY_NAME[matched.lower()]
+    starter_mon = generate_pokemon_data(entry)
+    starter_mon["level"] = 5
+    await ensure_pokemon_emoji(entry)
+
+    await users_col.update_one(
+        {"user_id": ctx.author.id},
+        {
+            "$set": {
+                "selected": 1,
+                "pokemon": [starter_mon],
+            },
+            "$inc": {"coins": 500},
+            "$setOnInsert": {
+                "shards": 0,
+                "redeems": 0,
+                "catches": 0,
+                "daily_streak": 0,
+                "last_daily": None,
+            },
+        },
+        upsert=True,
+    )
+    await ctx.send(f"🎉 Congratulations {ctx.author.mention}! You chose **{matched}** and received **500 Pokécoins**!")
+
+@bot.command(name="catch", aliases=["c"])
+async def catch_pokemon(ctx, *, guess: str = None):
+    state = channel_state.get(ctx.channel.id)
+    if not state or not state.get("spawn"):
+        await ctx.send("❌ There is no wild pokémon in this channel right now.")
         return
 
-    embed = replied_msg.embeds[0]
-    if not embed.image or not embed.image.url:
-        await ctx.send(embed=discord.Embed(description="❌ The replied message embed has no image.", color=discord.Color.red()))
+    if not guess:
+        await ctx.send("❌ Usage: `p!catch <pokémon name>`")
         return
 
-    token = st.secrets.get("HF_TOKEN") or os.getenv("HF_TOKEN")
-    if not token:
-        await ctx.send(embed=discord.Embed(
-            description="❌ **HF_TOKEN is missing!** Add it to your Streamlit Secrets or Environment Variables.",
-            color=discord.Color.red()
-        ))
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user or not user.get("pokemon"):
+        await ctx.send("❌ Type `p!start` first to begin your journey!")
         return
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(embed.image.url) as img_resp:
-                if img_resp.status != 200:
-                    await ctx.send(embed=discord.Embed(description=f"❌ Failed to download image from Discord CDN (Status {img_resp.status})", color=discord.Color.red()))
-                    return
-                image_bytes = await img_resp.read()
-    except Exception as e:
-        await ctx.send(embed=discord.Embed(description=f"❌ Image download error: `{e}`", color=discord.Color.red()))
+    active_spawn = state["spawn"]
+    if guess.strip().lower() != active_spawn["name"].lower():
+        await ctx.send("❌ That is the wrong pokémon!")
         return
 
-    headers = {
-        "Authorization": f"Bearer {token.strip()}",
-        "Content-Type": "application/octet-stream"
-    }
-    status_code, resp_text = await asyncio.to_thread(_sync_hf_post, HF_API_URL, headers, image_bytes)
+    state["spawn"] = None
+    caught_mon = generate_pokemon_data(active_spawn)
+    emoji_str = await ensure_pokemon_emoji(active_spawn)
 
-    if status_code == 200:
-        try:
-            result = json.loads(resp_text)
-            if isinstance(result, list) and len(result) > 0:
-                top_pred = result[0]
-                confidence = top_pred.get("score", 0.0)
-                raw_name = top_pred.get("label", "").lower()
-                formatted_target = format_pokemon_name(raw_name)
-                best_name = get_best_name(formatted_target)
-                type_emojis = get_pokemon_type_emojis(formatted_target)
-                emojis_str = " ".join(type_emojis) if type_emojis else ""
-                
-                await ctx.send(embed=discord.Embed(
-                    title="🧪 Test Spawn Diagnostics (Success)",
-                    description=(
-                        f"**Raw Label:** `{raw_name}`\n"
-                        f"**Formatted:** {formatted_target} {emojis_str}\n"
-                        f"**Confidence:** `{confidence*100:.1f}%`\n"
-                        f"**Best Name:** `{best_name}`\n\n"
-                        f"**Click to Copy ->** `@Pokétwo#8236 c {best_name}`"
-                    ),
-                    color=discord.Color.green()
-                ))
-            else:
-                await ctx.send(embed=discord.Embed(
-                    title="🧪 Test Spawn Diagnostics (Invalid JSON List)",
-                    description=f"API returned valid JSON, but not a prediction list:\n```{resp_text[:500]}```",
-                    color=discord.Color.gold()
-                ))
-        except Exception as json_err:
-            await ctx.send(embed=discord.Embed(
-                title="🧪 Test Spawn Diagnostics (JSON Parse Error)",
-                description=f"Error: `{json_err}`\nResponse Text:\n```{resp_text[:500]}```",
-                color=discord.Color.gold()
-            ))
-    elif status_code == 503:
-        await ctx.send(embed=discord.Embed(
-            title="🧪 Test Spawn Diagnostics (Model Cold Start - 503)",
-            description=f"⏳ **Hugging Face model is currently loading.** Please wait 30 seconds and try `E!testspawn` again!\n\nResponse:\n```{resp_text[:300]}```",
-            color=discord.Color.gold()
-        ))
-    else:
-        await ctx.send(embed=discord.Embed(
-            title=f"🧪 Test Spawn Diagnostics (API Error {status_code})",
-            description=f"Response Text:\n```{resp_text[:500]}```",
-            color=discord.Color.red()
-        ))
+    new_catches = user.get("catches", 0) + 1
+    coins_earned = random.randint(25, 60)
+    shards_earned = 0
+    bonus_text = ""
 
+    # Milestone catch bonuses (every 10th & 100th catch)
+    if new_catches % 100 == 0:
+        coins_earned += 2500
+        shards_earned += 10
+        bonus_text = f"\n🎊 **100th Catch Milestone!** +2,500 Pokécoins & +10 Shards!"
+    elif new_catches % 10 == 0:
+        coins_earned += 350
+        shards_earned += 1
+        bonus_text = f"\n🏅 **{new_catches}th Catch Milestone!** +350 Pokécoins & +1 Shard!"
 
-# ==========================================
-# ⚙️ ONLYPING TOGGLE COMMAND (E!onlyping)
-# ==========================================
-@bot.group(name="onlyping", invoke_without_command=True)
-async def onlyping_group(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        embed = discord.Embed(
-            description="❌ Only server administrators can configure spawn alert settings.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
+    await users_col.update_one(
+        {"user_id": ctx.author.id},
+        {
+            "$push": {"pokemon": caught_mon},
+            "$inc": {"coins": coins_earned, "shards": shards_earned, "catches": 1},
+        },
+    )
+
+    shiny_text = " ✨ **SHINY!**" if caught_mon["shiny"] else ""
+    await ctx.send(
+        f"🎉 Congratulations {ctx.author.mention}! You caught a Level {caught_mon['level']} "
+        f"{emoji_str} **{caught_mon['name']}** ({caught_mon['iv_percent']}% IV) and received **{coins_earned} Pokécoins**!{shiny_text}{bonus_text}"
+    )
+
+@bot.command(name="hint")
+async def spawn_hint(ctx):
+    state = channel_state.get(ctx.channel.id)
+    if not state or not state.get("spawn"):
+        await ctx.send("❌ There is no wild pokémon right now.")
         return
 
-    guild_setting = await settings_col.find_one({"guild_id": ctx.guild.id})
-    current_status = guild_setting.get("only_ping", True) if guild_setting else True
-    status_str = "Enabled (Only naming when there are pings)" if current_status else "Disabled (Naming every spawn)"
+    name = state["spawn"]["name"]
+    indices = set(random.sample(range(len(name)), max(1, len(name) // 3)))
+    hint_chars = [ch if (i in indices or ch == " ") else r"\_" for i, ch in enumerate(name)]
+    await ctx.send(f"🔍 The wild pokémon is: **{''.join(hint_chars)}**")
+
+@bot.command(name="pokemon", aliases=["p"])
+async def list_pokemon(ctx, page: int = 1):
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user or not user.get("pokemon"):
+        await ctx.send("❌ You have no pokémon yet! Use `p!start`.")
+        return
+
+    mons = user["pokemon"]
+    per_page = 15
+    total_pages = max(1, (len(mons) + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * per_page
+    slice_mons = mons[start : start + per_page]
+
+    lines = []
+    for idx, m in enumerate(slice_mons, start=start + 1):
+        emoji = EMOJI_CACHE.get(m["slug"], "🔹")
+        star = "✨ " if m.get("shiny") else ""
+        sel = " **(Selected)**" if idx == user.get("selected", 1) else ""
+        lines.append(f"`{idx}` | {emoji} {star}**{m['name']}** • Lvl. {m['level']} • {m['iv_percent']}%{sel}")
 
     embed = discord.Embed(
-        title="⚙️ OnlyPing Settings",
-        description=f"**Current Status:** {status_str}\n\n**Usage:**\n`E!onlyping enable` - Name only when there are pings.\n`E!onlyping disable` - Name every spawn regardless of pings.",
-        color=discord.Color.blue()
+        title=f"{ctx.author.display_name}'s Pokémon (Page {page}/{total_pages})",
+        description="\n".join(lines),
+        color=discord.Color.blue(),
     )
+    embed.set_footer(text=f"Total: {len(mons)} | Use p!select <number> or p!info <number>")
     await ctx.send(embed=embed)
 
-@onlyping_group.command(name="enable")
-async def onlyping_enable(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        embed = discord.Embed(
-            description="❌ Only server administrators can configure spawn alert settings.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
+@bot.command(name="select", aliases=["s"])
+async def select_pokemon(ctx, number: int = None):
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user or not user.get("pokemon"):
+        await ctx.send("❌ You have no pokémon.")
         return
 
-    await settings_col.update_one(
-        {"guild_id": ctx.guild.id},
-        {"$set": {"only_ping": True}},
-        upsert=True
-    )
-    embed = discord.Embed(
-        description="✅ **OnlyPing enabled!** The bot will now only name/alert spawns when there are active pings.",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
-
-@onlyping_group.command(name="disable")
-async def onlyping_disable(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        embed = discord.Embed(
-            description="❌ Only server administrators can configure spawn alert settings.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
+    if not number or number < 1 or number > len(user["pokemon"]):
+        await ctx.send(f"❌ Pick a valid number between `1` and `{len(user['pokemon'])}`.")
         return
 
-    await settings_col.update_one(
-        {"guild_id": ctx.guild.id},
-        {"$set": {"only_ping": False}},
-        upsert=True
-    )
+    await users_col.update_one({"user_id": ctx.author.id}, {"$set": {"selected": number}})
+    chosen = user["pokemon"][number - 1]
+    await ctx.send(f"✅ Selected your Level {chosen['level']} **{chosen['name']}** (`#{number}`).")
+
+@bot.command(name="info", aliases=["i"])
+async def pokemon_info(ctx, number: int = None):
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user or not user.get("pokemon"):
+        await ctx.send("❌ You have no pokémon.")
+        return
+
+    idx = number or user.get("selected", 1)
+    if idx < 1 or idx > len(user["pokemon"]):
+        await ctx.send("❌ Invalid pokémon number.")
+        return
+
+    m = user["pokemon"][idx - 1]
+    hp, atk, dfn, spa, spd, spe = m["ivs"]
+    star = "✨ " if m.get("shiny") else ""
+
     embed = discord.Embed(
-        description="✅ **OnlyPing disabled!** The bot will now name and alert **every** single spawn.",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
-
-
-# --- Interactive Pagination Views & Rest of Commands ---
-class CollectionPaginationView(discord.ui.View):
-    def __init__(self, user_id, all_pokemon, per_page=20):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.all_pokemon = all_pokemon
-        self.per_page = per_page
-        self.current_page = 1
-        self.total_pages = (len(all_pokemon) + per_page - 1) // per_page
-
-    def get_embed(self):
-        start_idx = (self.current_page - 1) * self.per_page
-        end_idx = start_idx + self.per_page
-        current_mons = self.all_pokemon[start_idx:end_idx]
-
-        lines = [f"• {mon}" for mon in current_mons]
-
-        embed = discord.Embed(
-            title=f"📦 Your Collection (Page {self.current_page}/{self.total_pages})",
-            description="\n".join(lines),
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text=f"Total Pokémon: {len(self.all_pokemon)}")
-        return embed
-
-    @discord.ui.button(label="  ◀️  ", style=discord.ButtonStyle.primary, custom_id="prev_page")
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
-            return
-
-        if self.current_page > 1:
-            self.current_page -= 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
-        else:
-            await interaction.response.defer()
-
-    @discord.ui.button(label="  ▶️  ", style=discord.ButtonStyle.primary, custom_id="next_page")
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This list belongs to someone else.", ephemeral=True)
-            return
-
-        if self.current_page < self.total_pages:
-            self.current_page += 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
-        else:
-            await interaction.response.defer()
-
-
-class ReservePaginationView(discord.ui.View):
-    def __init__(self, author_id, formatted_lines, title="📋 Server Reserves", per_page=20):
-        super().__init__(timeout=60)
-        self.author_id = author_id
-        self.formatted_lines = formatted_lines
-        self.title = title
-        self.per_page = per_page
-        self.current_page = 1
-        self.total_pages = max(1, (len(formatted_lines) + per_page - 1) // per_page)
-
-    def get_embed(self):
-        start_idx = (self.current_page - 1) * self.per_page
-        end_idx = start_idx + self.per_page
-        current_lines = self.formatted_lines[start_idx:end_idx]
-
-        embed = discord.Embed(
-            title=f"{self.title} (Page {self.current_page}/{self.total_pages})",
-            description="\n".join(current_lines) if current_lines else "No active reserves.",
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text=f"Total Reserved Entries: {len(self.formatted_lines)}")
-        return embed
-
-    @discord.ui.button(label="  ◀️  ", style=discord.ButtonStyle.primary, custom_id="reserve_prev")
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
-            return
-
-        if self.current_page > 1:
-            self.current_page -= 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
-        else:
-            await interaction.response.defer()
-
-    @discord.ui.button(label="  ▶️  ", style=discord.ButtonStyle.primary, custom_id="reserve_next")
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
-            return
-
-        if self.current_page < self.total_pages:
-            self.current_page += 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
-        else:
-            await interaction.response.defer()
-
-class ClearConfirmView(discord.ui.View):
-    def __init__(self, author_id, target_user=None, guild_id=None):
-        super().__init__(timeout=30)
-        self.author_id = author_id
-        self.target_user = target_user
-        self.guild_id = guild_id
-        self.confirmed = None
-
-    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger, custom_id="clear_yes")
-    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
-            return
-
-        for child in self.children:
-            child.disabled = True
-
-        if self.target_user:
-            await reserves_col.delete_one({"guild_id": self.guild_id, "user_id": self.target_user.id})
-            embed = discord.Embed(
-                description=f"✅ Cleared all reserves for {self.target_user.mention}.",
-                color=discord.Color.green()
-            )
-        else:
-            await reserves_col.delete_many({"guild_id": self.guild_id})
-            embed = discord.Embed(
-                description="✅ Cleared all reserves across the entire server.",
-                color=discord.Color.green()
-            )
-
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, custom_id="clear_no")
-    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ You cannot interact with this menu.", ephemeral=True)
-            return
-
-        for child in self.children:
-            child.disabled = True
-
-        embed = discord.Embed(
-            description="❌ Reserve clear action canceled.",
-            color=discord.Color.red()
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
-
-@bot.group(name="cl", invoke_without_command=True)
-async def collection_group(ctx):
-    embed = discord.Embed(
-        title="📦 Collection Commands",
+        title=f"Level {m['level']} {star}{m['name']} (#{idx})",
         description=(
-            "**`E!cl`** - Display this collection help list.\n"
-            "**`E!cl list`** - View your personal collection list.\n"
-            "**`E!cl add <mons>`** - Add Pokémon to your collection.\n"
-            "**`E!cl remove <mons>`** - Remove Pokémon from your collection.\n"
-            "**`E!cl clear`** - Clear your entire collection."
+            f"**IVs ({m['iv_percent']}%)**\n"
+            f"• **HP:** {hp}/31\n"
+            f"• **Attack:** {atk}/31\n"
+            f"• **Defense:** {dfn}/31\n"
+            f"• **Sp. Atk:** {spa}/31\n"
+            f"• **Sp. Def:** {spd}/31\n"
+            f"• **Speed:** {spe}/31"
         ),
-        color=discord.Color.blue()
+        color=discord.Color.gold() if m.get("shiny") else discord.Color.green(),
     )
+    embed.set_thumbnail(url=get_sprite_url(m["dex_id"], shiny=m.get("shiny", False)))
     await ctx.send(embed=embed)
 
-
-@collection_group.command(name="list")
-async def collection_list(ctx, page: int = 1):
-    user_doc = await collections_col.find_one({"user_id": ctx.author.id})
-    if not user_doc or not user_doc.get("pokemon"):
-        embed = discord.Embed(
-            description="❌ Your collection is currently empty.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
+@bot.command(name="release")
+async def release_pokemon(ctx, number: int = None):
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user or len(user.get("pokemon", [])) <= 1:
+        await ctx.send("❌ You must keep at least 1 Pokémon!")
         return
 
-    all_pokemon = user_doc["pokemon"]
-    view = CollectionPaginationView(ctx.author.id, all_pokemon)
-    
-    if page >= 1 and page <= view.total_pages:
-        view.current_page = page
+    if not number or number < 1 or number > len(user["pokemon"]):
+        await ctx.send("❌ Specify a valid Pokémon number to release.")
+        return
 
-    if view.total_pages > 1:
-        await ctx.send(embed=view.get_embed(), view=view)
-    else:
-        await ctx.send(embed=view.get_embed())
+    mons = user["pokemon"]
+    released = mons.pop(number - 1)
+    new_sel = min(user.get("selected", 1), len(mons))
 
-
-@collection_group.command(name="add")
-async def collection_add(ctx, *, mons: str = None):
-    try:
-        if not mons:
-            embed = discord.Embed(
-                description="❌ Please specify at least one Pokémon to add.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            return
-
-        raw_list = parse_pokemon_list(mons)
-        final_mons = []
-        display_names = []
-        invalid_items = []
-
-        for item in raw_list:
-            is_all = item.startswith("all ")
-            clean_item = item[4:].strip() if is_all else item.strip()
-            
-            if validate_species(clean_item) or validate_species(item):
-                if is_all:
-                    forms = get_pokemon_variants(clean_item)
-                    final_mons.extend(forms)
-                    display_names.append(f"All {format_pokemon_name(clean_item)}")
-                elif clean_item in POKEMON_FORMS:
-                    base_name = get_base_pokemon(clean_item)
-                    final_mons.append(base_name)
-                    display_names.append(base_name)
-                elif clean_item in REGIONAL_FORMS:
-                    formatted_name = REGIONAL_FORMS[clean_item]
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-                else:
-                    formatted_name = format_pokemon_name(item if validate_species(item) else clean_item)
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-            else:
-                invalid_items.append(item)
-
-        if final_mons:
-            unique_mons = list(dict.fromkeys(final_mons))
-            unique_display = list(dict.fromkeys(display_names))
-
-            # Fetch user's current collection to check for duplicates
-            user_doc = await collections_col.find_one({"user_id": ctx.author.id})
-            existing_collection = set(user_doc.get("pokemon", [])) if user_doc else set()
-
-            newly_added = []
-            already_owned = []
-
-            for mon, display in zip(unique_mons, unique_display):
-                if mon in existing_collection:
-                    already_owned.append(display)
-                else:
-                    newly_added.append(mon)
-
-            # Update DB with only the newly added ones
-            if newly_added:
-                await collections_col.update_one(
-                    {"user_id": ctx.author.id},
-                    {"$addToSet": {"pokemon": {"$each": newly_added}}},
-                    upsert=True
-                )
-
-            # Build Response Message lines
-            response_lines = []
-            if newly_added:
-                added_displays = [format_pokemon_name(m) for m in newly_added]
-                response_lines.append(f"✅ Added to your collection: **{', '.join(added_displays)}**")
-            
-            if already_owned:
-                response_lines.append(f"-# Already in your collection: {', '.join(already_owned)}")
-
-            if invalid_items:
-                bad_words = ", ".join([f'"{w}"' for w in invalid_items])
-                response_lines.append(f"-# Ignored invalid items: {bad_words}")
-
-            if response_lines:
-                await ctx.send("\n".join(response_lines))
-            else:
-                await ctx.send(embed=discord.Embed(description="⚠️ No valid Pokémon were processed.", color=discord.Color.gold()))
-
-    except Exception as e:
-        print(f"Error in collection_add: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
-
-@collection_group.command(name="remove")
-async def collection_remove(ctx, *, mons: str = None):
-    try:
-        if not mons:
-            embed = discord.Embed(
-                description="❌ Please specify at least one Pokémon to remove.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            return
-
-        raw_list = parse_pokemon_list(mons)
-        final_mons = []
-        display_names = []
-        invalid_items = []
-
-        for item in raw_list:
-            is_all = item.startswith("all ")
-            clean_item = item[4:].strip() if is_all else item.strip()
-            
-            if validate_species(clean_item) or validate_species(item):
-                if is_all:
-                    forms = get_pokemon_variants(clean_item)
-                    final_mons.extend(forms)
-                    display_names.append(f"All {format_pokemon_name(clean_item)}")
-                elif clean_item in POKEMON_FORMS:
-                    base_name = get_base_pokemon(clean_item)
-                    final_mons.append(base_name)
-                    display_names.append(base_name)
-                elif clean_item in REGIONAL_FORMS:
-                    formatted_name = REGIONAL_FORMS[clean_item]
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-                else:
-                    formatted_name = format_pokemon_name(item if validate_species(item) else clean_item)
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-            else:
-                invalid_items.append(item)
-
-        if final_mons:
-            unique_mons = list(dict.fromkeys(final_mons))
-            unique_display = list(dict.fromkeys(display_names))
-            await collections_col.update_one(
-                {"user_id": ctx.author.id},
-                {"$pull": {"pokemon": {"$in": unique_mons}}}
-            )
-            removed_str = ", ".join(unique_display)
-            embed = discord.Embed(
-                description=f"✅ Removed from your collection: **{removed_str}**",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-
-        if invalid_items:
-            bad_words = ", ".join([f'"{w}"' for w in invalid_items])
-            embed = discord.Embed(
-                description=f"⚠️ Removed valid Pokémon, but ignored unknown items: {bad_words}",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
-            
-    except Exception as e:
-        print(f"Error in collection_remove: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
-@collection_group.command(name="clear")
-async def collection_clear(ctx):
-    try:
-        result = await collections_col.delete_one({"user_id": ctx.author.id})
-        if result.deleted_count > 0:
-            embed = discord.Embed(
-                description="✅ Your collection has been completely cleared.",
-                color=discord.Color.green()
-            )
-        else:
-            embed = discord.Embed(
-                description="❌ Your collection is already empty.",
-                color=discord.Color.red()
-            )
-        await ctx.send(embed=embed)
-    except Exception as e:
-        print(f"Error in collection_clear: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
+    await users_col.update_one(
+        {"user_id": ctx.author.id},
+        {"$set": {"pokemon": mons, "selected": new_sel}, "$inc": {"coins": 25}},
+    )
+    await ctx.send(f"👋 Released **{released['name']}** and received **25 Pokécoins**.")
 
 # ==========================================
-# 📋 RESERVE COMMANDS (E!r)
+# 💰 POKÉCOINS, SHARDS, DAILY, SHOP & REDEEMS
 # ==========================================
-
-@bot.group(name="r", invoke_without_command=True)
-async def reserve_group(ctx, target: discord.Member = None, page: int = 1):
-    if target:
-        await reserve_user(ctx, target=target, page=page)
+@bot.command(name="bal", aliases=["balance"])
+async def check_balance(ctx, target: discord.User = None):
+    member = target or ctx.author
+    user = await users_col.find_one({"user_id": member.id})
+    if not user:
+        await ctx.send(f"❌ {member.display_name} hasn't started yet! Use `p!start`.")
         return
 
     embed = discord.Embed(
-        title="📋 Reserve Commands",
+        title=f"{member.display_name}'s Balance",
+        color=0x2B2D31,
+    )
+    embed.add_field(name="Pokécoins", value=f"{user.get('coins', 0):,}", inline=True)
+    embed.add_field(name="Shards", value=f"{user.get('shards', 0):,}", inline=True)
+    embed.add_field(name="Redeems", value=f"{user.get('redeems', 0):,}", inline=True)
+    embed.set_footer(text=f"Total Catches: {user.get('catches', 0):,}")
+    await ctx.send(embed=embed)
+
+@bot.command(name="daily")
+async def claim_daily(ctx):
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user:
+        await ctx.send("❌ Type `p!start` first!")
+        return
+
+    now = datetime.now(timezone.utc)
+    last_daily = user.get("last_daily")
+    streak = user.get("daily_streak", 0)
+
+    if last_daily:
+        last_dt = datetime.fromisoformat(last_daily)
+        elapsed = now - last_dt
+        if elapsed < timedelta(hours=20):
+            remaining = timedelta(hours=20) - elapsed
+            hrs, rem = divmod(int(remaining.total_seconds()), 3600)
+            mins = rem // 60
+            await ctx.send(f"⏳ You already claimed your daily! Come back in **{hrs}h {mins}m**.")
+            return
+        streak = streak + 1 if elapsed <= timedelta(hours=48) else 1
+    else:
+        streak = 1
+
+    reward_coins = 500 + min(streak * 100, 1500)
+    reward_shards = 2 if streak % 3 == 0 else 0
+    got_redeem = (streak % 7 == 0)
+
+    await users_col.update_one(
+        {"user_id": ctx.author.id},
+        {
+            "$inc": {
+                "coins": reward_coins,
+                "shards": reward_shards,
+                "redeems": 1 if got_redeem else 0,
+            },
+            "$set": {"daily_streak": streak, "last_daily": now.isoformat()},
+        },
+    )
+
+    extras = []
+    if reward_shards:
+        extras.append(f"+{reward_shards} Shards")
+    if got_redeem:
+        extras.append("+1 Redeem 🎟️")
+    bonus_line = f"\n✨ **Streak Bonus:** {' & '.join(extras)}!" if extras else ""
+
+    await ctx.send(
+        f"🎁 **Daily Reward Claimed!** (Streak: **{streak} days**)\n"
+        f"You received **{reward_coins:,} Pokécoins**!{bonus_line}"
+    )
+
+@bot.command(name="shop")
+async def view_shop(ctx):
+    embed = discord.Embed(
+        title="🛒 Pokétwo Shop",
         description=(
-            "## View & Lookup Commands\n"
-            "**`E!r`** - Display this reserve command help list.\n"
-            "**`E!r list`** - View all active server reserves.\n"
-            "**`E!r @user`** - View reserved Pokémon for a specific user.\n"
-            "**`E!r search <mons>`** - Search which users have specific Pokémon reserved.\n\n"
-            "## Management Commands (Staff)\n"
-            "**`E!r add <mons> [@user]`** - Add Pokémon/families to reserves.\n"
-            "**`E!r remove <mons> [@user]`** - Remove specified reserves.\n"
-            "**`E!r clear @user`** - Clear all reserves for a specific user.\n"
-            "**`E!r clear`** - Clear all reserves across the entire server.\n"
-            "**`E!r e @mainuser`** - Exchange reserves from a replied message.\n\n"
-            "## Admin Role Permissions\n"
-            "**`E!r role list`** - View authorized staff roles.\n"
-            "**`E!r role add @Role`** - Grant reserve staff permissions.\n"
-            "**`E!r role remove @Role`** - Revoke reserve staff permissions."
+            "Use `p!buy <item> [amount]` to purchase:\n\n"
+            "💎 **`shards <amount>`** — **200 Pokécoins each**\n"
+            "• Exchange Pokécoins for Shards (`p!buy shards 50`).\n\n"
+            "🎟️ **`redeem`** — **200 Shards**\n"
+            "• Spawn any Pokémon of your choice (`p!redeem <pokemon>`).\n\n"
+            "🕯️ **`incense`** — **50 Shards**\n"
+            "• Spawns 15 Pokémon automatically (1 every 15s) in this channel!\n\n"
+            "🍬 **`candy`** — **250 Pokécoins**\n"
+            "• Levels up your currently selected Pokémon by +1 Level."
         ),
-        color=discord.Color.gold()
+        color=0x2B2D31,
     )
     await ctx.send(embed=embed)
 
+@bot.command(name="buy")
+async def buy_item(ctx, item: str = None, amount: int = 1):
+    if not item:
+        await ctx.send("❌ Usage: `p!buy <shards | redeem | incense | candy> [amount]`")
+        return
 
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user:
+        await ctx.send("❌ Type `p!start` first!")
+        return
 
-@reserve_group.command(name="list")
-async def reserve_list(ctx, page: int = 1):
-    try:
-        cursor = reserves_col.find({"guild_id": ctx.guild.id})
-        reserves = await cursor.to_list(length=1000)
+    if amount < 1:
+        await ctx.send("❌ Amount must be at least `1`.")
+        return
 
-        if not reserves:
-            embed = discord.Embed(
-                description="🔍 No active reserves found for this server.",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
+    item = item.strip().lower()
+    coins = user.get("coins", 0)
+    shards = user.get("shards", 0)
+
+    if item in ("shard", "shards"):
+        cost = 200 * amount
+        if coins < cost:
+            await ctx.send(f"❌ You need **{cost:,} Pokécoins** to buy **{amount:,} Shards**.")
             return
+        await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"coins": -cost, "shards": amount}})
+        await ctx.send(f"💎 Exchanged **{cost:,} Pokécoins** for **{amount:,} Shards**!")
 
-        mon_to_users = {}
-        for doc in reserves:
-            user_id = doc["user_id"]
-            member = ctx.guild.get_member(user_id)
-            user_mention = member.mention if member else f"<@{user_id}>"
-            
-            for mon in doc.get("pokemon", []):
-                formatted_mon = format_pokemon_name(mon)
-                if formatted_mon not in mon_to_users:
-                    mon_to_users[formatted_mon] = []
-                if user_mention not in mon_to_users[formatted_mon]:
-                    mon_to_users[formatted_mon].append(user_mention)
-
-        formatted_lines = [
-            f"• **{mon}** - {', '.join(users)}"
-            for mon, users in sorted(mon_to_users.items(), key=lambda item: item[0].lower())
-        ]
-
-        view = ReservePaginationView(ctx.author.id, formatted_lines, per_page=20)
-        if 1 <= page <= view.total_pages:
-            view.current_page = page
-
-        if view.total_pages > 1:
-            await ctx.send(embed=view.get_embed(), view=view)
-        else:
-            await ctx.send(embed=view.get_embed())
-
-    except Exception as e:
-        print(f"Error in reserve_list: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
-
-
-@reserve_group.command(name="e")
-async def reserve_exchange(ctx, main_user: discord.Member = None):
-    if not await is_staff(ctx):
-        embed = discord.Embed(
-            description="❌ You do not have permission to use staff exchange commands.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    if not ctx.message.reference:
-        embed = discord.Embed(
-            description="❌ Please reply to a message containing the user list (e.g., `@user - all furfrou, alolan vulpix, pikachu`).",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    except Exception:
-        await ctx.send(embed=discord.Embed(description="❌ Could not fetch the replied message.", color=discord.Color.red()))
-        return
-
-    if main_user:
-        giver_id = main_user.id
-    elif replied_msg.author and not replied_msg.author.bot:
-        giver_id = replied_msg.author.id
-    else:
-        giver_id = ctx.author.id
-
-    giver_doc = await reserves_col.find_one({"guild_id": ctx.guild.id, "user_id": giver_id})
-    giver_pokemon = set(giver_doc.get("pokemon", [])) if giver_doc else set()
-
-    if not giver_pokemon:
-        giver_mention = f"<@{giver_id}>"
-        embed = discord.Embed(
-            description=f"❌ {giver_mention} has no Pokémon in their reserves to give away.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    current_giver_pool = set(giver_pokemon)
-    lines = replied_msg.content.split("\n")
-    
-    transfers_made = 0
-    error_report = []
-    total_pulled_mons = [] 
-
-    for line in lines:
-        if not line.strip():
-            continue
-        
-        mentioned_users = [m for m in replied_msg.mentions if str(m.id) in line or m.mention in line]
-        if not mentioned_users:
-            continue
-
-        parts = line.split("-") if "-" in line else line.split(":")
-        if len(parts) < 2:
-            continue
-        
-        pokemon_raw_text = parts[1].strip()
-        criteria_list = [c.strip() for c in pokemon_raw_text.split(",") if c.strip()]
-
-        for user in mentioned_users:
-            user_valid_mons = []
-
-            for criterion in criteria_list:
-                crit_lower = criterion.lower()
-
-                if crit_lower.startswith("all "):
-                    target_species = crit_lower[4:].strip()
-                    matching_mons = [
-                        mon for mon in current_giver_pool 
-                        if target_species in mon.lower() or mon.lower().startswith(target_species)
-                    ]
-                    
-                    if matching_mons:
-                        user_valid_mons.extend(matching_mons)
-                        for m in matching_mons:
-                            current_giver_pool.remove(m)
-                    else:
-                        error_report.append(f"`{criterion}` (for {user.display_name}) - No matching Pokémon found in <@{giver_id}>'s reserves")
-                
-                else:
-                    formatted_mon = format_pokemon_name(criterion)
-                    
-                    if formatted_mon in current_giver_pool:
-                        user_valid_mons.append(formatted_mon)
-                        current_giver_pool.remove(formatted_mon)
-                    elif criterion in current_giver_pool:
-                        user_valid_mons.append(criterion)
-                        current_giver_pool.remove(criterion)
-                    else:
-                        error_report.append(f"`{criterion}` (for {user.display_name}) - Not in <@{giver_id}>'s reserves or typed wrong")
-
-            if user_valid_mons:
-                await reserves_col.update_one(
-                    {"guild_id": ctx.guild.id, "user_id": user.id},
-                    {"$addToSet": {"pokemon": {"$each": user_valid_mons}}},
-                    upsert=True
-                )
-                transfers_made += len(user_valid_mons)
-                total_pulled_mons.extend(user_valid_mons)
-
-    if total_pulled_mons:
-        await reserves_col.update_one(
-            {"guild_id": ctx.guild.id, "user_id": giver_id},
-            {"$pull": {"pokemon": {"$in": total_pulled_mons}}}
-        )
-
-    if transfers_made > 0 and not error_report:
-        embed = discord.Embed(
-            description=f"✅ Exchange successful!\n Successfully distributed **{transfers_made}** Pokémon from <@{giver_id}>'s reserves.",
-            color=discord.Color.green()
-        )
-    elif transfers_made > 0 and error_report:
-        embed = discord.Embed(
-            description=(
-                f"⚠️ Distributed valid Pokémon (**{transfers_made}** transferred from <@{giver_id}>), but encountered some issues:\n\n"
-                f"❌ **What went wrong:**\n• " + "\n• ".join(error_report)
-            ),
-            color=discord.Color.gold()
-        )
-    else:
-        embed = discord.Embed(
-            description=(
-                f"❌ Exchange failed. None of the specified Pokémon could be transferred.\n\n"
-                f"❌ **What went wrong:**\n• " + ("\n• ".join(error_report) if error_report else "No valid entries found in the replied message.")
-            ),
-            color=discord.Color.red()
-        )
-
-    await ctx.send(embed=embed)
-
-
-
-
-@reserve_group.command(name="add")
-async def reserve_add(ctx, *, args: str = None):
-    try:
-        if not await is_staff(ctx):
-            embed = discord.Embed(
-                description="❌ You do not have permission to modify reserves.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+    elif item == "redeem":
+        cost = 200 * amount
+        if shards < cost:
+            await ctx.send(f"❌ You need **{cost:,} Shards** to buy **{amount} Redeem(s)**.")
             return
+        await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"shards": -cost, "redeems": amount}})
+        await ctx.send(f"🎟️ Purchased **{amount} Redeem(s)** for **{cost:,} Shards**! Use `p!redeem <pokémon>`.")
 
-        if not args:
-            embed = discord.Embed(
-                description="❌ Please specify Pokémon to reserve (e.g. `E!r add Charmander @User`).",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+    elif item == "candy":
+        cost = 250 * amount
+        if coins < cost:
+            await ctx.send(f"❌ You need **{cost:,} Pokécoins** to buy **{amount} Rare Candy(s)**.")
             return
-
-        target_user = ctx.author
-        if ctx.message.mentions:
-            target_user = ctx.message.mentions[0]
-            for mention in ctx.message.mentions:
-                args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
-
-        raw_list = parse_pokemon_list(args)
-        final_mons = []
-        display_names = []
-        invalid_items = []
-
-        for item in raw_list:
-            is_all = item.startswith("all ")
-            clean_item = item[4:].strip() if is_all else item.strip()
-            
-            if validate_species(clean_item) or validate_species(item):
-                if is_all:
-                    forms = get_pokemon_variants(clean_item)
-                    final_mons.extend(forms)
-                    display_names.append(f"All {format_pokemon_name(clean_item)}")
-                elif clean_item in POKEMON_FORMS:
-                    base_name = get_base_pokemon(clean_item)
-                    final_mons.append(base_name)
-                    display_names.append(base_name)
-                elif clean_item in REGIONAL_FORMS:
-                    formatted_name = REGIONAL_FORMS[clean_item]
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-                else:
-                    formatted_name = format_pokemon_name(clean_item)
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-            else:
-                invalid_items.append(item)
-
-        if final_mons:
-            unique_mons = list(dict.fromkeys(final_mons))
-            unique_display = list(dict.fromkeys(display_names))
-            
-            await reserves_col.update_one(
-                {"guild_id": ctx.guild.id, "user_id": target_user.id},
-                {"$addToSet": {"pokemon": {"$each": unique_mons}}},
-                upsert=True
-            )
-            added_str = ", ".join(unique_display)
-            embed = discord.Embed(
-                description=f"✅ Added to reserves for {target_user.mention}: **{added_str}**",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-
-        if invalid_items:
-            bad_words = ", ".join([f'"{w}"' for w in invalid_items])
-            embed = discord.Embed(
-                description=f"⚠️ Added valid Pokémon, but ignored unknown items: {bad_words}",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
-
-    except Exception as e:
-        print(f"Error in reserve_add: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
-
-@reserve_group.command(name="remove")
-async def reserve_remove(ctx, *, args: str = None):
-    try:
-        if not await is_staff(ctx):
-            embed = discord.Embed(
-                description="❌ You do not have permission to modify reserves.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+        if not user.get("pokemon"):
+            await ctx.send("❌ You don't have a Pokémon selected.")
             return
-
-        if not args:
-            embed = discord.Embed(
-                description="❌ Please specify Pokémon to remove from reserves.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+        sel_idx = user.get("selected", 1) - 1
+        mons = user["pokemon"]
+        new_lvl = min(100, mons[sel_idx]["level"] + amount)
+        gained = new_lvl - mons[sel_idx]["level"]
+        if gained <= 0:
+            await ctx.send("❌ Your selected Pokémon is already Level 100!")
             return
-
-        target_user = ctx.author
-        if ctx.message.mentions:
-            target_user = ctx.message.mentions[0]
-            for mention in ctx.message.mentions:
-                args = args.replace(mention.mention, "").replace(f"<@!{mention.id}>", "")
-
-        raw_list = parse_pokemon_list(args)
-        final_mons = []
-        display_names = []
-        invalid_items = []
-
-        for item in raw_list:
-            is_all = item.startswith("all ")
-            clean_item = item[4:].strip() if is_all else item.strip()
-            
-            if validate_species(clean_item) or validate_species(item):
-                if is_all:
-                    forms = get_pokemon_variants(clean_item)
-                    final_mons.extend(forms)
-                    display_names.append(f"All {format_pokemon_name(clean_item)}")
-                elif clean_item in POKEMON_FORMS:
-                    base_name = get_base_pokemon(clean_item)
-                    final_mons.append(base_name)
-                    display_names.append(base_name)
-                elif clean_item in REGIONAL_FORMS:
-                    formatted_name = REGIONAL_FORMS[clean_item]
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-                else:
-                    formatted_name = format_pokemon_name(clean_item)
-                    final_mons.append(formatted_name)
-                    display_names.append(formatted_name)
-            else:
-                invalid_items.append(item)
-
-        if final_mons:
-            unique_mons = list(dict.fromkeys(final_mons))
-            unique_display = list(dict.fromkeys(display_names))
-            
-            await reserves_col.update_one(
-                {"guild_id": ctx.guild.id, "user_id": target_user.id},
-                {"$pull": {"pokemon": {"$in": unique_mons}}}
-            )
-            removed_str = ", ".join(unique_display)
-            embed = discord.Embed(
-                description=f"✅ Removed from reserves for {target_user.mention}: **{removed_str}**",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-
-        if invalid_items:
-            bad_words = ", ".join([f'"{w}"' for w in invalid_items])
-            embed = discord.Embed(
-                description=f"⚠️ Removed valid Pokémon, but ignored unknown items: {bad_words}",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
-
-    except Exception as e:
-        print(f"Error in reserve_remove: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
-
-
-
-@reserve_group.command(name="search")
-async def reserve_search(ctx, *, mon: str = None):
-    try:
-        if not mon:
-            embed = discord.Embed(
-                description="❌ Please specify a Pokémon to search.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            return
-
-        is_all = mon.startswith("all ")
-        clean_mon = mon[4:].strip() if is_all else mon.strip()
-
-        if is_all:
-            target_mons = get_pokemon_variants(clean_mon)
-        elif clean_mon in POKEMON_FORMS:
-            target_mons = [get_base_pokemon(clean_mon)]
-        elif clean_mon in REGIONAL_FORMS:
-            target_mons = [REGIONAL_FORMS[clean_mon]]
-        else:
-            target_mons = [format_pokemon_name(clean_mon)]
-
-        cursor = reserves_col.find({"guild_id": ctx.guild.id})
-        all_reserves = await cursor.to_list(length=1000)
-
-        mon_to_users = {}
-
-        for doc in all_reserves:
-            user_id = doc["user_id"]
-            member = ctx.guild.get_member(user_id)
-            user_mention = member.mention if member else f"<@{user_id}>"
-
-            user_pokemon = [format_pokemon_name(p) for p in doc.get("pokemon", [])]
-
-            for target in target_mons:
-                formatted_target = format_pokemon_name(target)
-                if formatted_target in user_pokemon:
-                    if formatted_target not in mon_to_users:
-                        mon_to_users[formatted_target] = []
-                    if user_mention not in mon_to_users[formatted_target]:
-                        mon_to_users[formatted_target].append(user_mention)
-
-        if not mon_to_users:
-            searched_name = f"All {format_pokemon_name(clean_mon)}" if is_all else format_pokemon_name(clean_mon)
-            embed = discord.Embed(
-                description=f"🔍 No user has reserved **{searched_name}**.",
-                color=discord.Color.gold()
-            )
-            await ctx.send(embed=embed)
-            return
-
-        formatted_lines = [
-            f"• **{pokemon}** - {', '.join(users)}"
-            for pokemon, users in sorted(mon_to_users.items())
-        ]
-
-        embed = discord.Embed(
-            title=f"🔍 Reserve Search Results",
-            description="\n".join(formatted_lines),
-            color=discord.Color.gold()
-        )
-        await ctx.send(embed=embed)
-
-    except Exception as e:
-        print(f"Error in reserve_search: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
-
-
-@reserve_group.command(name="user")
-async def reserve_user(ctx, target: discord.Member = None, page: int = 1):
-    if not target:
-        target = ctx.author
-
-    user_doc = await reserves_col.find_one({"guild_id": ctx.guild.id, "user_id": target.id})
-    if not user_doc or not user_doc.get("pokemon"):
-        embed = discord.Embed(
-            description=f"🔍 {target.mention} has no reserved Pokémon.",
-            color=discord.Color.gold()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    all_pokemon = user_doc["pokemon"]
-    formatted_lines = [f"• {format_pokemon_name(mon)}" for mon in sorted(all_pokemon)]
-
-    title = f"📋 Reserves for {target.display_name}"
-    view = ReservePaginationView(ctx.author.id, formatted_lines, title=title, per_page=20)
-    
-    if 1 <= page <= view.total_pages:
-        view.current_page = page
-
-    if view.total_pages > 1:
-        await ctx.send(embed=view.get_embed(), view=view)
-    else:
-        await ctx.send(embed=view.get_embed())
-
-
-
-@reserve_group.command(name="clear")
-async def reserve_clear(ctx, target: discord.Member = None):
-    try:
-        if not await is_staff(ctx):
-            embed = discord.Embed(
-                description="❌ You do not have permission to use staff commands.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            return
-
-        if target:
-            prompt_text = f"⚠️ Are you sure you want to clear all reserves for {target.mention}?"
-        else:
-            prompt_text = "⚠️ Are you sure you want to **clear ALL reserves** across the entire server?"
-
-        embed = discord.Embed(
-            description=prompt_text,
-            color=discord.Color.gold()
-        )
-        view = ClearConfirmView(author_id=ctx.author.id, target_user=target, guild_id=ctx.guild.id)
-        await ctx.send(embed=embed, view=view)
-
-    except Exception as e:
-        print(f"Error in reserve_clear: {e}")
-        await ctx.send(embed=discord.Embed(description=f"❌ An error occurred: `{e}`", color=discord.Color.red()))
-
-
-def parse_roles_from_input(ctx, raw_input: str):
-    items = [item.strip() for item in raw_input.split(",") if item.strip()]
-    valid_roles = []
-    invalid_roles = []
-
-    for item in items:
-        role = None
-        match = re.search(r"<@&(\d+)>", item)
-        if match:
-            role_id = int(match.group(1))
-            role = ctx.guild.get_role(role_id)
-        elif item.isdigit():
-            role = ctx.guild.get_role(int(item))
-        else:
-            role = discord.utils.get(ctx.guild.roles, name=item)
-
-        if role:
-            valid_roles.append(role)
-        else:
-            invalid_roles.append(item)
-
-    return valid_roles, invalid_roles
-
-
-@reserve_group.group(name="role", invoke_without_command=True)
-async def reserve_role_group(ctx):
-    embed = discord.Embed(
-        title="🛡️ Reserve Staff Role Commands",
-        description=(
-            "**`E!r role list`** - View configured staff roles.\n"
-            "**`E!r role add @Role1, @Role2`** - Grant reserve staff permissions.\n"
-            "**`E!r role remove @Role1, @Role2`** - Revoke reserve staff permissions."
-        ),
-        color=discord.Color.gold()
-    )
-    await ctx.send(embed=embed)
-
-
-@reserve_role_group.command(name="list")
-async def reserve_role_list(ctx):
-    doc = await roles_col.find_one({"guild_id": ctx.guild.id})
-    if not doc or not doc.get("roles"):
-        embed = discord.Embed(
-            description="ℹ️ No staff roles configured. Administrators have default access.",
-            color=discord.Color.blue()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    roles = [f"<@&{rid}>" for rid in doc["roles"]]
-    embed = discord.Embed(
-        title="🛡️ Authorized Reserve Staff Roles",
-        description="\n".join(roles),
-        color=discord.Color.gold()
-    )
-    await ctx.send(embed=embed)
-
-
-@reserve_role_group.command(name="add")
-async def reserve_role_add(ctx, *, roles_input: str = None):
-    if not ctx.author.guild_permissions.administrator:
-        embed = discord.Embed(
-            description="❌ Only server administrators can manage staff roles.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    if not roles_input:
-        embed = discord.Embed(
-            description="❌ Please specify at least one role (e.g. `E!r role add @Staff, @Mod`).",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    valid_roles, invalid_roles = parse_roles_from_input(ctx, roles_input)
-
-    if not valid_roles and invalid_roles:
-        embed = discord.Embed(
-            description=f"❌ Could not find any valid roles from: `{', '.join(invalid_roles)}`",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    role_ids = [r.id for r in valid_roles]
-    await roles_col.update_one(
-        {"guild_id": ctx.guild.id},
-        {"$addToSet": {"roles": {"$each": role_ids}}},
-        upsert=True
-    )
-
-    added_mentions = ", ".join([r.mention for r in valid_roles])
-    desc = f"✅ {added_mentions} were added successfully."
-    if invalid_roles:
-        desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
-
-    embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(embed=embed)
-
-
-@reserve_role_group.command(name="remove")
-async def reserve_role_remove(ctx, *, roles_input: str = None):
-    if not ctx.author.guild_permissions.administrator:
-        embed = discord.Embed(
-            description="❌ Only server administrators can manage staff roles.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    if not roles_input:
-        embed = discord.Embed(
-            description="❌ Please specify at least one role to remove (e.g. `E!r role remove @Staff`).",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    valid_roles, invalid_roles = parse_roles_from_input(ctx, roles_input)
-
-    if not valid_roles and invalid_roles:
-        embed = discord.Embed(
-            description=f"❌ Could not find any valid roles from: `{', '.join(invalid_roles)}`",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
-    role_ids = [r.id for r in valid_roles]
-    await roles_col.update_one(
-        {"guild_id": ctx.guild.id},
-        {"$pull": {"roles": {"$in": role_ids}}}
-    )
-
-    removed_mentions = ", ".join([r.mention for r in valid_roles])
-    desc = f"✅ {removed_mentions} were removed successfully."
-    if invalid_roles:
-        desc += f"\n❌ **Could not find / Invalid roles:** `{', '.join(invalid_roles)}`"
-
-    embed = discord.Embed(description=desc, color=discord.Color.green())
-    await ctx.send(embed=embed)
-
-
-# ==========================================
-# ✨️ SHINY HUNT COMMANDS (E!sh) - PLAIN TEXT UPDATE
-# ==========================================
-
-@bot.group(name="sh", invoke_without_command=True)
-async def shiny_group(ctx, *, target_mon: str = None):
-    if target_mon:
-        clean_target = target_mon.strip().lower()
-        if not validate_species(clean_target):
-            await ctx.send(f"❌ **{target_mon}** is not a valid Pokémon.")
-            return
-
-        formatted_mon = format_pokemon_name(clean_target)
-        await shiny_col.update_one(
+        mons[sel_idx]["level"] = new_lvl
+        await users_col.update_one(
             {"user_id": ctx.author.id},
-            {"$set": {"target": formatted_mon}},
-            upsert=True
+            {"$inc": {"coins": -(250 * gained)}, "$set": {"pokemon": mons}},
         )
-        await ctx.send(f"✅ Set active shiny hunt to ✨️ **{formatted_mon}**.")
+        await ctx.send(f"🍬 Fed **{gained} Rare Candy(s)**! **{mons[sel_idx]['name']}** grew to **Level {new_lvl}**!")
+
+    elif item == "incense":
+        if shards < 50:
+            await ctx.send("❌ You need **50 Shards** to activate Incense.")
+            return
+        if ctx.channel.id in active_incense:
+            await ctx.send("❌ An incense is already running in this channel!")
+            return
+
+        await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"shards": -50}})
+        active_incense.add(ctx.channel.id)
+        await ctx.send("🕯️ **Incense Activated!** 15 Pokémon will spawn here over the next few minutes!")
+
+        async def run_incense_loop():
+            try:
+                for _ in range(15):
+                    await trigger_spawn(ctx.channel)
+                    await asyncio.sleep(15)
+                await ctx.channel.send("🕯️ The incense has ended.")
+            finally:
+                active_incense.discard(ctx.channel.id)
+
+        asyncio.create_task(run_incense_loop())
+    else:
+        await ctx.send("❌ Unknown item. Check `p!shop`.")
+
+@bot.command(name="redeem")
+async def use_redeem(ctx, *, pokemon_name: str = None):
+    user = await users_col.find_one({"user_id": ctx.author.id})
+    if not user:
+        await ctx.send("❌ Type `p!start` first!")
         return
 
-    user_doc = await shiny_col.find_one({"user_id": ctx.author.id})
-    target = user_doc.get("target", "None") if user_doc else "None"
+    if user.get("redeems", 0) < 1:
+        await ctx.send("❌ You don't have any Redeems! Buy one in `p!shop` for 200 Shards.")
+        return
 
-    await ctx.send(f" **Shiny Hunt**\nCurrent Active Hunt: ✨ **{target}**.")
+    if not pokemon_name:
+        await ctx.send("❌ Usage: `p!redeem <pokémon name>`")
+        return
 
-@shiny_group.command(name="clear")
-async def shiny_clear(ctx):
-    try:
-        result = await shiny_col.delete_one({"user_id": ctx.author.id})
-        if result.deleted_count > 0:
-            await ctx.send("✅ Your active shiny hunt has been cleared.")
-        else:
-            await ctx.send("❌ You do not have an active shiny hunt to clear.")
-    except Exception as e:
-        print(f"Error in shiny_clear: {e}")
-        await ctx.send(f"❌ An error occurred: `{e}`")
+    target = POKEDEX_BY_NAME.get(pokemon_name.strip().lower())
+    if not target:
+        await ctx.send(f"❌ Could not find **{pokemon_name}** in the Pokédex.")
+        return
 
+    await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"redeems": -1}})
+    await ctx.send(f"🎟️ {ctx.author.mention} used a Redeem to spawn **{target['name']}**!")
+    await trigger_spawn(ctx.channel, forced_mon=target)
 
-# Run Discord bot in a background thread so Streamlit stays active for Render/Web UI
-def run_discord_bot():
-    token = st.secrets.get("DISCORD_TOKEN") or os.getenv("DISCORD_TOKEN")
-    if token:
-        bot.run(token)
+# ==========================================
+# 👑 OWNER-ONLY COMMANDS (Infinite Admin Control)
+# ==========================================
+@bot.command(name="addbal", aliases=["addpc"])
+@commands.is_owner()
+async def owner_add_bal(ctx, amount: int, target: discord.User = None):
+    member = target or ctx.author
+    await ensure_user_doc(member.id)
+    await users_col.update_one({"user_id": member.id}, {"$inc": {"coins": amount}})
+    await ctx.send(f"✅ Added **{amount:,} Pokécoins** to {member.mention}'s balance.")
+
+@bot.command(name="addshards")
+@commands.is_owner()
+async def owner_add_shards(ctx, amount: int, target: discord.User = None):
+    member = target or ctx.author
+    await ensure_user_doc(member.id)
+    await users_col.update_one({"user_id": member.id}, {"$inc": {"shards": amount}})
+    await ctx.send(f"✅ Added **{amount:,} Shards** to {member.mention}'s balance.")
+
+@bot.command(name="addredeems", aliases=["addredeem"])
+@commands.is_owner()
+async def owner_add_redeems(ctx, amount: int, target: discord.User = None):
+    member = target or ctx.author
+    await ensure_user_doc(member.id)
+    await users_col.update_one({"user_id": member.id}, {"$inc": {"redeems": amount}})
+    await ctx.send(f"✅ Added **{amount:,} Redeem(s)** to {member.mention}'s balance.")
+
+@bot.command(name="givemon")
+@commands.is_owner()
+async def owner_give_pokemon(ctx, pokemon_name: str, target: discord.User = None, shiny: str = None):
+    member = target or ctx.author
+    entry = POKEDEX_BY_NAME.get(pokemon_name.strip().lower())
+    if not entry:
+        await ctx.send(f"❌ Pokémon `{pokemon_name}` not found in Pokédex.")
+        return
+
+    await ensure_user_doc(member.id)
+    mon_data = generate_pokemon_data(entry)
+    if shiny and shiny.lower() in ("shiny", "true", "yes"):
+        mon_data["shiny"] = True
+    emoji_str = await ensure_pokemon_emoji(entry)
+
+    await users_col.update_one({"user_id": member.id}, {"$push": {"pokemon": mon_data}})
+    star = "✨ " if mon_data["shiny"] else ""
+    await ctx.send(
+        f"✅ Granted {emoji_str} {star}**{mon_data['name']}** (Lvl. {mon_data['level']} • {mon_data['iv_percent']}% IV) to {member.mention}!"
+    )
+
+@bot.command(name="forcespawn", aliases=["fs"])
+@commands.is_owner()
+async def force_spawn(ctx, *, mon_name: str = None):
+    forced = POKEDEX_BY_NAME.get(mon_name.strip().lower()) if mon_name else None
+    await trigger_spawn(ctx.channel, forced_mon=forced)
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.NotOwner):
+        await ctx.send("❌ Only the bot owner can use this command.")
+    elif isinstance(error, (commands.BadArgument, commands.MissingRequiredArgument)):
+        await ctx.send(f"❌ Invalid usage: `{error}`")
+    else:
+        raise error
 
 if __name__ == "__main__":
-    if not any(t.name == "DiscordBotThread" for t in threading.enumerate()):
-        bot_thread = threading.Thread(target=run_discord_bot, name="DiscordBotThread", daemon=True)
-        bot_thread.start()
+    bot.run(TOKEN)
