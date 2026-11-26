@@ -15,7 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # ==========================================
 TOKEN = os.getenv("DISCORD_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-OWNER_ID = int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else None
+OWNER_ID = int(os.getenv("OWNER_ID") or 772797011899973633)
 
 GMAX_EMOJI = "<:Gmax:1504098787658961028>"
 SHINY_EMOJI = "✨"
@@ -378,16 +378,16 @@ async def catch_pokemon(ctx, *, guess: str = None):
 
     if caught_mon["shiny"]:
         if hunt_target and hunt_chain > 0:
-            chain_msg = f"\n\nShiny streak reset. ({hunt_chain})"
+            chain_msg = f"Shiny streak reset. ({hunt_chain})"
         hunt_chain = 0
     elif hunt_target:
         base_caught = active_spawn["name"].replace("Gigantamax ", "", 1).strip().lower()
         if hunt_target.lower() in (active_spawn["name"].lower(), base_caught):
             hunt_chain += 1
-            chain_msg = f"\n🔗 **Hunt Chain:** **{hunt_chain}** ({hunt_target})"
+            chain_msg = f"🔗 **Hunt Chain:** **{hunt_chain}** ({hunt_target})"
         else:
             hunt_chain = 0
-            chain_msg = f"\n🔗 **Hunt Chain Reset:** Caught a different species ({hunt_target} chain is now **0**)."
+            chain_msg = f"🔗 **Hunt Chain Reset:** Caught a different species ({hunt_target} chain is now **0**)."
 
     new_catches = user.get("catches", 0) + 1
     coins_earned = random.randint(25, 60)
@@ -397,11 +397,11 @@ async def catch_pokemon(ctx, *, guess: str = None):
     if new_catches % 100 == 0:
         coins_earned += 2500
         shards_earned += 10
-        bonus_text = "\n🎊 **100th Catch Milestone!** +2,500 Pokécoins & +10 Shards!"
+        bonus_text = "🎊 **100th Catch Milestone!** +2,500 Pokécoins & +10 Shards!"
     elif new_catches % 10 == 0:
         coins_earned += 350
         shards_earned += 1
-        bonus_text = f"\n🏅 **{new_catches}th Catch Milestone!** +350 Pokécoins & +1 Shard!"
+        bonus_text = f"🏅 **{new_catches}th Catch Milestone!** +350 Pokécoins & +1 Shard!"
 
     await users_col.update_one(
         {"user_id": ctx.author.id},
@@ -427,14 +427,14 @@ async def catch_pokemon(ctx, *, guess: str = None):
         if is_gmax:
             extra_blocks.append(f"**{caught_mon['name']}** has the Gigantamax factor! {GMAX_EMOJI}")
         if chain_msg:
-            extra_blocks.append(chain_msg.strip())
+            extra_blocks.append(chain_msg)
         extra_blocks.append(f"These colors seem unusual... {SHINY_EMOJI}")
     else:
         if chain_msg:
-            extra_blocks.append(chain_msg.strip())
+            extra_blocks.append(chain_msg)
 
     if bonus_text:
-        extra_blocks.append(bonus_text.strip())
+        extra_blocks.append(bonus_text)
 
     full_message = catch_line
     if extra_blocks:
@@ -787,15 +787,23 @@ async def redeem_spawn(ctx, *, pokemon_name: str = None):
 # 👑 OWNER-ONLY COMMANDS
 # ==========================================
 @bot.command(name="owner")
-@is_bot_owner()
-async def add_bot_owner(ctx, member: discord.User):
+async def add_bot_owner(ctx, member: discord.User = None):
+    target = member or ctx.author
+    current_owners = await get_owner_ids()
+
+    if current_owners:
+        is_allowed = (ctx.author.id in current_owners) or (await bot.is_owner(ctx.author))
+        if not is_allowed:
+            await ctx.send("❌ Only the bot owner can use this command.")
+            return
+
     await config_col.update_one(
         {"_id": "owner"},
-        {"$addToSet": {"owner_ids": member.id}},
+        {"$addToSet": {"owner_ids": target.id}},
         upsert=True,
     )
-    bot.owner_id = member.id
-    await ctx.send(f"👑 Added {member.mention} (`{member.id}`) as a bot owner!")
+    bot.owner_id = target.id
+    await ctx.send(f"👑 Added {target.mention} (`{target.id}`) as a bot owner!")
 
 @bot.command(name="addbal", aliases=["addpc"])
 @is_bot_owner()
