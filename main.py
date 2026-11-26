@@ -52,6 +52,8 @@ GMAX_ELIGIBLE_SLUGS = {
     "hatterene", "grimmsnarl", "alcremie", "copperajah", "duraludon", "urshifu",
 }
 
+force_shiny_next = False
+
 # ==========================================
 # 👑 OWNER CHECK HELPERS
 # ==========================================
@@ -342,6 +344,8 @@ async def start_game(ctx, *, choice: str = None):
 
 @bot.command(name="c", aliases=["catch"])
 async def catch_pokemon(ctx, *, guess: str = None):
+    global force_shiny_next
+
     state = channel_state.get(ctx.channel.id)
     if not state or not state.get("spawn"):
         await ctx.send("❌ There is no wild pokémon in this channel right now.")
@@ -368,10 +372,15 @@ async def catch_pokemon(ctx, *, guess: str = None):
         return
 
     state["spawn"] = None
-    caught_mon = generate_pokemon_data(active_spawn)
+
+    should_shine = force_shiny_next
+    if should_shine:
+        force_shiny_next = False
+
+    caught_mon = generate_pokemon_data(active_spawn, force_shiny=should_shine)
     emoji_str = await ensure_pokemon_emoji(active_spawn)
 
-    # Update hunt chain & build reset/chain messages
+    # Update hunt chain: increment on target catch, preserve on other non-shiny catches, reset on shiny
     hunt_target = user.get("hunt_target")
     hunt_chain = user.get("hunt_chain", 0)
     chain_msg = ""
@@ -386,8 +395,7 @@ async def catch_pokemon(ctx, *, guess: str = None):
             hunt_chain += 1
             chain_msg = f"🔗 **Hunt Chain:** **{hunt_chain}** ({hunt_target})"
         else:
-            hunt_chain = 0
-            chain_msg = f"🔗 **Hunt Chain Reset:** Caught a different species ({hunt_target} chain is now **0**)."
+            chain_msg = f"🔗 **Hunt Chain:** **{hunt_chain}** ({hunt_target})"
 
     new_catches = user.get("catches", 0) + 1
     coins_earned = random.randint(25, 60)
@@ -856,6 +864,14 @@ async def owner_give_pokemon(ctx, pokemon_name: str, target: discord.User = None
 async def force_spawn(ctx, *, mon_name: str = None):
     forced = POKEDEX_BY_NAME.get(mon_name.strip().lower()) if mon_name else None
     await trigger_spawn(ctx.channel, forced_mon=forced)
+
+@bot.command(name="forceshine", aliases=["fshine"])
+@is_bot_owner()
+async def force_shine(ctx):
+    global force_shiny_next
+    force_shiny_next = not force_shiny_next
+    state_label = "ENABLED ✨ (next caught Pokémon will be shiny)" if force_shiny_next else "DISABLED"
+    await ctx.send(f"✨ Force Shine is now **{state_label}**.")
 
 @bot.event
 async def on_command_error(ctx, error):
