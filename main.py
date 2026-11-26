@@ -1,1326 +1,1843 @@
 import os
-import io
 import re
+import io
 import json
 import math
+import time
 import random
 import asyncio
-from datetime import datetime, timezone, timedelta
+import sqlite3
+from typing import Optional, List, Dict, Any, Tuple
+
 import aiohttp
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 import discord
-from discord.ext import commands
-from motor.motor_asyncio import AsyncIOMotorClient
+from discord.ext import commands, tasks
 
-# ==========================================
-# ⚙️ CONFIG & DATABASE
-# ==========================================
-TOKEN = os.getenv("DISCORD_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")
-OWNER_ID = int(os.getenv("OWNER_ID") or 772797011899973633)
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+PREFIX = "p!"
+DB_PATH = "pokebot.db"
 
-GMAX_EMOJI = "<:Gmax:1575503911932919948>"
-MALE_EMOJI = "<:male:1566169579300851852>"
-FEMALE_EMOJI = "<:Female:1566169649249263627>"
-GENDERLESS_EMOJI = "❔"
+# Replace with your actual Discord User ID(s) for owner-only commands (p!spawnmon)
+OWNER_IDS = {123456789012345678}
+
+# Optional custom emoji overrides for Shiny / Gigantamax / Gender badges
 SHINY_EMOJI = "✨"
+GMAX_EMOJI = "<:gmax:123456789012345678>"  # Falls back cleanly if not replaced or uses custom server emoji
+# Fallback visual badge if custom gmax emoji isn't configured in your server:
+USE_DEFAULT_GMAX_BADGE = True
+DEFAULT_GMAX_TEXT = "🇬"
+
+# Optional Gen VIII pixelated icon emoji map: {dex_id: "<:mon_001:123456789>"}
+# If an entry isn't present here or uploaded to the bot's application emojis,
+# p!p leaves the icon slot completely blank (never falls back to 🔹 or random emojis).
+CUSTOM_BOX_EMOJIS: Dict[int, str] = {}
 
 NATURES = [
-    "Adamant", "Bashful", "Bold", "Brave", "Calm", "Careful", "Docile",
-    "Gentle", "Hardy", "Hasty", "Impish", "Jolly", "Lax", "Lonely",
-    "Mild", "Modest", "Naive", "Naughty", "Quiet", "Quirky", "Rash",
-    "Relaxed", "Sassy", "Serious", "Timid",
+    "Hardy", "Lonely", "Brave", "Adamant", "Naughty",
+    "Bold", "Docile", "Relaxed", "Impish", "Lax",
+    "Timid", "Hasty", "Serious", "Jolly", "Naive",
+    "Modest", "Mild", "Quiet", "Bashful", "Rash",
+    "Calm", "Gentle", "Sassy", "Careful", "Quirky",
 ]
 
-GENDERLESS_IDS = {
-    81, 82, 100, 101, 120, 121, 132, 137, 172, 201, 233, 292, 337, 338,
-    343, 344, 361, 374, 375, 376, 377, 378, 379, 382, 383, 384, 385, 386,
-    436, 437, 462, 474, 479, 480, 481, 482, 483, 484, 486, 487, 489, 490,
-    492, 493, 494, 599, 600, 601, 615, 622, 623, 638, 639, 640, 643, 644,
-    645, 646, 647, 648, 649, 703, 716, 717, 718, 721, 772, 773, 774, 781,
-    785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798,
-    799, 800, 801, 802, 803, 804, 805, 806, 807, 808, 809, 854, 855, 876,
-    888, 889, 890, 893, 894, 895, 896, 897, 898, 905, 916, 926, 931, 936,
-    937, 964, 970, 979, 981, 982, 984, 985, 986, 987, 988, 989, 990, 991,
-    992, 993, 994, 995, 996, 997, 998, 999, 1000, 1001, 1002, 1003, 1004,
-    1005, 1006, 1007, 1008, 1009, 1010, 1014, 1015, 1016, 1017, 1018, 1019,
-    1020, 1021, 1022, 1023, 1024, 1025,
+NATURE_MODIFIERS: Dict[str, Tuple[Optional[str], Optional[str]]] = {
+    "Hardy": (None, None), "Lonely": ("atk", "def"), "Brave": ("atk", "spd"),
+    "Adamant": ("atk", "spatk"), "Naughty": ("atk", "spdef"),
+    "Bold": ("def", "atk"), "Docile": (None, None), "Relaxed": ("def", "spd"),
+    "Impish": ("def", "spatk"), "Lax": ("def", "spdef"),
+    "Timid": ("spd", "atk"), "Hasty": ("spd", "def"), "Serious": (None, None),
+    "Jolly": ("spd", "spatk"), "Naive": ("spd", "spdef"),
+    "Modest": ("spatk", "atk"), "Mild": ("spatk", "def"), "Quiet": ("spatk", "spd"),
+    "Bashful": (None, None), "Rash": ("spatk", "spdef"),
+    "Calm": ("spdef", "atk"), "Gentle": ("spdef", "def"), "Sassy": ("spdef", "spd"),
+    "Careful": ("spdef", "spatk"), "Quirky": (None, None),
 }
 
-TYPE_BIOME_PALETTES = {
-    "grass":   ((22, 78, 52), (56, 148, 82), (132, 206, 118)),
-    "bug":     ((26, 82, 48), (68, 152, 74), (154, 214, 104)),
-    "water":   ((14, 48, 96), (26, 108, 176), (72, 178, 224)),
-    "ice":     ((58, 108, 158), (124, 184, 224), (198, 232, 248)),
-    "fire":    ((68, 20, 16), (168, 58, 24), (238, 132, 42)),
-    "ground":  ((92, 62, 34), (166, 122, 68), (218, 182, 118)),
-    "rock":    ((64, 58, 54), (118, 108, 98), (168, 156, 142)),
-    "electric":((34, 42, 88), (74, 92, 168), (242, 208, 68)),
-    "flying":  ((54, 124, 198), (116, 182, 236), (196, 228, 248)),
-    "psychic": ((68, 28, 92), (138, 66, 168), (222, 138, 214)),
-    "ghost":   ((28, 20, 56), (68, 44, 116), (128, 92, 176)),
-    "dark":    ((16, 18, 30), (38, 42, 66), (86, 78, 128)),
-    "dragon":  ((26, 36, 88), (58, 82, 168), (118, 168, 232)),
-    "fairy":   ((98, 48, 92), (176, 104, 164), (242, 184, 222)),
-    "steel":   ((58, 68, 82), (108, 122, 142), (176, 190, 208)),
-    "poison":  ((58, 26, 76), (114, 52, 138), (168, 106, 188)),
-    "fighting":((88, 34, 28), (156, 68, 48), (216, 126, 74)),
-    "normal":  ((56, 118, 168), (92, 168, 124), (154, 206, 122)),
+# Built-in multilingual / alternate catch aliases + regional/form base mappings
+EXTRA_ALIASES: Dict[str, List[str]] = {
+    "eevee": ["ibui", "eievui", "evoli"],
+    "pikachu": ["pika", "pikachuu"],
+    "charizard": ["lizardon", "dracaufeu", "glurak"],
+    "bulbasaur": ["fushigidane", "bulbizarre", "bisasam"],
+    "squirtle": ["zenigame", "carapuce", "schiggy"],
+    "mewtwo": ["myuutsuu"],
+    "mew": ["myuu"],
+    "gengar": ["gangar", "ectoplasma"],
+    "lucario": ["rukario"],
+    "greninja": ["gekkouga", "amphinobi"],
+    "garchomp": ["gaburias", "carchacrok", "knakrack"],
+    "rayquaza": ["rekkuuza"],
+    "gardevoir": ["sirknight"],
+    "umbreon": ["blacky", "noctali", "nachtara"],
+    "sylveon": ["nymphia", "nymphali", "feelinara"],
+    "mimikyu": ["mimikkyu"],
+    "gimmighoul": ["collecurei"],
+    "gholdengo": ["surfugo"],
+    "tatsugiri": ["sharitatsu"],
 }
 
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix=("p!", "P!"), owner_id=OWNER_ID, intents=intents)
+REGIONAL_PREFIXES = (
+    "alolan ", "galarian ", "hisuian ", "paldean ",
+    "mega ", "primal ", "gigantamax ", "gmax ",
+)
 
-mongo = AsyncIOMotorClient(MONGO_URI)
-db = mongo["poketwo_mini"]
-users_col = db["users"]
-config_col = db["bot_config"]
-
-POKEDEX_FILE = "pokedex.json"
-POKEDEX: list[dict] = []
-POKEDEX_BY_NAME: dict[str, dict] = {}
-GMAX_POKEDEX: list[dict] = []
-EMOJI_CACHE: dict[str, str] = {}
-TYPE_CACHE: dict[int, list[str]] = {}
-
-STARTERS = ["Bulbasaur", "Charmander", "Squirtle", "Pikachu", "Eevee", "Rowlet", "Froakie", "Sprigatito"]
-LEGENDARY_IDS = {
-    144, 145, 146, 150, 151, 243, 244, 245, 249, 250, 251,
-    377, 378, 379, 380, 381, 382, 383, 384, 385, 386,
-    480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493,
-    494, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649,
-    716, 717, 718, 719, 720, 721, 785, 786, 787, 788, 789, 790, 791, 792, 800, 801, 802, 807, 808, 809,
-    888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898,
-    905, 1001, 1002, 1003, 1004, 1007, 1008, 1014, 1015, 1016, 1017, 1024, 1025,
-}
-GMAX_ELIGIBLE_SLUGS = {
-    "venusaur", "charizard", "blastoise", "butterfree", "pikachu", "meowth",
-    "machamp", "gengar", "kingler", "lapras", "eevee", "snorlax", "garbodor",
-    "melmetal", "rillaboom", "cinderace", "inteleon", "corviknight", "drednaw",
-    "coalossal", "flapple", "appletun", "sandaconda", "toxtricity", "centiskorch",
-    "hatterene", "grimmsnarl", "alcremie", "copperajah", "duraludon", "urshifu",
+SHOP_ITEMS: Dict[str, Dict[str, Any]] = {
+    "incense": {
+        "name": "Incense",
+        "price": 1000,
+        "description": "Spawns 1 wild Pokémon every 20 seconds for 180 spawns in this channel.",
+        "spawns": 180,
+        "interval": 20,
+    },
+    "rare candy": {
+        "name": "Rare Candy",
+        "price": 75,
+        "description": "Levels up your selected Pokémon by +1.",
+    },
+    "redeem": {
+        "name": "Redeem",
+        "price": 30000,
+        "description": "Spawn any Pokémon of your choice immediately.",
+    },
 }
 
-# Force-shine state: None | "shiny" | "gmax_shiny"
-force_shiny_mode: str | None = None
+# ==============================================================================
+# DATABASE LAYER
+# ==============================================================================
+class Database:
+    def __init__(self, path: str):
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        self._init_tables()
 
-# ==========================================
-# 👑 OWNER CHECK HELPERS
-# ==========================================
-async def get_owner_ids() -> set[int]:
-    ids = set()
-    if OWNER_ID:
-        ids.add(OWNER_ID)
-    doc = await config_col.find_one({"_id": "owner"})
-    if doc and doc.get("owner_ids"):
-        ids.update(int(uid) for uid in doc["owner_ids"])
-    return ids
+    def _init_tables(self):
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                balance INTEGER DEFAULT 500,
+                selected_pokemon_id INTEGER DEFAULT NULL,
+                redeems INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pokemon (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER NOT NULL,
+                dex_id INTEGER NOT NULL,
+                slug TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                xp INTEGER DEFAULT 0,
+                shiny INTEGER DEFAULT 0,
+                gmax INTEGER DEFAULT 0,
+                gender TEXT NOT NULL,
+                nature TEXT NOT NULL,
+                hp_iv INTEGER NOT NULL,
+                atk_iv INTEGER NOT NULL,
+                def_iv INTEGER NOT NULL,
+                spatk_iv INTEGER NOT NULL,
+                spdef_iv INTEGER NOT NULL,
+                spd_iv INTEGER NOT NULL,
+                iv_percent REAL NOT NULL,
+                types TEXT NOT NULL,
+                caught_at REAL NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS channel_spawns (
+                channel_id INTEGER PRIMARY KEY,
+                spawn_json TEXT NOT NULL,
+                spawned_at REAL NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS incense_channels (
+                channel_id INTEGER PRIMARY KEY,
+                remaining_spawns INTEGER NOT NULL,
+                interval_sec INTEGER NOT NULL,
+                paused INTEGER DEFAULT 0,
+                last_spawn_at REAL DEFAULT 0
+            )
+        """)
+        self.conn.commit()
 
-def is_bot_owner():
-    async def predicate(ctx):
-        owner_ids = await get_owner_ids()
-        if owner_ids:
-            return ctx.author.id in owner_ids
-        return await bot.is_owner(ctx.author)
-    return commands.check(predicate)
+    def ensure_user(self, user_id: int) -> sqlite3.Row:
+        cur = self.conn.cursor()
+        cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+        self.conn.commit()
+        cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        return cur.fetchone()
 
-# ==========================================
-# 📚 POKÉDEX LOADER & APPLICATION EMOJI SYNC
-# ==========================================
-async def load_pokedex():
-    global POKEDEX, POKEDEX_BY_NAME, GMAX_POKEDEX
-    if os.path.exists(POKEDEX_FILE):
-        with open(POKEDEX_FILE, "r", encoding="utf-8") as f:
-            POKEDEX = json.load(f)
-    else:
-        print("⏳ Fetching 1,025 Pokémon from PokéAPI (one-time setup)...")
-        url = "https://pokeapi.co/api/v2/pokemon?limit=1025"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                data = await resp.json()
+    def add_balance(self, user_id: int, amount: int):
+        self.ensure_user(user_id)
+        self.conn.execute(
+            "UPDATE users SET balance = MAX(0, balance + ?) WHERE user_id = ?",
+            (amount, user_id),
+        )
+        self.conn.commit()
 
-        entries = []
-        for idx, item in enumerate(data["results"], start=1):
-            slug = item["name"]
-            display_name = slug.replace("-", " ").title()
-            rarity = 3 if idx in LEGENDARY_IDS else 35
-            entries.append({
-                "dex_id": idx,
-                "name": display_name,
-                "slug": slug,
-                "rarity": rarity,
-                "gmax": False,
-            })
+    def add_redeems(self, user_id: int, count: int):
+        self.ensure_user(user_id)
+        self.conn.execute(
+            "UPDATE users SET redeems = MAX(0, redeems + ?) WHERE user_id = ?",
+            (count, user_id),
+        )
+        self.conn.commit()
 
-            if slug in GMAX_ELIGIBLE_SLUGS:
-                gmax_slug = f"{slug}-gmax"
-                entries.append({
-                    "dex_id": idx,
-                    "name": f"Gigantamax {display_name}",
-                    "slug": gmax_slug,
-                    "rarity": 6,
-                    "gmax": True,
-                })
+    def set_selected(self, user_id: int, pokemon_id: int):
+        self.ensure_user(user_id)
+        self.conn.execute(
+            "UPDATE users SET selected_pokemon_id = ? WHERE user_id = ?",
+            (pokemon_id, user_id),
+        )
+        self.conn.commit()
 
-        with open(POKEDEX_FILE, "w", encoding="utf-8") as f:
-            json.dump(entries, f, indent=2)
-        POKEDEX = entries
+    def insert_pokemon(self, owner_id: int, mon: Dict[str, Any]) -> int:
+        self.ensure_user(owner_id)
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO pokemon (
+                owner_id, dex_id, slug, display_name, level, xp,
+                shiny, gmax, gender, nature,
+                hp_iv, atk_iv, def_iv, spatk_iv, spdef_iv, spd_iv,
+                iv_percent, types, caught_at
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            owner_id,
+            mon["dex_id"],
+            mon["slug"],
+            mon["display_name"],
+            mon["level"],
+            int(mon["shiny"]),
+            int(mon["gmax"]),
+            mon["gender"],
+            mon["nature"],
+            mon["ivs"]["hp"],
+            mon["ivs"]["atk"],
+            mon["ivs"]["def"],
+            mon["ivs"]["spatk"],
+            mon["ivs"]["spdef"],
+            mon["ivs"]["spd"],
+            mon["iv_percent"],
+            json.dumps(mon["types"]),
+            time.time(),
+        ))
+        new_id = cur.lastrowid
+        user = self.ensure_user(owner_id)
+        if user["selected_pokemon_id"] is None:
+            cur.execute(
+                "UPDATE users SET selected_pokemon_id = ? WHERE user_id = ?",
+                (new_id, owner_id),
+            )
+        self.conn.commit()
+        return new_id
 
-    POKEDEX_BY_NAME = {}
-    GMAX_POKEDEX = []
-    for p in POKEDEX:
-        POKEDEX_BY_NAME[p["name"].lower()] = p
-        if p.get("gmax"):
-            GMAX_POKEDEX.append(p)
-            base_title = p["name"].replace("Gigantamax ", "", 1).strip().lower()
-            POKEDEX_BY_NAME.setdefault(f"gmax {base_title}", p)
-    print(f"✅ Loaded {len(POKEDEX)} Pokémon entries ({len(GMAX_POKEDEX)} Gmax) into Pokédex.")
+    def get_user_pokemon(self, owner_id: int) -> List[Dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT * FROM pokemon WHERE owner_id = ? ORDER BY id ASC",
+            (owner_id,),
+        )
+        rows = cur.fetchall()
+        result = []
+        for idx, row in enumerate(rows, start=1):
+            d = dict(row)
+            d["display_index"] = idx
+            d["types"] = json.loads(d["types"])
+            result.append(d)
+        return result
 
-async def get_pokemon_types(dex_id: int, slug: str = "") -> list[str]:
-    if dex_id in TYPE_CACHE:
-        return TYPE_CACHE[dex_id]
-    try:
-        query_key = slug or str(dex_id)
-        url = f"https://pokeapi.co/api/v2/pokemon/{query_key}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+    def delete_pokemon(self, pokemon_id: int, owner_id: int) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(
+            "DELETE FROM pokemon WHERE id = ? AND owner_id = ?",
+            (pokemon_id, owner_id),
+        )
+        deleted = cur.rowcount > 0
+        if deleted:
+            user = self.ensure_user(owner_id)
+            if user["selected_pokemon_id"] == pokemon_id:
+                cur.execute(
+                    "SELECT id FROM pokemon WHERE owner_id = ? ORDER BY id DESC LIMIT 1",
+                    (owner_id,),
+                )
+                nxt = cur.fetchone()
+                cur.execute(
+                    "UPDATE users SET selected_pokemon_id = ? WHERE user_id = ?",
+                    (nxt["id"] if nxt else None, owner_id),
+                )
+        self.conn.commit()
+        return deleted
+
+    def set_spawn(self, channel_id: int, mon: Dict[str, Any]):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO channel_spawns (channel_id, spawn_json, spawned_at) VALUES (?, ?, ?)",
+            (channel_id, json.dumps(mon), time.time()),
+        )
+        self.conn.commit()
+
+    def get_spawn(self, channel_id: int) -> Optional[Dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT spawn_json FROM channel_spawns WHERE channel_id = ?",
+            (channel_id,),
+        )
+        row = cur.fetchone()
+        return json.loads(row["spawn_json"]) if row else None
+
+    def clear_spawn(self, channel_id: int):
+        self.conn.execute(
+            "DELETE FROM channel_spawns WHERE channel_id = ?",
+            (channel_id,),
+        )
+        self.conn.commit()
+
+    def activate_or_add_incense(self, channel_id: int, spawns: int = 180, interval: int = 20):
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT * FROM incense_channels WHERE channel_id = ?",
+            (channel_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            # Adding/buying incense always auto-resumes (paused = 0)
+            cur.execute("""
+                UPDATE incense_channels
+                SET remaining_spawns = remaining_spawns + ?,
+                    interval_sec = ?,
+                    paused = 0
+                WHERE channel_id = ?
+            """, (spawns, interval, channel_id))
+        else:
+            cur.execute("""
+                INSERT INTO incense_channels (channel_id, remaining_spawns, interval_sec, paused, last_spawn_at)
+                VALUES (?, ?, ?, 0, 0)
+            """, (channel_id, spawns, interval))
+        self.conn.commit()
+
+    def set_incense_paused(self, channel_id: int, paused: bool) -> Optional[sqlite3.Row]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT * FROM incense_channels WHERE channel_id = ?",
+            (channel_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute(
+            "UPDATE incense_channels SET paused = ? WHERE channel_id = ?",
+            (1 if paused else 0, channel_id),
+        )
+        self.conn.commit()
+        cur.execute(
+            "SELECT * FROM incense_channels WHERE channel_id = ?",
+            (channel_id,),
+        )
+        return cur.fetchone()
+
+    def get_active_incenses(self) -> List[sqlite3.Row]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT * FROM incense_channels WHERE paused = 0 AND remaining_spawns > 0"
+        )
+        return cur.fetchall()
+
+    def decrement_incense(self, channel_id: int):
+        cur = self.conn.cursor()
+        cur.execute("""
+            UPDATE incense_channels
+            SET remaining_spawns = remaining_spawns - 1,
+                last_spawn_at = ?
+            WHERE channel_id = ?
+        """, (time.time(), channel_id))
+        cur.execute(
+            "DELETE FROM incense_channels WHERE channel_id = ? AND remaining_spawns <= 0",
+            (channel_id,),
+        )
+        self.conn.commit()
+
+
+# ==============================================================================
+# POKEAPI CLIENT & ALIAS RESOLVER
+# ==============================================================================
+class PokeAPIClient:
+    BASE_URL = "https://pokeapi.co/api/v2"
+
+    def __init__(self):
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.pokemon_cache: Dict[str, Dict[str, Any]] = {}
+        self.species_cache: Dict[str, Dict[str, Any]] = {}
+        self.all_pokemon_names: List[str] = []
+        self.alias_to_slug: Dict[str, str] = {}
+        self.slug_to_aliases: Dict[str, set] = {}
+        self.box_icon_cache: Dict[int, str] = dict(CUSTOM_BOX_EMOJIS)
+
+    async def start(self):
+        self.session = aiohttp.ClientSession()
+        await self._bootstrap_index()
+
+    async def close(self):
+        if self.session:
+            await self.session.close()
+
+    def _normalize(self, text: str) -> str:
+        text = text.lower().strip()
+        text = text.replace("♀", "-f").replace("♂", "-m")
+        text = re.sub(r"[^a-z0-9\s\-]", "", text)
+        text = re.sub(r"\s+", " ", text)
+        return text
+
+    def _register_alias(self, alias: str, slug: str):
+        norm = self._normalize(alias)
+        if not norm:
+            return
+        self.alias_to_slug[norm] = slug
+        self.alias_to_slug[norm.replace(" ", "-")] = slug
+        self.alias_to_slug[norm.replace("-", " ")] = slug
+        self.slug_to_aliases.setdefault(slug, set()).update({
+            norm,
+            norm.replace(" ", "-"),
+            norm.replace("-", " "),
+        })
+
+    async def _bootstrap_index(self):
+        try:
+            async with self.session.get(f"{self.BASE_URL}/pokemon?limit=1500") as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    types = [t["type"]["name"].lower() for t in data.get("types", [])]
-                    if types:
-                        TYPE_CACHE[dex_id] = types
-                        return types
-    except Exception:
-        pass
-    TYPE_CACHE[dex_id] = ["normal"]
-    return ["normal"]
+                    for item in data.get("results", []):
+                        slug = item["name"]
+                        self.all_pokemon_names.append(slug)
+                        self._register_alias(slug, slug)
+                        # Friendly regional names (e.g., vulpix-alola -> alolan vulpix)
+                        if slug.endswith("-alola"):
+                            base = slug[:-6]
+                            self._register_alias(f"alolan {base}", slug)
+                            self._register_alias(f"alola {base}", slug)
+                        elif slug.endswith("-galar"):
+                            base = slug[:-6]
+                            self._register_alias(f"galarian {base}", slug)
+                            self._register_alias(f"galar {base}", slug)
+                        elif slug.endswith("-hisui"):
+                            base = slug[:-6]
+                            self._register_alias(f"hisuian {base}", slug)
+                            self._register_alias(f"hisui {base}", slug)
+                        elif slug.endswith("-paldea"):
+                            base = slug[:-7]
+                            self._register_alias(f"paldean {base}", slug)
+                            self._register_alias(f"paldea {base}", slug)
+                        elif slug.endswith("-gmax"):
+                            base = slug[:-5]
+                            self._register_alias(f"gigantamax {base}", slug)
+                            self._register_alias(f"gmax {base}", slug)
 
-async def ensure_pokemon_emoji(mon: dict) -> str:
-    """Fetches or uploads a small box icon as a Bot Application Emoji on demand."""
-    base_slug = mon["slug"].replace("-gmax", "")
-    if base_slug in EMOJI_CACHE:
-        return EMOJI_CACHE[base_slug]
+            for base_slug, aliases in EXTRA_ALIASES.items():
+                for al in aliases:
+                    self._register_alias(al, base_slug)
+        except Exception as e:
+            print(f"[PokeAPI] Bootstrap warning: {e}")
 
-    emoji_name = base_slug.replace("-", "_")[:32]
-    try:
-        if not EMOJI_CACHE:
-            existing = await bot.fetch_application_emojis()
-            for e in existing:
-                EMOJI_CACHE[e.name.replace("_", "-")] = str(e)
-            if base_slug in EMOJI_CACHE:
-                return EMOJI_CACHE[base_slug]
+    def resolve_slug(self, query: str) -> Optional[str]:
+        norm = self._normalize(query)
+        if not norm:
+            return None
+        if norm in self.alias_to_slug:
+            return self.alias_to_slug[norm]
+        hyphen = norm.replace(" ", "-")
+        if hyphen in self.alias_to_slug:
+            return self.alias_to_slug[hyphen]
+        # Handle "alolan vulpix" -> "vulpix-alola"
+        for prefix, suffix in [
+            ("alolan ", "-alola"), ("alola ", "-alola"),
+            ("galarian ", "-galar"), ("galar ", "-galar"),
+            ("hisuian ", "-hisui"), ("hisui ", "-hisui"),
+            ("paldean ", "-paldea"), ("paldea ", "-paldea"),
+            ("gigantamax ", "-gmax"), ("gmax ", "-gmax"),
+        ]:
+            if norm.startswith(prefix):
+                candidate = norm[len(prefix):].replace(" ", "-") + suffix
+                if candidate in self.alias_to_slug:
+                    return self.alias_to_slug[candidate]
+        return None
 
-        icon_url = f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-viii/icons/{mon['dex_id']}.png"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(icon_url) as resp:
-                if resp.status == 200:
-                    img_bytes = await resp.read()
-                    created = await bot.create_application_emoji(name=emoji_name, image=img_bytes)
-                    EMOJI_CACHE[base_slug] = str(created)
-                    return str(created)
-    except Exception as e:
-        print(f"Emoji sync note for {base_slug}: {e}")
+    def format_display_name(self, slug: str) -> str:
+        parts = slug.split("-")
+        if len(parts) >= 2:
+            suffix = parts[-1]
+            base = " ".join(p.capitalize() for p in parts[:-1])
+            region_map = {
+                "alola": f"Alolan {base}",
+                "galar": f"Galarian {base}",
+                "hisui": f"Hisuian {base}",
+                "paldea": f"Paldean {base}",
+                "gmax": f"Gigantamax {base}",
+            }
+            if suffix in region_map:
+                return region_map[suffix]
+        return " ".join(p.capitalize() for p in parts)
 
-    return "🔹"
+    async def get_pokemon_data(self, identifier: str) -> Optional[Dict[str, Any]]:
+        slug = self.resolve_slug(str(identifier)) or self._normalize(str(identifier)).replace(" ", "-")
+        if slug in self.pokemon_cache:
+            return self.pokemon_cache[slug]
 
-async def ensure_user_doc(user_id: int) -> dict:
-    user = await users_col.find_one({"user_id": user_id})
-    if not user:
-        user = {
-            "user_id": user_id,
-            "selected": 1,
-            "coins": 0,
-            "shards": 0,
-            "redeems": 0,
-            "catches": 0,
-            "daily_streak": 0,
-            "last_daily": None,
-            "hunt_target": None,
-            "hunt_chain": 0,
-            "pokemon": [],
+        async with self.session.get(f"{self.BASE_URL}/pokemon/{slug}") as resp:
+            if resp.status != 200:
+                return None
+            raw = await resp.json()
+
+        species_name = raw["species"]["name"]
+        species_data = await self.get_species_data(species_name)
+
+        # Register localized names from species endpoint as valid catch aliases
+        valid_names = set(self.slug_to_aliases.get(slug, set()))
+        valid_names.update({
+            self._normalize(slug),
+            self._normalize(slug.replace("-", " ")),
+            self._normalize(species_name),
+            self._normalize(species_name.replace("-", " ")),
+            self._normalize(self.format_display_name(slug)),
+        })
+        for al in EXTRA_ALIASES.get(species_name, []):
+            valid_names.add(self._normalize(al))
+        if species_data:
+            for entry in species_data.get("names", []):
+                loc_name = self._normalize(entry.get("name", ""))
+                if loc_name:
+                    valid_names.add(loc_name)
+                    self._register_alias(loc_name, species_name)
+
+        base_stats = {s["stat"]["name"]: s["base_stat"] for s in raw["stats"]}
+        sprites = raw.get("sprites", {})
+        other = sprites.get("other", {})
+        official = other.get("official-artwork", {})
+        home = other.get("home", {})
+        gen8_icon = (
+            sprites.get("versions", {})
+            .get("generation-viii", {})
+            .get("icons", {})
+            .get("front_default")
+        )
+
+        parsed = {
+            "dex_id": raw["id"],
+            "species_id": species_data["id"] if species_data else raw["id"],
+            "species_name": species_name,
+            "slug": raw["name"],
+            "display_name": self.format_display_name(raw["name"]),
+            "types": [t["type"]["name"] for t in sorted(raw["types"], key=lambda x: x["slot"])],
+            "base_stats": {
+                "hp": base_stats.get("hp", 50),
+                "atk": base_stats.get("attack", 50),
+                "def": base_stats.get("defense", 50),
+                "spatk": base_stats.get("special-attack", 50),
+                "spdef": base_stats.get("special-defense", 50),
+                "spd": base_stats.get("speed", 50),
+            },
+            "artwork_default": official.get("front_default") or home.get("front_default") or sprites.get("front_default"),
+            "artwork_shiny": official.get("front_shiny") or home.get("front_shiny") or sprites.get("front_shiny"),
+            "box_icon_url": gen8_icon,
+            "gender_rate": species_data.get("gender_rate", 4) if species_data else 4,
+            "valid_catch_names": sorted(valid_names),
         }
-        await users_col.insert_one(user)
-    return user
+        self.pokemon_cache[raw["name"]] = parsed
+        self.pokemon_cache[slug] = parsed
+        return parsed
 
-def get_gender_emoji(mon: dict) -> str:
-    gender = mon.get("gender")
-    if gender == "Male":
-        return MALE_EMOJI
-    if gender == "Female":
-        return FEMALE_EMOJI
-    if gender == "Genderless" or mon.get("dex_id") in GENDERLESS_IDS:
-        return GENDERLESS_EMOJI
-    return MALE_EMOJI
+    async def get_species_data(self, species_name: str) -> Optional[Dict[str, Any]]:
+        if species_name in self.species_cache:
+            return self.species_cache[species_name]
+        async with self.session.get(f"{self.BASE_URL}/pokemon-species/{species_name}") as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            self.species_cache[species_name] = data
+            return data
 
-# ==========================================
-# 🎨 SPAWN IMAGE GENERATOR (Biome + Art)
-# ==========================================
-def get_sprite_url(dex_id: int, shiny: bool = False) -> str:
-    if shiny:
-        return f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/shiny/{dex_id}.png"
-    return f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/{dex_id}.png"
+    async def ensure_box_icon_emoji(self, bot: commands.Bot, dex_id: int, icon_url: Optional[str]) -> str:
+        """
+        Attempts to fetch and register the Gen VIII pixelated icon as an application emoji
+        so p!p shows the tiny pixel sprite. If unavailable or upload fails, returns '' (blank).
+        """
+        if dex_id in self.box_icon_cache:
+            return self.box_icon_cache[dex_id]
+        if not icon_url or not self.session:
+            self.box_icon_cache[dex_id] = ""
+            return ""
+        try:
+            # Check existing application emojis first
+            app_emojis = await bot.fetch_application_emojis()
+            target_name = f"pkmn_{dex_id}"
+            for em in app_emojis:
+                if em.name == target_name:
+                    val = str(em)
+                    self.box_icon_cache[dex_id] = val
+                    return val
 
-def _generate_biome_background(types: list[str], width=800, height=500) -> Image.Image:
-    primary_type = types[0] if types else "normal"
-    top_c, mid_c, ground_c = TYPE_BIOME_PALETTES.get(primary_type, TYPE_BIOME_PALETTES["normal"])
+            async with self.session.get(icon_url) as resp:
+                if resp.status != 200:
+                    self.box_icon_cache[dex_id] = ""
+                    return ""
+                img_bytes = await resp.read()
 
-    bg = Image.new("RGBA", (width, height))
-    draw = ImageDraw.Draw(bg)
-    horizon_y = int(height * 0.64)
+            created = await bot.create_application_emoji(name=target_name, image=img_bytes)
+            val = str(created)
+            self.box_icon_cache[dex_id] = val
+            return val
+        except Exception:
+            # Never fall back to 🔹 or random emojis—leave strictly blank
+            self.box_icon_cache[dex_id] = ""
+            return ""
 
-    for y in range(horizon_y):
-        ratio = y / max(1, horizon_y)
-        r = int(top_c[0] + (mid_c[0] - top_c[0]) * ratio)
-        g = int(top_c[1] + (mid_c[1] - top_c[1]) * ratio)
-        b = int(top_c[2] + (mid_c[2] - top_c[2]) * ratio)
-        draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-    # Scenery silhouettes tailored to biome type
-    if primary_type in ("grass", "bug"):
-        for x in range(40, width, 95):
-            trunk_x = x + 18
-            draw.rectangle([trunk_x - 6, horizon_y - 75, trunk_x + 6, horizon_y + 12], fill=(54, 36, 22, 235))
-            draw.ellipse([x - 24, horizon_y - 135, x + 60, horizon_y - 45], fill=(mid_c[0], mid_c[1], mid_c[2], 230))
-    elif primary_type in ("rock", "ground"):
-        peaks = [(0, horizon_y + 10), (140, horizon_y - 115), (290, horizon_y + 10),
-                 (470, horizon_y - 135), (650, horizon_y + 10), (800, horizon_y - 90), (800, horizon_y + 10)]
-        draw.polygon(peaks, fill=(mid_c[0], mid_c[1], mid_c[2], 220))
-    elif primary_type in ("fire", "electric", "psychic", "ghost", "dark"):
-        glow_cx, glow_cy = width // 2, int(height * 0.45)
-        for radius, alpha in [(220, 45), (150, 75), (90, 110)]:
-            draw.ellipse(
-                [glow_cx - radius, glow_cy - radius, glow_cx + radius, glow_cy + radius],
-                fill=(ground_c[0], ground_c[1], ground_c[2], alpha),
-            )
+# ==============================================================================
+# MUTED, NATURAL ENVIRONMENT BACKGROUND COMPOSITOR (PIL)
+# ==============================================================================
+class SceneRenderer:
+    WIDTH = 640
+    HEIGHT = 400
 
-    for y in range(horizon_y, height):
-        ratio = (y - horizon_y) / max(1, height - horizon_y)
-        r = int(ground_c[0] * (1.0 - 0.25 * ratio))
-        g = int(ground_c[1] * (1.0 - 0.25 * ratio))
-        b = int(ground_c[2] * (1.0 - 0.25 * ratio))
-        draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
-
-    return bg
-
-async def create_spawn_banner(dex_id: int, is_gmax: bool = False, slug: str = "") -> discord.File:
-    types = await get_pokemon_types(dex_id, slug=slug)
-    bg_folder = "backgrounds"
-    matched_bg = None
-
-    if os.path.isdir(bg_folder):
-        all_imgs = [f for f in os.listdir(bg_folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
-        for t in types:
-            candidates = [f for f in all_imgs if t in f.lower()]
-            if candidates:
-                matched_bg = os.path.join(bg_folder, random.choice(candidates))
-                break
-        if not matched_bg and all_imgs:
-            matched_bg = os.path.join(bg_folder, random.choice(all_imgs))
-
-    if matched_bg:
-        bg = Image.open(matched_bg).convert("RGBA").resize((800, 500))
-    else:
-        bg = _generate_biome_background(types, 800, 500)
-
-    art_url = get_sprite_url(dex_id, shiny=False)
-    async with aiohttp.ClientSession() as session:
-        async with session.get(art_url) as resp:
-            art_bytes = await resp.read()
-
-    size = (420, 420) if is_gmax else (370, 370)
-    sprite = Image.open(io.BytesIO(art_bytes)).convert("RGBA").resize(size, Image.Resampling.LANCZOS)
-    paste_x = (bg.width - sprite.width) // 2
-    paste_y = (bg.height - sprite.height) // 2 + (6 if is_gmax else 20)
-    bg.alpha_composite(sprite, (paste_x, paste_y))
-
-    buf = io.BytesIO()
-    bg.convert("RGB").save(buf, format="JPEG", quality=92)
-    buf.seek(0)
-    return discord.File(fp=buf, filename="spawn.jpg")
-
-def compute_stats(level: int, ivs: list[int]) -> list[int]:
-    hp_iv, atk_iv, def_iv, spa_iv, spd_iv, spe_iv = ivs
-    hp = int(((2 * 60 + hp_iv) * level) / 100) + level + 10
-    other_ivs = [atk_iv, def_iv, spa_iv, spd_iv, spe_iv]
-    other_stats = [int(((2 * 60 + iv) * level) / 100) + 5 for iv in other_ivs]
-    return [hp, *other_stats]
-
-def generate_pokemon_data(mon_entry: dict, force_shiny: bool = False) -> dict:
-    level = random.randint(1, 40)
-    ivs = [random.randint(0, 31) for _ in range(6)]
-    iv_percent = round((sum(ivs) / 186) * 100, 2)
-    is_shiny = True if force_shiny else (random.randint(1, 4096) == 1)
-    if mon_entry["dex_id"] in GENDERLESS_IDS:
-        gender = "Genderless"
-    else:
-        gender = random.choice(["Male", "Female"])
-    nature = random.choice(NATURES)
-    return {
-        "dex_id": mon_entry["dex_id"],
-        "name": mon_entry["name"],
-        "slug": mon_entry["slug"],
-        "gmax": bool(mon_entry.get("gmax", False)),
-        "level": level,
-        "xp": 0,
-        "next_xp": level * 50,
-        "nature": nature,
-        "gender": gender,
-        "ivs": ivs,
-        "iv_percent": iv_percent,
-        "shiny": is_shiny,
+    TYPE_PALETTES: Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = {
+        "normal":   ((198, 196, 186), (168, 165, 152)),
+        "fire":     ((186, 134, 112), (142, 94, 78)),
+        "water":    ((96, 146, 176),  (54, 102, 136)),
+        "electric": ((118, 136, 114), (82, 102, 84)),
+        "grass":    ((148, 178, 142), (112, 146, 110)),
+        "ice":      ((182, 206, 218), (146, 178, 194)),
+        "fighting": ((178, 140, 126), (142, 106, 94)),
+        "poison":   ((150, 132, 166), (114, 96, 132)),
+        "ground":   ((188, 168, 138), (154, 132, 102)),
+        "flying":   ((168, 196, 218), (198, 214, 226)),
+        "psychic":  ((184, 148, 172), (146, 112, 138)),
+        "bug":      ((162, 180, 132), (128, 148, 98)),
+        "rock":     ((168, 160, 146), (132, 124, 112)),
+        "ghost":    ((116, 112, 136), (84, 80, 106)),
+        "dragon":   ((124, 136, 172), (92, 104, 142)),
+        "dark":     ((106, 104, 114), (76, 74, 84)),
+        "steel":    ((166, 174, 182), (132, 142, 152)),
+        "fairy":    ((204, 178, 192), (174, 146, 164)),
     }
 
-def get_milestone_reward(total_catches: int) -> tuple[int, str]:
-    """Awards PC only at exact powers of 10 (10 -> 35, 100 -> 350, 1000 -> 3500, ...)."""
-    if total_catches < 10:
-        return 0, ""
-    n = total_catches
-    power = 0
-    while n > 1 and n % 10 == 0:
-        n //= 10
-        power += 1
-    if n == 1 and power >= 1:
-        reward = 35 * (10 ** (power - 1))
-        return reward, f"🏅 **{total_catches:,}th Catch Milestone!** +{reward:,} Pokécoins!"
-    return 0, ""
+    @classmethod
+    def _vertical_gradient(
+        cls,
+        top_rgb: Tuple[int, int, int],
+        bot_rgb: Tuple[int, int, int],
+    ) -> Image.Image:
+        img = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT))
+        draw = ImageDraw.Draw(img)
+        for y in range(cls.HEIGHT):
+            t = y / max(1, cls.HEIGHT - 1)
+            r = int(top_rgb[0] + (bot_rgb[0] - top_rgb[0]) * t)
+            g = int(top_rgb[1] + (bot_rgb[1] - top_rgb[1]) * t)
+            b = int(top_rgb[2] + (bot_rgb[2] - top_rgb[2]) * t)
+            draw.line([(0, y), (cls.WIDTH, y)], fill=(r, g, b, 255))
+        return img
 
-# ==========================================
-# ⚡ SPAWN & INCENSE ENGINE
-# ==========================================
-channel_state: dict[int, dict] = {}
-# channel_id -> {"remaining": int, "interval": int, "ends_at": datetime, "paused": bool, "task": asyncio.Task | None}
-active_incenses: dict[int, dict] = {}
-SPAWN_THRESHOLD = 15
+    @classmethod
+    def _draw_flying_sky(cls, canvas: Image.Image):
+        """Soft, low-detail pastel sky with gentle, understated clouds."""
+        overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        clouds = [
+            (70, 75, 195, 122),
+            (130, 62, 240, 118),
+            (410, 95, 555, 142),
+            (465, 82, 585, 135),
+            (215, 165, 345, 202),
+        ]
+        for box in clouds:
+            draw.ellipse(box, fill=(235, 242, 248, 95))
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=10))
+        canvas.alpha_composite(overlay)
 
-def _format_incense_status(inc: dict) -> str:
-    now = datetime.now(timezone.utc)
-    if inc.get("paused"):
-        return (
-            f"Incense: Paused.\n"
-            f"Spawns Remaining: {inc['remaining']}.\n"
-            f"Spawn Interval: {inc['interval']}s."
+    @classmethod
+    def _draw_electric_forest(cls, canvas: Image.Image):
+        """Calm, muted forest silhouettes with small, subtle yellow lightning."""
+        overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # Soft ground slope
+        draw.rectangle([0, 315, cls.WIDTH, cls.HEIGHT], fill=(68, 86, 68, 170))
+
+        # Minimalist distant tree silhouettes (low detail, muted sage/olive)
+        tree_positions = [55, 125, 515, 585]
+        for tx in tree_positions:
+            draw.rectangle([tx - 6, 235, tx + 6, 325], fill=(64, 78, 62, 150))
+            draw.polygon([(tx, 145), (tx - 38, 245), (tx + 38, 245)], fill=(74, 94, 74, 155))
+            draw.polygon([(tx, 180), (tx - 44, 275), (tx + 44, 275)], fill=(66, 86, 66, 160))
+
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=3))
+        canvas.alpha_composite(overlay)
+
+        # Small, subtle muted yellow lightning bolts in the background sky
+        bolt_layer = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
+        bdraw = ImageDraw.Draw(bolt_layer)
+        bolts = [
+            [(165, 65), (153, 95), (166, 95), (154, 126)],
+            [(475, 55), (464, 82), (476, 82), (465, 110)],
+        ]
+        for pts in bolts:
+            bdraw.line(pts, fill=(224, 206, 122, 130), width=3)
+        bolt_layer = bolt_layer.filter(ImageFilter.GaussianBlur(radius=1.2))
+        canvas.alpha_composite(bolt_layer)
+
+    @classmethod
+    def _draw_water_ocean(cls, canvas: Image.Image):
+        """Muted underwater ocean scene with soft light beams falling from top behind the Pokémon."""
+        overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # Soft angled light rays descending from top-center behind the sprite
+        rays = [
+            [(220, 0), (275, 0), (195, 340), (110, 340)],
+            [(295, 0), (355, 0), (345, 360), (255, 360)],
+            [(375, 0), (425, 0), (495, 330), (415, 330)],
+        ]
+        for poly in rays:
+            draw.polygon(poly, fill=(186, 222, 238, 42))
+
+        # Subtle soft seafloor curve at the very bottom
+        draw.ellipse([-60, 335, cls.WIDTH + 60, 440], fill=(42, 82, 112, 140))
+
+        # Tiny faint bubbles
+        for bx, by, br in [(140, 260, 4), (152, 225, 3), (490, 245, 4), (502, 205, 3)]:
+            draw.ellipse([bx - br, by - br, bx + br, by + br], outline=(195, 228, 242, 75), width=1)
+
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=6))
+        canvas.alpha_composite(overlay)
+
+    @classmethod
+    def _draw_grass_meadow(cls, canvas: Image.Image):
+        """Plain, low-detail muted meadow horizon."""
+        overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        draw.ellipse([-80, 295, 440, 430], fill=(96, 130, 94, 145))
+        draw.ellipse([220, 305, cls.WIDTH + 80, 440], fill=(86, 120, 86, 155))
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=6))
+        canvas.alpha_composite(overlay)
+
+    @classmethod
+    def _draw_subtle_ground_shadow(cls, canvas: Image.Image):
+        shadow = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(shadow)
+        draw.ellipse([215, 325, 425, 355], fill=(25, 30, 35, 55))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=8))
+        canvas.alpha_composite(shadow)
+
+    @classmethod
+    async def render_card(
+        cls,
+        session: aiohttp.ClientSession,
+        sprite_url: Optional[str],
+        types: List[str],
+    ) -> Optional[discord.File]:
+        primary = types[0].lower() if types else "normal"
+        top_rgb, bot_rgb = cls.TYPE_PALETTES.get(primary, cls.TYPE_PALETTES["normal"])
+        canvas = cls._vertical_gradient(top_rgb, bot_rgb)
+
+        if primary == "flying":
+            cls._draw_flying_sky(canvas)
+        elif primary == "electric":
+            cls._draw_electric_forest(canvas)
+        elif primary == "water":
+            cls._draw_water_ocean(canvas)
+        elif primary in ("grass", "bug"):
+            cls._draw_grass_meadow(canvas)
+
+        cls._draw_subtle_ground_shadow(canvas)
+
+        if sprite_url:
+            try:
+                async with session.get(sprite_url) as resp:
+                    if resp.status == 200:
+                        raw_bytes = await resp.read()
+                        sprite = Image.open(io.BytesIO(raw_bytes)).convert("RGBA")
+                        # Resize cleanly so Pokémon stands out clearly against the muted scene
+                        target_h = 265
+                        ratio = target_h / max(1, sprite.height)
+                        target_w = int(sprite.width * ratio)
+                        sprite = sprite.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                        x = (cls.WIDTH - target_w) // 2
+                        y = (cls.HEIGHT - target_h) // 2 + 12
+                        canvas.alpha_composite(sprite, (x, y))
+            except Exception:
+                pass
+
+        buf = io.BytesIO()
+        canvas.convert("RGB").save(buf, format="PNG")
+        buf.seek(0)
+        return discord.File(buf, filename="pokemon.png")
+
+
+# ==============================================================================
+# STAT CALCULATIONS & SPAWN / IV HELPERS
+# ==============================================================================
+STAT_KEYS = ["hp", "atk", "def", "spatk", "spdef", "spd"]
+STAT_LABELS = {
+    "hp": "HP",
+    "atk": "Attack",
+    "def": "Defense",
+    "spatk": "Sp. Atk",
+    "spdef": "Sp. Def",
+    "spd": "Speed",
+}
+
+STAT_ALIASES = {
+    "hp": "hp", "hpiv": "hp",
+    "atk": "atk", "attack": "atk", "atkiv": "atk", "attackiv": "atk",
+    "def": "def", "defense": "def", "defence": "def", "defiv": "def",
+    "spatk": "spatk", "spa": "spatk", "specialattack": "spatk", "spatkiv": "spatk",
+    "spdef": "spdef", "spd_def": "spdef", "specialdefense": "spdef", "spdiv": "spdef", "spdefiv": "spdef",
+    "spd": "spd", "spe": "spd", "speed": "spd", "spdiv_speed": "spd", "speediv": "spd",
+}
+
+
+def compute_battle_stats(base_stats: Dict[str, int], ivs: Dict[str, int], level: int, nature: str) -> Dict[str, int]:
+    inc_stat, dec_stat = NATURE_MODIFIERS.get(nature, (None, None))
+    out: Dict[str, int] = {}
+    for key in STAT_KEYS:
+        base = base_stats.get(key, 50)
+        iv = ivs.get(key, 0)
+        if key == "hp":
+            out[key] = math.floor(((2 * base + iv) * level) / 100) + level + 10
+        else:
+            raw = math.floor(((2 * base + iv) * level) / 100) + 5
+            mult = 1.1 if inc_stat == key else (0.9 if dec_stat == key else 1.0)
+            out[key] = math.floor(raw * mult)
+    return out
+
+
+def roll_gender(gender_rate: int) -> str:
+    if gender_rate == -1:
+        return "Genderless"
+    if gender_rate == 0:
+        return "Male"
+    if gender_rate == 8:
+        return "Female"
+    female_chance = gender_rate / 8.0
+    return "Female" if random.random() < female_chance else "Male"
+
+
+def gender_symbol(gender: str) -> str:
+    if gender == "Male":
+        return "♂"
+    if gender == "Female":
+        return "♀"
+    return "⚪"
+
+
+def gmax_badge() -> str:
+    if USE_DEFAULT_GMAX_BADGE and GMAX_EMOJI.endswith("123456789012345678>"):
+        return DEFAULT_GMAX_TEXT
+    return GMAX_EMOJI
+
+
+def distribute_iv_total(
+    target_total: int,
+    pinned: Dict[str, int],
+) -> Optional[Dict[str, int]]:
+    """
+    Distributes `target_total` (0..186) across all 6 stats (0..31 each),
+    respecting `pinned` stats, and distributing remaining points randomly.
+    Returns None if impossible.
+    """
+    remaining_keys = [k for k in STAT_KEYS if k not in pinned]
+    pinned_sum = sum(pinned.values())
+    rem_points = target_total - pinned_sum
+
+    if rem_points < 0 or rem_points > 31 * len(remaining_keys):
+        return None
+
+    alloc = {k: 0 for k in remaining_keys}
+    # Randomized incremental distribution within [0, 31]
+    pool = list(remaining_keys)
+    for _ in range(rem_points):
+        valid_choices = [k for k in pool if alloc[k] < 31]
+        if not valid_choices:
+            return None
+        chosen = random.choice(valid_choices)
+        alloc[chosen] += 1
+
+    result = dict(pinned)
+    result.update(alloc)
+    return result
+
+
+def build_pokemon_payload(
+    pdata: Dict[str, Any],
+    level: Optional[int] = None,
+    ivs: Optional[Dict[str, int]] = None,
+    shiny: Optional[bool] = None,
+    gmax: Optional[bool] = None,
+) -> Dict[str, Any]:
+    lvl = level if level is not None else random.randint(1, 45)
+    is_shiny = shiny if shiny is not None else (random.random() < (1 / 4096))
+    is_gmax = gmax if gmax is not None else False
+    if ivs is None:
+        ivs = {k: random.randint(0, 31) for k in STAT_KEYS}
+    iv_pct = round((sum(ivs.values()) / 186.0) * 100.0, 2)
+
+    return {
+        "dex_id": pdata["dex_id"],
+        "slug": pdata["slug"],
+        "display_name": pdata["display_name"],
+        "level": lvl,
+        "shiny": is_shiny,
+        "gmax": is_gmax,
+        "gender": roll_gender(pdata["gender_rate"]),
+        "nature": random.choice(NATURES),
+        "ivs": ivs,
+        "iv_percent": iv_pct,
+        "types": pdata["types"],
+        "artwork_default": pdata["artwork_default"],
+        "artwork_shiny": pdata["artwork_shiny"],
+        "box_icon_url": pdata["box_icon_url"],
+        "valid_catch_names": pdata["valid_catch_names"],
+    }
+
+
+# ==============================================================================
+# INTERACTIVE VIEWS (INFO PAGINATION, LIST PAGINATION, CONFIRMATIONS)
+# ==============================================================================
+class InfoPaginatorView(discord.ui.View):
+    def __init__(self, bot: "PokeBot", user: discord.abc.User, collection: List[Dict[str, Any]], start_idx: int):
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.user = user
+        self.collection = collection
+        self.idx = start_idx
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("Only the command invoker can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.idx = (self.idx - 1) % len(self.collection)
+        embed, file = await self.bot.build_info_embed(self.user, self.collection[self.idx], len(self.collection))
+        attachments = [file] if file else []
+        await interaction.response.edit_message(embed=embed, attachments=attachments, view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.idx = (self.idx + 1) % len(self.collection)
+        embed, file = await self.bot.build_info_embed(self.user, self.collection[self.idx], len(self.collection))
+        attachments = [file] if file else []
+        await interaction.response.edit_message(embed=embed, attachments=attachments, view=self)
+
+
+class ListPaginatorView(discord.ui.View):
+    def __init__(self, user: discord.abc.User, pages: List[discord.Embed]):
+        super().__init__(timeout=120)
+        self.user = user
+        self.pages = pages
+        self.page_idx = 0
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("Only the command invoker can browse this list.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page_idx = (self.page_idx - 1) % len(self.pages)
+        await interaction.response.edit_message(embed=self.pages[self.page_idx], view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page_idx = (self.page_idx + 1) % len(self.pages)
+        await interaction.response.edit_message(embed=self.pages[self.page_idx], view=self)
+
+
+class ReleaseConfirmView(discord.ui.View):
+    def __init__(self, db: Database, user: discord.abc.User, mon: Dict[str, Any], reward_pc: int):
+        super().__init__(timeout=45)
+        self.db = db
+        self.user = user
+        self.mon = mon
+        self.reward_pc = reward_pc
+        self.resolved = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This confirmation isn't for you.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved:
+            return
+        self.resolved = True
+        deleted = self.db.delete_pokemon(self.mon["id"], self.user.id)
+        for child in self.children:
+            child.disabled = True
+        if deleted:
+            self.db.add_balance(self.user.id, self.reward_pc)
+            await interaction.response.edit_message(
+                content=(
+                    f"Released your Level {self.mon['level']} {self.mon['display_name']} "
+                    f"({self.mon['iv_percent']:.2f}%) and received **{self.reward_pc:,} pc**!"
+                ),
+                view=self,
+            )
+        else:
+            await interaction.response.edit_message(
+                content="That Pokémon is no longer in your collection.",
+                view=self,
+            )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved:
+            return
+        self.resolved = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Release cancelled.", view=self)
+
+
+class BuyConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        bot: "PokeBot",
+        user: discord.abc.User,
+        channel_id: int,
+        item_key: str,
+        quantity: int,
+        total_cost: int,
+    ):
+        super().__init__(timeout=45)
+        self.bot = bot
+        self.user = user
+        self.channel_id = channel_id
+        self.item_key = item_key
+        self.quantity = quantity
+        self.total_cost = total_cost
+        self.resolved = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This purchase prompt isn't for you.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved:
+            return
+        self.resolved = True
+        for child in self.children:
+            child.disabled = True
+
+        user_row = self.bot.db.ensure_user(self.user.id)
+        if user_row["balance"] < self.total_cost:
+            await interaction.response.edit_message(
+                content="You no longer have enough Pokécoins for this purchase.",
+                view=self,
+            )
+            return
+
+        self.bot.db.add_balance(self.user.id, -self.total_cost)
+        item = SHOP_ITEMS[self.item_key]
+
+        if self.item_key == "incense":
+            total_spawns = item["spawns"] * self.quantity
+            # Automatically activates and resumes incense in the channel
+            self.bot.db.activate_or_add_incense(self.channel_id, spawns=total_spawns, interval=item["interval"])
+            await interaction.response.edit_message(
+                content=(
+                    f"Purchased **{self.quantity}x {item['name']}** for **{self.total_cost:,} pc**! "
+                    f"Incense is now **active and running** in this channel ({total_spawns} spawns remaining)."
+                ),
+                view=self,
+            )
+        elif self.item_key == "rare candy":
+            sel_id = user_row["selected_pokemon_id"]
+            if not sel_id:
+                self.bot.db.add_balance(self.user.id, self.total_cost)
+                await interaction.response.edit_message(
+                    content="You don't have a selected Pokémon to level up. Purchase refunded.",
+                    view=self,
+                )
+                return
+            self.bot.db.conn.execute(
+                "UPDATE pokemon SET level = MIN(100, level + ?) WHERE id = ? AND owner_id = ?",
+                (self.quantity, sel_id, self.user.id),
+            )
+            self.bot.db.conn.commit()
+            await interaction.response.edit_message(
+                content=f"Purchased **{self.quantity}x Rare Candy** for **{self.total_cost:,} pc**! Your selected Pokémon leveled up!",
+                view=self,
+            )
+        elif self.item_key == "redeem":
+            self.bot.db.add_redeems(self.user.id, self.quantity)
+            await interaction.response.edit_message(
+                content=f"Purchased **{self.quantity}x Redeem** for **{self.total_cost:,} pc**!",
+                view=self,
+            )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved:
+            return
+        self.resolved = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Purchase cancelled.", view=self)
+
+
+# ==============================================================================
+# MAIN BOT CLASS
+# ==============================================================================
+class PokeBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(
+            command_prefix=commands.when_mentioned_or(PREFIX, PREFIX.upper()),
+            intents=intents,
+            case_insensitive=True,
+            help_command=None,
         )
-    ends_at: datetime = inc["ends_at"]
-    secs_left = max(0, int((ends_at - now).total_seconds()))
-    mins_left = max(1, math.ceil(secs_left / 60)) if secs_left > 0 else 0
-    end_str = ends_at.strftime("%d/%m/%Y %H:%M")
-    return (
-        f"Incense: Active.\n"
-        f"Spawns Remaining: {inc['remaining']}.\n"
-        f"Spawn Interval: {inc['interval']}s.\n"
-        f"Ends in {mins_left}m at | {end_str}"
-    )
+        self.db = Database(DB_PATH)
+        self.pokeapi = PokeAPIClient()
+        self.channel_activity: Dict[int, int] = {}
 
-async def trigger_spawn(channel: discord.TextChannel, forced_mon: dict = None, force_gmax_mode: bool = False):
-    if forced_mon:
-        chosen = forced_mon
-    elif force_gmax_mode and GMAX_POKEDEX:
-        chosen = random.choice(GMAX_POKEDEX)
-    else:
-        weights = [p["rarity"] for p in POKEDEX]
-        chosen = random.choices(POKEDEX, weights=weights, k=1)[0]
+    async def setup_hook(self):
+        await self.pokeapi.start()
+        self.incense_loop.start()
 
-    channel_state[channel.id] = {"count": 0, "spawn": chosen}
+    async def close(self):
+        self.incense_loop.cancel()
+        await self.pokeapi.close()
+        await super().close()
 
-    is_gmax = bool(chosen.get("gmax", False))
-    banner_file = await create_spawn_banner(chosen["dex_id"], is_gmax=is_gmax, slug=chosen.get("slug", ""))
-    title_prefix = f"{GMAX_EMOJI} " if is_gmax else ""
+    @tasks.loop(seconds=5)
+    async def incense_loop(self):
+        now = time.time()
+        active = self.db.get_active_incenses()
+        for row in active:
+            ch_id = row["channel_id"]
+            interval = row["interval_sec"]
+            last_at = row["last_spawn_at"]
+            if now - last_at >= interval:
+                channel = self.get_channel(ch_id)
+                if isinstance(channel, discord.TextChannel):
+                    await self.trigger_random_spawn(channel)
+                    self.db.decrement_incense(ch_id)
 
-    inc = active_incenses.get(channel.id)
-    description = "Guess the pokémon and type `p!c <pokémon>` to catch it!"
-    if inc and inc.get("remaining", 0) > 0:
-        description += f"\n\n{_format_incense_status(inc)}"
+    @incense_loop.before_loop
+    async def before_incense(self):
+        await self.wait_until_ready()
 
-    embed = discord.Embed(
-        title=f"{title_prefix}A wild pokémon has appeared!",
-        description=description,
-        color=0x2B2D31,
-    )
-    embed.set_image(url="attachment://spawn.jpg")
-    await channel.send(file=banner_file, embed=embed)
+    async def trigger_random_spawn(
+        self,
+        channel: discord.TextChannel,
+        custom_mon: Optional[Dict[str, Any]] = None,
+    ):
+        if custom_mon is None:
+            if not self.pokeapi.all_pokemon_names:
+                return
+            # Pick a random base dex species (1..1025)
+            rand_id = random.randint(1, 1025)
+            pdata = await self.pokeapi.get_pokemon_data(str(rand_id))
+            if not pdata:
+                return
+            mon = build_pokemon_payload(pdata)
+        else:
+            mon = custom_mon
 
-@bot.event
-async def on_ready():
-    await load_pokedex()
-    try:
-        existing = await bot.fetch_application_emojis()
-        for e in existing:
-            EMOJI_CACHE[e.name.replace("_", "-")] = str(e)
-        print(f"✅ Cached {len(EMOJI_CACHE)} Pokémon Application Emojis.")
-    except Exception as e:
-        print(f"Emoji cache note: {e}")
-    print(f"⚡ Pokétwo Mini online as {bot.user}")
+        self.db.set_spawn(channel.id, mon)
 
+        sprite_url = mon["artwork_shiny"] if mon["shiny"] else mon["artwork_default"]
+        file = await SceneRenderer.render_card(self.pokeapi.session, sprite_url, mon["types"])
+
+        embed = discord.Embed(
+            title="A wild pokémon has appeared!",
+            description=f"Guess the pokémon and type `{PREFIX}catch <pokémon>` to catch it!",
+            color=discord.Color.from_rgb(88, 166, 132),
+        )
+        if file:
+            embed.set_image(url="attachment://pokemon.png")
+            await channel.send(embed=embed, file=file)
+        else:
+            await channel.send(embed=embed)
+
+    async def build_info_embed(
+        self,
+        user: discord.abc.User,
+        mon: Dict[str, Any],
+        total_count: int,
+    ) -> Tuple[discord.Embed, Optional[discord.File]]:
+        # Leading shiny and/or Gmax emoji(s) before "Level <lvl> <Name>"
+        prefixes = []
+        if mon["shiny"]:
+            prefixes.append(SHINY_EMOJI)
+        if mon["gmax"]:
+            prefixes.append(gmax_badge())
+        prefix_str = f"{' '.join(prefixes)} " if prefixes else ""
+
+        title = f"{prefix_str}Level {mon['level']} {mon['display_name']}"
+
+        pdata = await self.pokeapi.get_pokemon_data(mon["slug"])
+        base_stats = pdata["base_stats"] if pdata else {k: 50 for k in STAT_KEYS}
+        ivs = {
+            "hp": mon["hp_iv"],
+            "atk": mon["atk_iv"],
+            "def": mon["def_iv"],
+            "spatk": mon["spatk_iv"],
+            "spdef": mon["spdef_iv"],
+            "spd": mon["spd_iv"],
+        }
+        calc = compute_battle_stats(base_stats, ivs, mon["level"], mon["nature"])
+
+        types_str = " | ".join(t.capitalize() for t in mon["types"])
+        details_block = (
+            f"**XP:** {mon['xp']}/{mon['level'] * 25 + 250}\n"
+            f"**Nature:** {mon['nature']}\n"
+            f"**Gender:** {mon['gender']} {gender_symbol(mon['gender'])}\n"
+            f"**Types:** {types_str}"
+        )
+
+        # Unbolded "IV:" across all 6 stats as requested
+        stats_lines = []
+        for k in STAT_KEYS:
+            stats_lines.append(f"**{STAT_LABELS[k]}:** {calc[k]} – IV: {ivs[k]}/31")
+        stats_lines.append(f"**Total IV:** {mon['iv_percent']:.2f}%")
+
+        embed = discord.Embed(
+            title=title,
+            color=discord.Color.from_rgb(104, 152, 178),
+        )
+        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+        embed.add_field(name="Details", value=details_block, inline=False)
+        embed.add_field(name="Stats", value="\n".join(stats_lines), inline=False)
+        embed.set_footer(text=f"Displaying Pokémon: {mon['display_index']}/{total_count}")
+
+        sprite_url = None
+        if pdata:
+            sprite_url = pdata["artwork_shiny"] if mon["shiny"] else pdata["artwork_default"]
+
+        file = await SceneRenderer.render_card(self.pokeapi.session, sprite_url, mon["types"])
+        if file:
+            embed.set_image(url="attachment://pokemon.png")
+        return embed, file
+
+
+bot = PokeBot()
+
+
+# ==============================================================================
+# MESSAGE LISTENER FOR NATURAL ACTIVITY SPAWNS
+# ==============================================================================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    if not message.content.lower().startswith("p!"):
-        state = channel_state.setdefault(message.channel.id, {"count": 0, "spawn": None})
-        state["count"] += 1
-        if state["count"] >= SPAWN_THRESHOLD:
-            gmax_spawn = (force_shiny_mode == "gmax_shiny")
-            await trigger_spawn(message.channel, force_gmax_mode=gmax_spawn)
+    # Count non-command messages toward natural channel spawns (every 18 messages)
+    if not message.content.lower().startswith(PREFIX):
+        ch_id = message.channel.id
+        bot.channel_activity[ch_id] = bot.channel_activity.get(ch_id, 0) + 1
+        if bot.channel_activity[ch_id] >= 18:
+            bot.channel_activity[ch_id] = 0
+            await bot.trigger_random_spawn(message.channel)
 
     await bot.process_commands(message)
 
-# ==========================================
-# 🎮 STARTER, CATCHING, HUNT & COLLECTION
-# ==========================================
-@bot.command(name="start")
-async def start_game(ctx, *, choice: str = None):
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if user and user.get("pokemon"):
-        await ctx.send("❌ You already started! Use `p!p` to view your Pokémon.")
+
+# ==============================================================================
+# CATCH COMMAND (p!c / p!catch) WITH ALTERNATE & FORM BASE NAMES
+# ==============================================================================
+@bot.command(name="catch", aliases=["c"])
+async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
+    if not guess.strip():
+        await ctx.send(f"Usage: `{PREFIX}catch <pokémon name>`")
         return
 
-    if not choice:
-        starter_list = ", ".join(f"**{s}**" for s in STARTERS)
-        embed = discord.Embed(
-            title="Welcome to Pokétwo Mini!",
-            description=f"Choose a starter using `p!start <name>`:\n\n{starter_list}",
-            color=discord.Color.green(),
-        )
-        await ctx.send(embed=embed)
+    spawn = bot.db.get_spawn(ctx.channel.id)
+    if not spawn:
+        await ctx.send("There is no wild pokémon in this channel right now!")
         return
 
-    matched = next((s for s in STARTERS if s.lower() == choice.strip().lower()), None)
-    if not matched:
-        await ctx.send(f"❌ Invalid starter. Pick from: {', '.join(STARTERS)}")
+    norm_guess = bot.pokeapi._normalize(guess)
+    valid_names = set(spawn.get("valid_catch_names", []))
+    valid_names.add(bot.pokeapi._normalize(spawn["display_name"]))
+    valid_names.add(bot.pokeapi._normalize(spawn["slug"]))
+
+    # Also match if user types base species name for a regional/alt form (e.g., "vulpix" for "alolan vulpix")
+    base_species = spawn["slug"].split("-")[0]
+    valid_names.add(bot.pokeapi._normalize(base_species))
+
+    if norm_guess not in valid_names:
+        await ctx.send("That is the wrong pokémon!")
         return
 
-    entry = POKEDEX_BY_NAME[matched.lower()]
-    starter_mon = generate_pokemon_data(entry)
-    starter_mon["level"] = 5
-    starter_mon["next_xp"] = 250
-    await ensure_pokemon_emoji(entry)
-
-    await users_col.update_one(
-        {"user_id": ctx.author.id},
-        {
-            "$set": {
-                "selected": 1,
-                "pokemon": [starter_mon],
-            },
-            "$inc": {"coins": 500},
-            "$setOnInsert": {
-                "shards": 0,
-                "redeems": 0,
-                "catches": 0,
-                "daily_streak": 0,
-                "last_daily": None,
-                "hunt_target": None,
-                "hunt_chain": 0,
-            },
-        },
-        upsert=True,
-    )
-    await ctx.send(f"🎉 Congratulations {ctx.author.mention}! You chose **{matched}** and received **500 Pokécoins**!")
-
-@bot.command(name="c", aliases=["catch"])
-async def catch_pokemon(ctx, *, guess: str = None):
-    global force_shiny_mode
-
-    state = channel_state.get(ctx.channel.id)
-    if not state or not state.get("spawn"):
-        await ctx.send("❌ There is no wild pokémon in this channel right now.")
-        return
-
-    if not guess:
-        await ctx.send("❌ Usage: `p!c <pokémon name>`")
-        return
-
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user or not user.get("pokemon"):
-        await ctx.send("❌ Type `p!start` first to begin your journey!")
-        return
-
-    active_spawn = state["spawn"]
-    clean_guess = guess.strip().lower()
-    valid_names = {active_spawn["name"].lower()}
-    if active_spawn.get("gmax"):
-        base_name = active_spawn["name"].replace("Gigantamax ", "", 1).strip().lower()
-        valid_names.update({base_name, f"gmax {base_name}"})
-
-    if clean_guess not in valid_names:
-        await ctx.send("❌ That is the wrong pokémon!")
-        return
-
-    state["spawn"] = None
-
-    mon_to_generate = active_spawn
-    should_shine = False
-
-    if force_shiny_mode == "gmax_shiny":
-        if active_spawn.get("gmax"):
-            should_shine = True
-            force_shiny_mode = None
-        else:
-            base_slug = active_spawn["slug"].replace("-gmax", "")
-            gmax_entry = (
-                POKEDEX_BY_NAME.get(f"gigantamax {active_spawn['name'].lower()}")
-                or POKEDEX_BY_NAME.get(f"gmax {active_spawn['name'].lower()}")
-            )
-            if base_slug in GMAX_ELIGIBLE_SLUGS and gmax_entry:
-                mon_to_generate = gmax_entry
-                should_shine = True
-                force_shiny_mode = None
-    elif force_shiny_mode == "shiny":
-        should_shine = True
-        force_shiny_mode = None
-
-    caught_mon = generate_pokemon_data(mon_to_generate, force_shiny=should_shine)
-
-    # Update hunt chain: increment only when catching hunt_target, reset only on shiny
-    hunt_target = user.get("hunt_target")
-    hunt_chain = user.get("hunt_chain", 0)
-    chain_msg = ""
-
-    base_caught = caught_mon["name"].replace("Gigantamax ", "", 1).strip().lower()
-    is_hunt_target = bool(
-        hunt_target and hunt_target.lower() in (caught_mon["name"].lower(), base_caught)
-    )
-
-    if caught_mon["shiny"]:
-        if hunt_target and hunt_chain > 0:
-            chain_msg = f"Shiny streak reset. ({hunt_chain})"
-        hunt_chain = 0
-    elif is_hunt_target:
-        hunt_chain += 1
-        chain_msg = f"+1 Shiny chain! ({hunt_chain})"
-
-    new_catches = user.get("catches", 0) + 1
-    coins_earned, bonus_text = get_milestone_reward(new_catches)
-
-    await users_col.update_one(
-        {"user_id": ctx.author.id},
-        {
-            "$push": {"pokemon": caught_mon},
-            "$inc": {"coins": coins_earned, "catches": 1},
-            "$set": {"hunt_chain": hunt_chain},
-        },
-    )
-
-    is_gmax = bool(caught_mon.get("gmax"))
-    gmax_tag = f" {GMAX_EMOJI}" if is_gmax else ""
-    shiny_tag = f" {SHINY_EMOJI}" if caught_mon["shiny"] else ""
-    gender_tag = f" {get_gender_emoji(caught_mon)}"
-
-    catch_line = (
-        f"Congratulations {ctx.author.mention}! You caught a "
-        f"Level {caught_mon['level']} {caught_mon['name']}{gmax_tag}{shiny_tag}{gender_tag} ({caught_mon['iv_percent']:.2f}%)!"
-    )
-
-    extra_blocks = []
-    if caught_mon["shiny"]:
-        if is_gmax:
-            extra_blocks.append(f"**{caught_mon['name']}** has the Gigantamax factor! {GMAX_EMOJI}")
-        if chain_msg:
-            extra_blocks.append(chain_msg)
-        extra_blocks.append(f"These colors seem unusual... {SHINY_EMOJI}")
-    else:
-        if chain_msg:
-            extra_blocks.append(chain_msg)
-
-    if bonus_text:
-        extra_blocks.append(bonus_text)
-
-    full_message = catch_line
-    if extra_blocks:
-        full_message += "\n\n" + "\n\n".join(extra_blocks)
-
-    await ctx.send(full_message)
-
-@bot.command(name="hunt", aliases=["h", "sh"])
-async def shiny_hunt(ctx, *, pokemon_name: str = None):
-    user = await ensure_user_doc(ctx.author.id)
-
-    if not pokemon_name:
-        target = user.get("hunt_target")
-        chain = user.get("hunt_chain", 0)
-        if not target:
-            await ctx.send("🔍 You don't have an active hunt. Use `p!hunt <pokémon>` to start one!")
-            return
-        await ctx.send(f"🔍 **Active Hunt:** **{target}** | **Chain:** **{chain}**")
-        return
-
-    sub = pokemon_name.strip().lower()
-    if sub in ("clear", "stop", "reset"):
-        await users_col.update_one({"user_id": ctx.author.id}, {"$set": {"hunt_target": None, "hunt_chain": 0}})
-        await ctx.send("✅ Cleared your hunt target and reset your chain to **0**.")
-        return
-
-    entry = POKEDEX_BY_NAME.get(sub)
-    if not entry:
-        await ctx.send(f"❌ Could not find **{pokemon_name}** in the Pokédex.")
-        return
-
-    new_chain = user.get("hunt_chain", 0) if (user.get("hunt_target") or "").lower() == entry["name"].lower() else 0
-    await users_col.update_one(
-        {"user_id": ctx.author.id},
-        {"$set": {"hunt_target": entry["name"], "hunt_chain": new_chain}},
-    )
-    await ctx.send(f"🎯 Now hunting **{entry['name']}**! Current chain: **{new_chain}**.")
-
-@bot.command(name="hint")
-async def spawn_hint(ctx):
-    state = channel_state.get(ctx.channel.id)
-    if not state or not state.get("spawn"):
-        await ctx.send("❌ There is no wild pokémon right now.")
-        return
-
-    name = state["spawn"]["name"]
-    indices = set(random.sample(range(len(name)), max(1, len(name) // 3)))
-    hint_chars = [ch if (i in indices or ch == " ") else r"\_" for i, ch in enumerate(name)]
-    await ctx.send(f"🔍 The wild pokémon is: **{''.join(hint_chars)}**")
-
-# ==========================================
-# 📋 COLLECTION FILTERING, SORTING & PAGINATION
-# ==========================================
-def parse_pokemon_query(raw_args: str | None) -> tuple[dict, int]:
-    """Parses Pokétwo-style flags: --sh, --gmax, --n <name>, --lim <n>, --o <iv|iv+|iv-|lvl|lvl+|lvl->."""
-    opts = {
-        "shiny_only": False,
-        "gmax_only": False,
-        "name_filter": None,
-        "order": None,
-        "limit": None,
-    }
-    page = 1
-    if not raw_args:
-        return opts, page
-
-    text = raw_args.strip()
-
-    lim_match = re.search(r"--lim\s+(\d+)", text, flags=re.IGNORECASE)
-    if lim_match:
-        opts["limit"] = max(1, int(lim_match.group(1)))
-        text = re.sub(r"--lim\s+\d+", "", text, flags=re.IGNORECASE)
-
-    order_match = re.search(r"--o\s+(iv\+|iv-|iv|lvl\+|lvl-|lvl)", text, flags=re.IGNORECASE)
-    if order_match:
-        opts["order"] = order_match.group(1).lower()
-        text = re.sub(r"--o\s+(?:iv\+|iv-|iv|lvl\+|lvl-|lvl)", "", text, flags=re.IGNORECASE)
-
-    name_match = re.search(r"--n\s+(.+?)(?=\s+--|\s+\d+$|$)", text, flags=re.IGNORECASE)
-    if name_match:
-        opts["name_filter"] = name_match.group(1).strip().lower()
-        text = text[:name_match.start()] + text[name_match.end():]
-
-    if re.search(r"--sh\b", text, flags=re.IGNORECASE):
-        opts["shiny_only"] = True
-        text = re.sub(r"--sh\b", "", text, flags=re.IGNORECASE)
-
-    if re.search(r"--gmax\b", text, flags=re.IGNORECASE):
-        opts["gmax_only"] = True
-        text = re.sub(r"--gmax\b", "", text, flags=re.IGNORECASE)
-
-    page_match = re.search(r"\b(\d+)\b", text.strip())
-    if page_match:
-        page = max(1, int(page_match.group(1)))
-
-    return opts, page
-
-def filter_and_sort_pokemon(mons: list[dict], opts: dict) -> list[tuple[int, dict]]:
-    """Returns list of (true_1_based_index, mon_dict) matching filters and sort order."""
-    indexed = [(i + 1, m) for i, m in enumerate(mons)]
-
-    if opts.get("shiny_only"):
-        indexed = [(idx, m) for idx, m in indexed if m.get("shiny")]
-
-    if opts.get("gmax_only"):
-        indexed = [(idx, m) for idx, m in indexed if m.get("gmax")]
-
-    name_filter = opts.get("name_filter")
-    if name_filter:
-        indexed = [(idx, m) for idx, m in indexed if name_filter in m.get("name", "").lower()]
-
-    order = opts.get("order")
-    if order in ("iv", "iv-"):
-        indexed.sort(key=lambda pair: pair[1].get("iv_percent", 0.0), reverse=True)
-    elif order == "iv+":
-        indexed.sort(key=lambda pair: pair[1].get("iv_percent", 0.0), reverse=False)
-    elif order in ("lvl", "lvl-"):
-        indexed.sort(key=lambda pair: pair[1].get("level", 1), reverse=True)
-    elif order == "lvl+":
-        indexed.sort(key=lambda pair: pair[1].get("level", 1), reverse=False)
-
-    if opts.get("limit"):
-        indexed = indexed[: opts["limit"]]
-
-    return indexed
-
-def build_pokemon_embed(user_doc: dict, opts: dict, page: int) -> tuple[discord.Embed, int, int, list[tuple[int, dict]]]:
-    filtered = filter_and_sort_pokemon(user_doc.get("pokemon", []), opts)
-    total_filtered = len(filtered)
-    per_page = 15
-    total_pages = max(1, (max(1, total_filtered) + per_page - 1) // per_page)
-    page = max(1, min(page, total_pages))
-
-    start = (page - 1) * per_page
-    end = min(start + per_page, total_filtered)
-    slice_items = filtered[start:end]
-
-    lines = []
-    selected_idx = user_doc.get("selected", 1)
-    for true_idx, m in slice_items:
-        emoji = EMOJI_CACHE.get(m["slug"].replace("-gmax", ""), "🔹")
-        gmax_tag = f" {GMAX_EMOJI}" if m.get("gmax") else ""
-        shiny_tag = f" {SHINY_EMOJI}" if m.get("shiny") else ""
-        gender_tag = f" {get_gender_emoji(m)}"
-        sel_tag = " **(Selected)**" if true_idx == selected_idx else ""
-        lines.append(
-            f"`{true_idx}` {emoji} **{m['name']}**{gmax_tag}{shiny_tag}{gender_tag} • "
-            f"Lvl. {m['level']} • {m.get('iv_percent', 0.0):.2f}%{sel_tag}"
-        )
-
-    if not lines:
-        lines.append("No matching pokémon found.")
-
-    if total_filtered > 0:
-        footer_text = f"Showing entries {start + 1}–{end} out of {total_filtered} (Page {page}/{total_pages})."
-    else:
-        footer_text = "Showing 0 entries."
-
-    embed = discord.Embed(
-        title="Your pokémon",
-        description="\n".join(lines),
-        color=0xEB459E,
-    )
-    embed.set_footer(text=footer_text)
-    return embed, page, total_pages, filtered
-
-class PokemonPageView(discord.ui.View):
-    def __init__(self, author_id: int, opts: dict, page: int, total_pages: int):
-        super().__init__(timeout=120)
-        self.author_id = author_id
-        self.opts = opts
-        self.page = page
-        self.total_pages = total_pages
-        self._sync_buttons()
-
-    def _sync_buttons(self):
-        self.prev_button.disabled = self.page <= 1
-        self.next_button.disabled = self.page >= self.total_pages
-
-    async def _turn_page(self, interaction: discord.Interaction, delta: int):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ Only the command user can flip these pages.", ephemeral=True)
-            return
-
-        user_doc = await users_col.find_one({"user_id": self.author_id})
-        if not user_doc or not user_doc.get("pokemon"):
-            await interaction.response.send_message("❌ No Pokémon found.", ephemeral=True)
-            return
-
-        self.page = max(1, min(self.page + delta, self.total_pages))
-        embed, self.page, self.total_pages, _ = build_pokemon_embed(user_doc, self.opts, self.page)
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._turn_page(interaction, -1)
-
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._turn_page(interaction, 1)
-
-@bot.command(name="p", aliases=["pokemon"])
-async def list_pokemon(ctx, *, query: str = None):
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user or not user.get("pokemon"):
-        await ctx.send("❌ You have no pokémon yet! Use `p!start`.")
-        return
-
-    if not EMOJI_CACHE:
-        try:
-            existing = await bot.fetch_application_emojis()
-            for e in existing:
-                EMOJI_CACHE[e.name.replace("_", "-")] = str(e)
-        except Exception:
-            pass
-
-    opts, page = parse_pokemon_query(query)
-    embed, current_page, total_pages, _ = build_pokemon_embed(user, opts, page)
-    view = PokemonPageView(ctx.author.id, opts, current_page, total_pages) if total_pages > 1 else None
-    await ctx.send(embed=embed, view=view)
-
-@bot.command(name="s", aliases=["select"])
-async def select_pokemon(ctx, number: int = None):
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user or not user.get("pokemon"):
-        await ctx.send("❌ You have no pokémon.")
-        return
-
-    if not number or number < 1 or number > len(user["pokemon"]):
-        await ctx.send(f"❌ Pick a valid number between `1` and `{len(user['pokemon'])}`.")
-        return
-
-    await users_col.update_one({"user_id": ctx.author.id}, {"$set": {"selected": number}})
-    chosen = user["pokemon"][number - 1]
-    await ctx.send(f"✅ Selected your Level {chosen['level']} **{chosen['name']}** (`#{number}`).")
-
-# ==========================================
-# 🔍 POKÉMON INFO WITH NEXT / PREV ARROWS
-# ==========================================
-def build_pokemon_info_embed(author: discord.abc.User, m: dict, display_num: int, total_count: int) -> discord.Embed:
-    level = m.get("level", 1)
-    xp = m.get("xp", 0)
-    next_xp = m.get("next_xp", level * 50)
-    nature = m.get("nature", "Hardy")
-    gender = m.get("gender", "Male")
-    ivs = m.get("ivs", [15, 15, 15, 15, 15, 15])
-    hp_iv, atk_iv, def_iv, spa_iv, spd_iv, spe_iv = ivs
-    hp, atk, dfn, spa, spd, spe = compute_stats(level, ivs)
-    iv_percent = m.get("iv_percent", round(sum(ivs) / 186 * 100, 2))
-    gmax = f" {GMAX_EMOJI}" if m.get("gmax") else ""
-    star = f" {SHINY_EMOJI}" if m.get("shiny") else ""
-    gender_tag = f" {get_gender_emoji(m)}"
-
-    description = (
-        f"**Details**\n"
-        f"**XP:** {xp}/{next_xp}\n"
-        f"**Nature:** {nature}\n"
-        f"**Gender:** {gender}\n\n"
-        f"**Stats**\n"
-        f"**HP:** {hp} – **IV:** {hp_iv}/31\n"
-        f"**Attack:** {atk} – **IV:** {atk_iv}/31\n"
-        f"**Defense:** {dfn} – **IV:** {def_iv}/31\n"
-        f"**Sp. Atk:** {spa} – **IV:** {spa_iv}/31\n"
-        f"**Sp. Def:** {spd} – **IV:** {spd_iv}/31\n"
-        f"**Speed:** {spe} – **IV:** {spe_iv}/31\n"
-        f"**Total IV:** {iv_percent:.2f}%"
-    )
-
-    embed = discord.Embed(
-        title=f"Level {level} {m['name']}{gmax}{star}{gender_tag}",
-        description=description,
-        color=discord.Color.gold() if m.get("shiny") else 0x58B9FF,
-    )
-    if author.display_avatar:
-        embed.set_thumbnail(url=author.display_avatar.url)
-    embed.set_image(url=get_sprite_url(m["dex_id"], shiny=m.get("shiny", False)))
-    embed.set_footer(text=f"Displaying pokémon {display_num} out of {total_count}.")
-    return embed
-
-class PokemonInfoView(discord.ui.View):
-    def __init__(self, author_id: int, index: int, total_count: int):
-        super().__init__(timeout=120)
-        self.author_id = author_id
-        self.index = index          # 1-based index
-        self.total_count = total_count
-        self._sync_buttons()
-
-    def _sync_buttons(self):
-        self.prev_mon.disabled = self.index <= 1
-        self.next_mon.disabled = self.index >= self.total_count
-
-    async def _step_mon(self, interaction: discord.Interaction, delta: int):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ Only the command user can browse these Pokémon.", ephemeral=True)
-            return
-
-        user_doc = await users_col.find_one({"user_id": self.author_id})
-        mons = (user_doc or {}).get("pokemon", [])
-        if not mons:
-            await interaction.response.send_message("❌ No Pokémon found.", ephemeral=True)
-            return
-
-        self.total_count = len(mons)
-        self.index = max(1, min(self.index + delta, self.total_count))
-        self._sync_buttons()
-        embed = build_pokemon_info_embed(interaction.user, mons[self.index - 1], self.index, self.total_count)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def prev_mon(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._step_mon(interaction, -1)
-
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def next_mon(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._step_mon(interaction, 1)
-
-@bot.command(name="i", aliases=["info"])
-async def pokemon_info(ctx, number: int = None):
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user or not user.get("pokemon"):
-        await ctx.send("❌ You have no pokémon.")
-        return
-
-    mons = user["pokemon"]
-    total_count = len(mons)
-    idx = number if number is not None else user.get("selected", 1)
-    if idx < 1 or idx > total_count:
-        await ctx.send(f"❌ Pick a valid pokémon number between `1` and `{total_count}`.")
-        return
-
-    embed = build_pokemon_info_embed(ctx.author, mons[idx - 1], idx, total_count)
-    view = PokemonInfoView(ctx.author.id, idx, total_count) if total_count > 1 else None
-    await ctx.send(embed=embed, view=view)
-
-@bot.command(name="release")
-async def release_pokemon(ctx, number: int = None):
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user or len(user.get("pokemon", [])) <= 1:
-        await ctx.send("❌ You must keep at least 1 Pokémon!")
-        return
-
-    if not number or number < 1 or number > len(user["pokemon"]):
-        await ctx.send("❌ Specify a valid Pokémon number to release.")
-        return
-
-    mons = user["pokemon"]
-    released = mons.pop(number - 1)
-    new_sel = min(user.get("selected", 1), len(mons))
-
-    await users_col.update_one(
-        {"user_id": ctx.author.id},
-        {"$set": {"pokemon": mons, "selected": new_sel}, "$inc": {"coins": 25}},
-    )
-    await ctx.send(f"👋 Released **{released['name']}** and received **25 Pokécoins**.")
-
-# ==========================================
-# 💰 POKÉCOINS, SHARDS, DAILY, SHOP, INCENSE & REDEEMS
-# ==========================================
-@bot.command(name="bal", aliases=["balance"])
-async def check_balance(ctx, target: discord.User = None):
-    member = target or ctx.author
-    user = await users_col.find_one({"user_id": member.id})
-    if not user:
-        await ctx.send(f"❌ {member.display_name} hasn't started yet! Use `p!start`.")
-        return
-
-    embed = discord.Embed(
-        title=f"{member.display_name}'s Balance",
-        color=0x2B2D31,
-    )
-    embed.add_field(name="Pokécoins", value=f"{user.get('coins', 0):,}", inline=True)
-    embed.add_field(name="Shards", value=f"{user.get('shards', 0):,}", inline=True)
-    embed.add_field(name="Redeems", value=f"{user.get('redeems', 0):,}", inline=True)
-    embed.set_footer(text=f"Total Catches: {user.get('catches', 0):,}")
-    await ctx.send(embed=embed)
-
-@bot.command(name="daily")
-async def claim_daily(ctx):
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user:
-        await ctx.send("❌ Type `p!start` first!")
-        return
-
-    now = datetime.now(timezone.utc)
-    last_daily = user.get("last_daily")
-    streak = user.get("daily_streak", 0)
-
-    if last_daily:
-        last_dt = datetime.fromisoformat(last_daily)
-        elapsed = now - last_dt
-        if elapsed < timedelta(hours=20):
-            remaining = timedelta(hours=20) - elapsed
-            hrs, rem = divmod(int(remaining.total_seconds()), 3600)
-            mins = rem // 60
-            await ctx.send(f"⏳ You already claimed your daily! Come back in **{hrs}h {mins}m**.")
-            return
-        streak = streak + 1 if elapsed <= timedelta(hours=48) else 1
-    else:
-        streak = 1
-
-    reward_coins = 500 + min(streak * 100, 1500)
-    reward_shards = 2 if streak % 3 == 0 else 0
-    got_redeem = (streak % 7 == 0)
-
-    await users_col.update_one(
-        {"user_id": ctx.author.id},
-        {
-            "$inc": {
-                "coins": reward_coins,
-                "shards": reward_shards,
-                "redeems": 1 if got_redeem else 0,
-            },
-            "$set": {"daily_streak": streak, "last_daily": now.isoformat()},
-        },
-    )
-
-    extras = []
-    if reward_shards:
-        extras.append(f"+{reward_shards} Shards")
-    if got_redeem:
-        extras.append("+1 Redeem 🎟️")
-    bonus_line = f"\n✨ **Streak Bonus:** {' & '.join(extras)}!" if extras else ""
-
+    bot.db.clear_spawn(ctx.channel.id)
+    bot.db.insert_pokemon(ctx.author.id, spawn)
+
+    shiny_tag = f" {SHINY_EMOJI}" if spawn["shiny"] else ""
+    gmax_tag = f" {gmax_badge()}" if spawn["gmax"] else ""
     await ctx.send(
-        f"🎁 **Daily Reward Claimed!** (Streak: **{streak} days**)\n"
-        f"You received **{reward_coins:,} Pokécoins**!{bonus_line}"
+        f"Congratulations {ctx.author.mention}! You caught a Level {spawn['level']} "
+        f"**{spawn['display_name']}**{shiny_tag}{gmax_tag} ({spawn['iv_percent']:.2f}%)!"
     )
+
+
+# ==============================================================================
+# INFO COMMAND (p!i / p!info)
+# ==============================================================================
+@bot.command(name="info", aliases=["i"])
+async def info_cmd(ctx: commands.Context, target: str = ""):
+    collection = bot.db.get_user_pokemon(ctx.author.id)
+    if not collection:
+        await ctx.send("You haven't caught any pokémon yet!")
+        return
+
+    user_row = bot.db.ensure_user(ctx.author.id)
+    idx = len(collection) - 1  # Default to latest
+
+    t = target.strip().lower()
+    if t in ("latest", "l", ""):
+        if t == "" and user_row["selected_pokemon_id"] is not None:
+            for i, m in enumerate(collection):
+                if m["id"] == user_row["selected_pokemon_id"]:
+                    idx = i
+                    break
+        else:
+            idx = len(collection) - 1
+    elif t.isdigit():
+        num = int(t)
+        if 1 <= num <= len(collection):
+            idx = num - 1
+        else:
+            await ctx.send(f"Invalid pokémon number. You have **{len(collection)}** pokémon.")
+            return
+    else:
+        await ctx.send(f"Usage: `{PREFIX}info [number | latest]`")
+        return
+
+    embed, file = await bot.build_info_embed(ctx.author, collection[idx], len(collection))
+    view = InfoPaginatorView(bot, ctx.author, collection, idx)
+    if file:
+        await ctx.send(embed=embed, file=file, view=view)
+    else:
+        await ctx.send(embed=embed, view=view)
+
+
+# ==============================================================================
+# POKÉMON COLLECTION LIST (p!p / p!pokemon) WITH MULTI-FLAG FILTERING & SORTING
+# ==============================================================================
+def _parse_numeric_filter(tokens: List[str], start_i: int) -> Tuple[Optional[str], Optional[int], int]:
+    """
+    Parses `<num>`, `> <num>`, `><num>`, `< <num>`, or `<<num>` starting at `start_i`.
+    No range (1-10) or `=` syntax—plain `<num>` means exact equality.
+    Returns (op, value, next_index).
+    """
+    if start_i >= len(tokens):
+        return None, None, start_i
+    tok = tokens[start_i]
+    if tok in (">", "<"):
+        if start_i + 1 < len(tokens) and tokens[start_i + 1].isdigit():
+            return tok, int(tokens[start_i + 1]), start_i + 2
+        return None, None, start_i + 1
+    if tok.startswith(">") and tok[1:].isdigit():
+        return ">", int(tok[1:]), start_i + 1
+    if tok.startswith("<") and tok[1:].isdigit():
+        return "<", int(tok[1:]), start_i + 1
+    if tok.isdigit():
+        return "==", int(tok), start_i + 1
+    return None, None, start_i + 1
+
+
+def _match_op(actual: int, op: str, target: int) -> bool:
+    if op == "==":
+        return actual == target
+    if op == ">":
+        return actual > target
+    if op == "<":
+        return actual < target
+    return True
+
+
+@bot.command(name="pokemon", aliases=["p"])
+async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
+    collection = bot.db.get_user_pokemon(ctx.author.id)
+    if not collection:
+        await ctx.send("You don't have any pokémon yet!")
+        return
+
+    tokens = args.split()
+    only_shiny = False
+    only_gmax = False
+    name_filter: Optional[str] = None
+    limit_count: Optional[int] = None
+    order_by: Optional[str] = None
+    numeric_filters: List[Tuple[str, str, int]] = []  # (field, op, val)
+
+    stat_flag_map = {
+        "--lvl": "level",
+        "--level": "level",
+        "--hp": "hp_iv",
+        "--hpiv": "hp_iv",
+        "--atkiv": "atk_iv",
+        "--defiv": "def_iv",
+        "--spatkiv": "spatk_iv",
+        "--spdiv": "spdef_iv",
+        "--spdefiv": "spdef_iv",
+        "--spd": "spd_iv",
+        "--spdiv_speed": "spd_iv",
+    }
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i].lower()
+        if tok in ("--sh", "--shiny"):
+            only_shiny = True
+            i += 1
+        elif tok == "--gmax":
+            only_gmax = True
+            i += 1
+        elif tok in ("--n", "--name"):
+            i += 1
+            name_parts = []
+            while i < len(tokens) and not tokens[i].startswith("--"):
+                name_parts.append(tokens[i])
+                i += 1
+            if name_parts:
+                name_filter = " ".join(name_parts).lower().strip()
+        elif tok in ("--lim", "--limit"):
+            if i + 1 < len(tokens) and tokens[i + 1].isdigit():
+                limit_count = max(1, int(tokens[i + 1]))
+                i += 2
+            else:
+                i += 1
+        elif tok in ("--o", "--order"):
+            if i + 1 < len(tokens):
+                order_by = tokens[i + 1].lower()
+                i += 2
+            else:
+                i += 1
+        elif tok in stat_flag_map:
+            field = stat_flag_map[tok]
+            op, val, nxt = _parse_numeric_filter(tokens, i + 1)
+            if op is not None and val is not None:
+                numeric_filters.append((field, op, val))
+            i = nxt
+        else:
+            i += 1
+
+    # Apply all filters with logical AND
+    filtered = []
+    for mon in collection:
+        if only_shiny and not mon["shiny"]:
+            continue
+        if only_gmax and not mon["gmax"]:
+            continue
+        if name_filter:
+            dname = mon["display_name"].lower()
+            slug = mon["slug"].lower().replace("-", " ")
+            if name_filter not in dname and name_filter not in slug:
+                continue
+        passed_num = True
+        for field, op, val in numeric_filters:
+            if not _match_op(int(mon[field]), op, val):
+                passed_num = False
+                break
+        if not passed_num:
+            continue
+        filtered.append(mon)
+
+    if not filtered:
+        await ctx.send("No pokémon matched your filters.")
+        return
+
+    # Sorting (--o iv | iv+ | iv- | lvl | lvl+ | lvl-)
+    if order_by in ("iv", "iv-"):
+        filtered.sort(key=lambda m: m["iv_percent"], reverse=True)
+    elif order_by == "iv+":
+        filtered.sort(key=lambda m: m["iv_percent"], reverse=False)
+    elif order_by in ("lvl", "lvl-"):
+        filtered.sort(key=lambda m: m["level"], reverse=True)
+    elif order_by == "lvl+":
+        filtered.sort(key=lambda m: m["level"], reverse=False)
+
+    if limit_count is not None:
+        filtered = filtered[:limit_count]
+
+    # Pre-warm Gen VIII pixelated box icon emojis for visible items (leaves blank if unavailable)
+    unique_dex = {m["dex_id"] for m in filtered[:60]}
+    for did in unique_dex:
+        if did not in bot.pokeapi.box_icon_cache:
+            pdata = await bot.pokeapi.get_pokemon_data(str(did))
+            icon_url = pdata["box_icon_url"] if pdata else None
+            await bot.pokeapi.ensure_box_icon_emoji(bot, did, icon_url)
+
+    per_page = 20
+    pages: List[discord.Embed] = []
+    total_filtered = len(filtered)
+    total_pages = math.ceil(total_filtered / per_page)
+    pad_width = len(str(max(m["display_index"] for m in filtered)))
+
+    for p_idx in range(total_pages):
+        chunk = filtered[p_idx * per_page : (p_idx + 1) * per_page]
+        lines = []
+        for mon in chunk:
+            num_str = f"`{str(mon['display_index']).rjust(pad_width)}`"
+            box_em = bot.pokeapi.box_icon_cache.get(mon["dex_id"], "")
+            box_part = f"{box_em} " if box_em else ""
+            sh_part = f"{SHINY_EMOJI} " if mon["shiny"] else ""
+            gm_part = f"{gmax_badge()} " if mon["gmax"] else ""
+            gen_sym = gender_symbol(mon["gender"])
+
+            line = (
+                f"{num_str} {box_part}{sh_part}{gm_part}**{mon['display_name']}** {gen_sym} "
+                f"• Lvl. {mon['level']} • {mon['iv_percent']:.2f}%"
+            )
+            lines.append(line)
+
+        embed = discord.Embed(
+            title=f"{ctx.author.display_name}'s Pokémon",
+            description="\n".join(lines),
+            color=discord.Color.from_rgb(104, 152, 178),
+        )
+        start_num = p_idx * per_page + 1
+        end_num = min((p_idx + 1) * per_page, total_filtered)
+        embed.set_footer(text=f"Showing {start_num}–{end_num} of {total_filtered} pokémon • Page {p_idx + 1}/{total_pages}")
+        pages.append(embed)
+
+    if len(pages) == 1:
+        await ctx.send(embed=pages[0])
+    else:
+        await ctx.send(embed=pages[0], view=ListPaginatorView(ctx.author, pages))
+
+
+# ==============================================================================
+# SELECT & RELEASE COMMANDS (p!s / p!select, p!r / p!release)
+# ==============================================================================
+@bot.command(name="select", aliases=["s"])
+async def select_cmd(ctx: commands.Context, number: str = ""):
+    collection = bot.db.get_user_pokemon(ctx.author.id)
+    if not collection:
+        await ctx.send("You don't have any pokémon to select.")
+        return
+    if not number.isdigit():
+        await ctx.send(f"Usage: `{PREFIX}select <number>`")
+        return
+    num = int(number)
+    if not (1 <= num <= len(collection)):
+        await ctx.send(f"Invalid pokémon number. Choose between `1` and `{len(collection)}`.")
+        return
+    mon = collection[num - 1]
+    bot.db.set_selected(ctx.author.id, mon["id"])
+    await ctx.send(f"You selected your Level {mon['level']} **{mon['display_name']}** (No. {num}).")
+
+
+@bot.command(name="release", aliases=["r"])
+async def release_cmd(ctx: commands.Context, number: str = ""):
+    collection = bot.db.get_user_pokemon(ctx.author.id)
+    if not collection:
+        await ctx.send("You don't have any pokémon to release.")
+        return
+    if not number.isdigit():
+        await ctx.send(f"Usage: `{PREFIX}release <number>`")
+        return
+    num = int(number)
+    if not (1 <= num <= len(collection)):
+        await ctx.send(f"Invalid pokémon number. Choose between `1` and `{len(collection)}`.")
+        return
+
+    mon = collection[num - 1]
+    reward_pc = 2 if not mon["shiny"] else 50
+    gen_sym = gender_symbol(mon["gender"])
+    prompt = (
+        f"Are you sure you want to release your Level {mon['level']} "
+        f"{mon['display_name']} {gen_sym} ({mon['iv_percent']:.2f}%) No. {num} for {reward_pc} pc?"
+    )
+    view = ReleaseConfirmView(bot.db, ctx.author, mon, reward_pc)
+    await ctx.send(prompt, view=view)
+
+
+# ==============================================================================
+# SHOP & BUY WITH CONFIRMATION (p!shop, p!buy, p!bal)
+# ==============================================================================
+@bot.command(name="bal", aliases=["balance", "pc"])
+async def balance_cmd(ctx: commands.Context):
+    user = bot.db.ensure_user(ctx.author.id)
+    await ctx.send(
+        f"**{ctx.author.display_name}'s Balance:** {user['balance']:,} Pokécoins • {user['redeems']} Redeems"
+    )
+
 
 @bot.command(name="shop")
-async def view_shop(ctx):
+async def shop_cmd(ctx: commands.Context):
+    user = bot.db.ensure_user(ctx.author.id)
     embed = discord.Embed(
-        title="🛒 Pokétwo Shop",
-        description=(
-            "Use `p!buy <item> [amount]` to purchase:\n\n"
-            "💎 **`shards <amount>`** — **200 Pokécoins each**\n"
-            "• Exchange Pokécoins for Shards (`p!buy shards 50`).\n\n"
-            "🎟️ **`redeem`** — **200 Shards**\n"
-            "• Spawn any Pokémon of your choice (`p!rs <pokemon>`).\n\n"
-            "🕯️ **`incense`** — **50 Shards**\n"
-            "• Spawns 15 Pokémon automatically (1 every 15s) in this channel!\n\n"
-            "🍬 **`candy`** — **250 Pokécoins**\n"
-            "• Levels up your currently selected Pokémon by +1 Level."
-        ),
-        color=0x2B2D31,
+        title="Poké Shop",
+        description=f"Your Balance: **{user['balance']:,} pc**\nUse `{PREFIX}buy <item> [amount]` to purchase.",
+        color=discord.Color.from_rgb(104, 152, 178),
     )
+    for item in SHOP_ITEMS.values():
+        embed.add_field(
+            name=f"{item['name']} — {item['price']:,} pc",
+            value=item["description"],
+            inline=False,
+        )
     await ctx.send(embed=embed)
 
-async def _run_incense_loop(channel: discord.TextChannel):
-    inc = active_incenses.get(channel.id)
-    if not inc:
-        return
-    try:
-        while inc["remaining"] > 0:
-            if inc.get("paused"):
-                await asyncio.sleep(2)
-                continue
-            await trigger_spawn(channel, force_gmax_mode=(force_shiny_mode == "gmax_shiny"))
-            inc["remaining"] -= 1
-            if inc["remaining"] <= 0:
-                break
-            await asyncio.sleep(inc["interval"])
-        if inc.get("remaining", 0) <= 0:
-            await channel.send("🕯️ The incense has ended.")
-    finally:
-        active_incenses.pop(channel.id, None)
-
-@bot.command(name="incense")
-async def incense_control(ctx, action: str = None):
-    inc = active_incenses.get(ctx.channel.id)
-    if not inc:
-        await ctx.send("❌ There is no active incense in this channel. Buy one with `p!buy incense`.")
-        return
-
-    cmd = (action or "status").strip().lower()
-    if cmd == "pause":
-        inc["paused"] = True
-        await ctx.send(f"Paused the incense in {ctx.channel.mention}. Use `p!incense resume` to resume it.")
-    elif cmd == "resume":
-        inc["paused"] = False
-        inc["ends_at"] = datetime.now(timezone.utc) + timedelta(seconds=inc["remaining"] * inc["interval"])
-        await ctx.send(f"Resumed the incense in {ctx.channel.mention}.")
-    else:
-        await ctx.send(_format_incense_status(inc))
 
 @bot.command(name="buy")
-async def buy_item(ctx, item: str = None, amount: int = 1):
-    if not item:
-        await ctx.send("❌ Usage: `p!buy <shards | redeem | incense | candy> [amount]`")
+async def buy_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    raw_args = raw_args.strip().lower()
+    if not raw_args:
+        await ctx.send(f"Usage: `{PREFIX}buy <item name> [quantity]`")
         return
 
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user:
-        await ctx.send("❌ Type `p!start` first!")
+    parts = raw_args.split()
+    qty = 1
+    if len(parts) > 1 and parts[-1].isdigit():
+        qty = max(1, int(parts[-1]))
+        item_query = " ".join(parts[:-1])
+    else:
+        item_query = raw_args
+
+    if item_query not in SHOP_ITEMS:
+        await ctx.send(f"Unknown shop item `{item_query}`. Check `{PREFIX}shop` for available items.")
         return
 
-    if amount < 1:
-        await ctx.send("❌ Amount must be at least `1`.")
-        return
+    item = SHOP_ITEMS[item_query]
+    total_cost = item["price"] * qty
+    user = bot.db.ensure_user(ctx.author.id)
 
-    item = item.strip().lower()
-    coins = user.get("coins", 0)
-    shards = user.get("shards", 0)
-
-    if item in ("shard", "shards"):
-        cost = 200 * amount
-        if coins < cost:
-            await ctx.send(f"❌ You need **{cost:,} Pokécoins** to buy **{amount:,} Shards**.")
-            return
-        await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"coins": -cost, "shards": amount}})
-        await ctx.send(f"💎 Exchanged **{cost:,} Pokécoins** for **{amount:,} Shards**!")
-
-    elif item == "redeem":
-        cost = 200 * amount
-        if shards < cost:
-            await ctx.send(f"❌ You need **{cost:,} Shards** to buy **{amount} Redeem(s)**.")
-            return
-        await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"shards": -cost, "redeems": amount}})
-        await ctx.send(f"🎟️ Purchased **{amount} Redeem(s)** for **{cost:,} Shards**! Use `p!rs <pokémon>`.")
-
-    elif item == "candy":
-        cost = 250 * amount
-        if coins < cost:
-            await ctx.send(f"❌ You need **{cost:,} Pokécoins** to buy **{amount} Rare Candy(s)**.")
-            return
-        if not user.get("pokemon"):
-            await ctx.send("❌ You don't have a Pokémon selected.")
-            return
-        sel_idx = user.get("selected", 1) - 1
-        mons = user["pokemon"]
-        new_lvl = min(100, mons[sel_idx]["level"] + amount)
-        gained = new_lvl - mons[sel_idx]["level"]
-        if gained <= 0:
-            await ctx.send("❌ Your selected Pokémon is already Level 100!")
-            return
-        mons[sel_idx]["level"] = new_lvl
-        mons[sel_idx]["next_xp"] = new_lvl * 50
-        await users_col.update_one(
-            {"user_id": ctx.author.id},
-            {"$inc": {"coins": -(250 * gained)}, "$set": {"pokemon": mons}},
+    if user["balance"] < total_cost:
+        await ctx.send(
+            f"You need **{total_cost:,} pc** to buy {qty}x **{item['name']}**, "
+            f"but you only have **{user['balance']:,} pc**."
         )
-        await ctx.send(f"🍬 Fed **{gained} Rare Candy(s)**! **{mons[sel_idx]['name']}** grew to **Level {new_lvl}**!")
-
-    elif item == "incense":
-        if shards < 50:
-            await ctx.send("❌ You need **50 Shards** to activate Incense.")
-            return
-        if ctx.channel.id in active_incenses:
-            await ctx.send("❌ An incense is already running in this channel!")
-            return
-
-        total_spawns = 15
-        interval_sec = 15
-        await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"shards": -50}})
-        active_incenses[ctx.channel.id] = {
-            "remaining": total_spawns,
-            "interval": interval_sec,
-            "ends_at": datetime.now(timezone.utc) + timedelta(seconds=total_spawns * interval_sec),
-            "paused": False,
-        }
-        await ctx.send("🕯️ **Incense Activated!** 15 Pokémon will spawn here over the next few minutes!")
-        asyncio.create_task(_run_incense_loop(ctx.channel))
-    else:
-        await ctx.send("❌ Unknown item. Check `p!shop`.")
-
-@bot.command(name="rs", aliases=["redeemspawn", "redeem"])
-async def redeem_spawn(ctx, *, pokemon_name: str = None):
-    user = await users_col.find_one({"user_id": ctx.author.id})
-    if not user:
-        await ctx.send("❌ Type `p!start` first!")
         return
 
-    if user.get("redeems", 0) < 1:
-        await ctx.send("❌ You don't have any Redeems! Buy one in `p!shop` for 200 Shards.")
-        return
-
-    if not pokemon_name:
-        await ctx.send("❌ Usage: `p!rs <pokémon name>`")
-        return
-
-    target = POKEDEX_BY_NAME.get(pokemon_name.strip().lower())
-    if not target:
-        await ctx.send(f"❌ Could not find **{pokemon_name}** in the Pokédex.")
-        return
-
-    await users_col.update_one({"user_id": ctx.author.id}, {"$inc": {"redeems": -1}})
-    await ctx.send(f"🎟️ {ctx.author.mention} used a Redeem to spawn **{target['name']}**!")
-    await trigger_spawn(ctx.channel, forced_mon=target)
-
-# ==========================================
-# 👑 OWNER-ONLY COMMANDS
-# ==========================================
-@bot.command(name="owner")
-async def add_bot_owner(ctx, member: discord.User = None):
-    target = member or ctx.author
-    current_owners = await get_owner_ids()
-
-    if current_owners:
-        is_allowed = (ctx.author.id in current_owners) or (await bot.is_owner(ctx.author))
-        if not is_allowed:
-            await ctx.send("❌ Only the bot owner can use this command.")
-            return
-
-    await config_col.update_one(
-        {"_id": "owner"},
-        {"$addToSet": {"owner_ids": target.id}},
-        upsert=True,
-    )
-    bot.owner_id = target.id
-    await ctx.send(f"👑 Added {target.mention} (`{target.id}`) as a bot owner!")
-
-@bot.command(name="addbal", aliases=["addpc"])
-@is_bot_owner()
-async def owner_add_bal(ctx, amount: int, target: discord.User = None):
-    member = target or ctx.author
-    await ensure_user_doc(member.id)
-    await users_col.update_one({"user_id": member.id}, {"$inc": {"coins": amount}})
-    await ctx.send(f"✅ Added **{amount:,} Pokécoins** to {member.mention}'s balance.")
-
-@bot.command(name="addshards")
-@is_bot_owner()
-async def owner_add_shards(ctx, amount: int, target: discord.User = None):
-    member = target or ctx.author
-    await ensure_user_doc(member.id)
-    await users_col.update_one({"user_id": member.id}, {"$inc": {"shards": amount}})
-    await ctx.send(f"✅ Added **{amount:,} Shards** to {member.mention}'s balance.")
-
-@bot.command(name="addredeems", aliases=["addredeem"])
-@is_bot_owner()
-async def owner_add_redeems(ctx, amount: int, target: discord.User = None):
-    member = target or ctx.author
-    await ensure_user_doc(member.id)
-    await users_col.update_one({"user_id": member.id}, {"$inc": {"redeems": amount}})
-    await ctx.send(f"✅ Added **{amount:,} Redeem(s)** to {member.mention}'s balance.")
-
-@bot.command(name="givemon")
-@is_bot_owner()
-async def owner_give_pokemon(ctx, pokemon_name: str, target: discord.User = None, shiny: str = None):
-    member = target or ctx.author
-    entry = POKEDEX_BY_NAME.get(pokemon_name.strip().lower())
-    if not entry:
-        await ctx.send(f"❌ Pokémon `{pokemon_name}` not found in Pokédex.")
-        return
-
-    await ensure_user_doc(member.id)
-    force_shiny = bool(shiny and shiny.lower() in ("shiny", "true", "yes"))
-    mon_data = generate_pokemon_data(entry, force_shiny=force_shiny)
-    emoji_str = await ensure_pokemon_emoji(entry)
-
-    await users_col.update_one({"user_id": member.id}, {"$push": {"pokemon": mon_data}})
-    gmax_tag = f" {GMAX_EMOJI}" if mon_data.get("gmax") else ""
-    star = f" {SHINY_EMOJI}" if mon_data.get("shiny") else ""
-    gender_tag = f" {get_gender_emoji(mon_data)}"
+    view = BuyConfirmView(bot, ctx.author, ctx.channel.id, item_query, qty, total_cost)
     await ctx.send(
-        f"✅ Granted {emoji_str} **{mon_data['name']}**{gmax_tag}{star}{gender_tag} "
-        f"(Lvl. {mon_data['level']} • {mon_data['iv_percent']:.2f}% IV) to {member.mention}!"
+        f"Are you sure you want to buy **{qty}x {item['name']}** for **{total_cost:,} pc**?",
+        view=view,
     )
 
-@bot.command(name="forcespawn", aliases=["fs"])
-@is_bot_owner()
-async def force_spawn(ctx, *, mon_name: str = None):
-    forced = POKEDEX_BY_NAME.get(mon_name.strip().lower()) if mon_name else None
-    await trigger_spawn(ctx.channel, forced_mon=forced, force_gmax_mode=(force_shiny_mode == "gmax_shiny"))
 
-@bot.command(name="forceshine", aliases=["fshine"])
-@is_bot_owner()
-async def force_shine(ctx, mode: str = None):
-    global force_shiny_mode
-    if mode and mode.strip().lower() == "gmax":
-        force_shiny_mode = None if force_shiny_mode == "gmax_shiny" else "gmax_shiny"
-        if force_shiny_mode == "gmax_shiny":
-            await ctx.send(f"✨ {GMAX_EMOJI} Force Shine **GMAX** is now **ENABLED** — next Gmax spawn & catch will be Gmax + Shiny!")
+# ==============================================================================
+# INCENSE CONTROL (p!inc r / p!inc p)
+# ==============================================================================
+@bot.command(name="incense", aliases=["inc"])
+async def incense_cmd(ctx: commands.Context, action: str = ""):
+    act = action.strip().lower()
+    if act in ("r", "resume"):
+        row = bot.db.set_incense_paused(ctx.channel.id, paused=False)
+        if not row:
+            await ctx.send("There is no active incense in this channel.")
         else:
-            await ctx.send("✨ Force Shine **GMAX** is now **DISABLED**.")
+            await ctx.send(
+                f"Incense **resumed** in this channel! (**{row['remaining_spawns']}** spawns remaining)."
+            )
+    elif act in ("p", "pause"):
+        row = bot.db.set_incense_paused(ctx.channel.id, paused=True)
+        if not row:
+            await ctx.send("There is no active incense in this channel.")
+        else:
+            await ctx.send(
+                f"Incense **paused** in this channel. (**{row['remaining_spawns']}** spawns remaining). "
+                f"Use `{PREFIX}inc r` to resume."
+            )
+    else:
+        cur = bot.db.conn.cursor()
+        cur.execute("SELECT * FROM incense_channels WHERE channel_id = ?", (ctx.channel.id,))
+        row = cur.fetchone()
+        if not row:
+            await ctx.send(f"No active incense in this channel. Buy one with `{PREFIX}buy incense`.")
+        else:
+            state = "Paused" if row["paused"] else "Running"
+            await ctx.send(
+                f"**Channel Incense:** {state} • **{row['remaining_spawns']}** spawns left "
+                f"(every {row['interval_sec']}s).\nUse `{PREFIX}inc r` to resume or `{PREFIX}inc p` to pause."
+            )
+
+
+# ==============================================================================
+# OWNER-ONLY CUSTOM SPAWNER (p!spawnmon)
+# ==============================================================================
+def _parse_spawnmon_args(raw: str) -> Tuple[Optional[str], Optional[int], Optional[float], Dict[str, int], Optional[bool], Optional[bool], Optional[str]]:
+    """
+    Parses:
+      p!spawnmon <mon name> [level] [iv%] [(stat val, ...)] [shiny] [gmax]
+    Everything after <mon name> is optional (defaults to RNG).
+    Returns: (mon_name, level, target_iv_pct, pinned_stats, shiny, gmax, error_msg)
+    """
+    text = raw.strip()
+    if not text:
+        return None, None, None, {}, None, None, f"Usage: `{PREFIX}spawnmon <mon> [level] [iv%] [(stat val, ...)] [shiny] [gmax]`"
+
+    pinned_raw: Dict[str, int] = {}
+    # Extract bracketed stat overrides like (attack 31, spdiv 31)
+    bracket_match = re.search(r"\(([^)]+)\)", text)
+    if bracket_match:
+        inside = bracket_match.group(1)
+        # Remove the bracketed section cleanly from text
+        text = (text[:bracket_match.start()] + " " + text[bracket_match.end():]).strip()
+        for entry in inside.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            parts = entry.split()
+            if len(parts) != 2 or not parts[1].isdigit():
+                return None, None, None, {}, None, None, (
+                    f"Invalid stat override `{entry}`. Use format like `(attack 31, spdiv 31)`."
+                )
+            stat_token = re.sub(r"[^a-z]", "", parts[0].lower())
+            if stat_token not in STAT_ALIASES:
+                return None, None, None, {}, None, None, (
+                    f"Unknown stat `{parts[0]}`. Valid stats: `hp`, `attack`, `defense`, `spatk`, `spdiv`, `spd`."
+                )
+            canon_key = STAT_ALIASES[stat_token]
+            val = int(parts[1])
+            if not (0 <= val <= 31):
+                return None, None, None, {}, None, None, (
+                    f"Stat `{STAT_LABELS[canon_key]}` must be between `0` and `31` (got `{val}`)."
+                )
+            pinned_raw[canon_key] = val
+
+    tokens = text.split()
+    shiny_flag: Optional[bool] = None
+    gmax_flag: Optional[bool] = None
+    iv_pct: Optional[float] = None
+    level: Optional[int] = None
+    name_tokens: List[str] = []
+
+    for tok in tokens:
+        low = tok.lower()
+        if low in ("shiny", "sh"):
+            shiny_flag = True
+        elif low in ("nonshiny", "normal"):
+            shiny_flag = False
+        elif low in ("gmax", "gigantamax"):
+            gmax_flag = True
+        elif low.endswith("%"):
+            num_part = low[:-1]
+            try:
+                val = float(num_part)
+                if not (0.0 <= val <= 100.0):
+                    return None, None, None, {}, None, None, "IV percentage must be between `0%` and `100%`."
+                iv_pct = val
+            except ValueError:
+                name_tokens.append(tok)
+        elif tok.isdigit() and name_tokens and level is None:
+            lvl_val = int(tok)
+            if not (1 <= lvl_val <= 100):
+                return None, None, None, {}, None, None, "Level must be between `1` and `100`."
+            level = lvl_val
+        else:
+            name_tokens.append(tok)
+
+    if not name_tokens:
+        return None, None, None, {}, None, None, "Please specify a pokémon name."
+
+    mon_name = " ".join(name_tokens)
+    return mon_name, level, iv_pct, pinned_raw, shiny_flag, gmax_flag, None
+
+
+@bot.command(name="spawnmon")
+async def spawnmon_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    if ctx.author.id not in OWNER_IDS:
+        await ctx.send("Only the bot owner can use this command.")
         return
 
-    if mode and mode.strip().lower() in ("off", "clear", "reset"):
-        force_shiny_mode = None
-        await ctx.send("✨ Force Shine is now **DISABLED**.")
+    mon_name, level, iv_pct, pinned_raw, shiny_flag, gmax_flag, err = _parse_spawnmon_args(raw_args)
+    if err:
+        await ctx.send(err)
         return
 
-    force_shiny_mode = None if force_shiny_mode == "shiny" else "shiny"
-    if force_shiny_mode == "shiny":
-        await ctx.send("✨ Force Shine is now **ENABLED** — next caught Pokémon will be shiny.")
-    else:
-        await ctx.send("✨ Force Shine is now **DISABLED**.")
+    pdata = await bot.pokeapi.get_pokemon_data(mon_name)
+    if not pdata:
+        await ctx.send(f"Could not find a pokémon matching `{mon_name}`.")
+        return
 
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, (commands.NotOwner, commands.CheckFailure)):
-        await ctx.send("❌ Only the bot owner can use this command.")
-    elif isinstance(error, (commands.BadArgument, commands.MissingRequiredArgument)):
-        await ctx.send(f"❌ Invalid usage: `{error}`")
-    else:
-        raise error
+    ivs: Optional[Dict[str, int]] = None
+    note_msg = ""
+
+    if iv_pct is not None:
+        target_total = round((iv_pct / 100.0) * 186)
+
+        if not pinned_raw:
+            ivs = distribute_iv_total(target_total, {})
+        else:
+            # Validate pinned stats sequentially so if too many stats are given or sum exceeds target,
+            # we lock in the valid prefix that can still reach the exact target_total and give a clear suggestion.
+            accepted: Dict[str, int] = {}
+            rejected_notes: List[str] = []
+            items = list(pinned_raw.items())
+
+            for idx, (k, val) in enumerate(items):
+                remaining_slots_after = 6 - (len(accepted) + 1)
+                new_sum = sum(accepted.values()) + val
+                rem_needed = target_total - new_sum
+
+                if rem_needed < 0:
+                    max_allowed = max(0, target_total - sum(accepted.values()))
+                    rejected_notes.append(
+                        f"`{STAT_LABELS[k]} {val}` exceeded **{iv_pct:.2f}%** (target sum `{target_total}/186`) — "
+                        f"it should have been **≤ {max_allowed}** to match `{iv_pct:.2f}%`."
+                    )
+                    break
+                if rem_needed > 31 * remaining_slots_after:
+                    min_needed = target_total - sum(accepted.values()) - (31 * remaining_slots_after)
+                    rejected_notes.append(
+                        f"`{STAT_LABELS[k]} {val}` is too low to reach **{iv_pct:.2f}%** across the remaining stats — "
+                        f"it should have been **≥ {min_needed}**."
+                    )
+                    break
+                accepted[k] = val
+
+            if not accepted and rejected_notes:
+                await ctx.send(f"IV doesn't match stats! {rejected_notes[0]}")
+                return
+
+            ivs = distribute_iv_total(target_total, accepted)
+            if ivs is None:
+                await ctx.send(
+                    f"IV doesn't match stats! Target `{iv_pct:.2f}%` requires a total of `{target_total}/186` IV points."
+                )
+                return
+
+            if rejected_notes or len(accepted) < len(items):
+                kept_str = ", ".join(f"{STAT_LABELS[k]} {v}" for k, v in accepted.items())
+                extra_msg = rejected_notes[0] if rejected_notes else (
+                    f"Only the first **{len(accepted)}** stat(s) ({kept_str}) were locked in so the remaining stats could match **{iv_pct:.2f}%**."
+                )
+                note_msg = f"IV doesn't match all given stats — kept `{kept_str}` and randomized the rest to hit exact **{iv_pct:.2f}%**. Suggestion: {extra_msg}"
+    elif pinned_raw:
+        # Pinned stats provided without an explicit overall IV% -> keep pinned and randomize the rest
+        ivs = {k: pinned_raw.get(k, random.randint(0, 31)) for k in STAT_KEYS}
+
+    mon = build_pokemon_payload(
+        pdata=pdata,
+        level=level,
+        ivs=ivs,
+        shiny=shiny_flag,
+        gmax=gmax_flag,
+    )
+
+    if note_msg:
+        await ctx.send(note_msg)
+
+    await bot.trigger_random_spawn(ctx.channel, custom_mon=mon)
+
 
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    bot.run(BOT_TOKEN)
