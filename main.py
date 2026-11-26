@@ -5,7 +5,6 @@ import json
 import math
 import time
 import random
-import asyncio
 import sqlite3
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -15,9 +14,23 @@ import discord
 from discord.ext import commands, tasks
 
 # ==============================================================================
-# CONFIGURATION
+# CONFIGURATION & TOKEN LOADING
 # ==============================================================================
-BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+def _load_bot_token() -> str:
+    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    if token and token != "YOUR_BOT_TOKEN_HERE":
+        return token
+    try:
+        import streamlit as st
+        secret_token = str(st.secrets.get("DISCORD_BOT_TOKEN", "")).strip()
+        if secret_token and secret_token != "YOUR_BOT_TOKEN_HERE":
+            return secret_token
+    except Exception:
+        pass
+    return token
+
+
+BOT_TOKEN = _load_bot_token()
 PREFIX = "p!"
 DB_PATH = "pokebot.db"
 
@@ -26,14 +39,12 @@ OWNER_IDS = {123456789012345678}
 
 # Optional custom emoji overrides for Shiny / Gigantamax / Gender badges
 SHINY_EMOJI = "✨"
-GMAX_EMOJI = "<:gmax:123456789012345678>"  # Falls back cleanly if not replaced or uses custom server emoji
-# Fallback visual badge if custom gmax emoji isn't configured in your server:
+GMAX_EMOJI = "<:gmax:123456789012345678>"
 USE_DEFAULT_GMAX_BADGE = True
 DEFAULT_GMAX_TEXT = "🇬"
 
 # Optional Gen VIII pixelated icon emoji map: {dex_id: "<:mon_001:123456789>"}
-# If an entry isn't present here or uploaded to the bot's application emojis,
-# p!p leaves the icon slot completely blank (never falls back to 🔹 or random emojis).
+# If unavailable or upload fails, p!p leaves the icon slot blank (never 🔹 or random emojis).
 CUSTOM_BOX_EMOJIS: Dict[int, str] = {}
 
 NATURES = [
@@ -57,7 +68,6 @@ NATURE_MODIFIERS: Dict[str, Tuple[Optional[str], Optional[str]]] = {
     "Careful": ("spdef", "spatk"), "Quirky": (None, None),
 }
 
-# Built-in multilingual / alternate catch aliases + regional/form base mappings
 EXTRA_ALIASES: Dict[str, List[str]] = {
     "eevee": ["ibui", "eievui", "evoli"],
     "pikachu": ["pika", "pikachuu"],
@@ -80,11 +90,6 @@ EXTRA_ALIASES: Dict[str, List[str]] = {
     "tatsugiri": ["sharitatsu"],
 }
 
-REGIONAL_PREFIXES = (
-    "alolan ", "galarian ", "hisuian ", "paldean ",
-    "mega ", "primal ", "gigantamax ", "gmax ",
-)
-
 SHOP_ITEMS: Dict[str, Dict[str, Any]] = {
     "incense": {
         "name": "Incense",
@@ -104,6 +109,7 @@ SHOP_ITEMS: Dict[str, Dict[str, Any]] = {
         "description": "Spawn any Pokémon of your choice immediately.",
     },
 }
+
 
 # ==============================================================================
 # DATABASE LAYER
@@ -305,7 +311,6 @@ class Database:
         )
         row = cur.fetchone()
         if row:
-            # Adding/buying incense always auto-resumes (paused = 0)
             cur.execute("""
                 UPDATE incense_channels
                 SET remaining_spawns = remaining_spawns + ?,
@@ -414,7 +419,6 @@ class PokeAPIClient:
                         slug = item["name"]
                         self.all_pokemon_names.append(slug)
                         self._register_alias(slug, slug)
-                        # Friendly regional names (e.g., vulpix-alola -> alolan vulpix)
                         if slug.endswith("-alola"):
                             base = slug[:-6]
                             self._register_alias(f"alolan {base}", slug)
@@ -451,7 +455,6 @@ class PokeAPIClient:
         hyphen = norm.replace(" ", "-")
         if hyphen in self.alias_to_slug:
             return self.alias_to_slug[hyphen]
-        # Handle "alolan vulpix" -> "vulpix-alola"
         for prefix, suffix in [
             ("alolan ", "-alola"), ("alola ", "-alola"),
             ("galarian ", "-galar"), ("galar ", "-galar"),
@@ -494,7 +497,6 @@ class PokeAPIClient:
         species_name = raw["species"]["name"]
         species_data = await self.get_species_data(species_name)
 
-        # Register localized names from species endpoint as valid catch aliases
         valid_names = set(self.slug_to_aliases.get(slug, set()))
         valid_names.update({
             self._normalize(slug),
@@ -560,17 +562,12 @@ class PokeAPIClient:
             return data
 
     async def ensure_box_icon_emoji(self, bot: commands.Bot, dex_id: int, icon_url: Optional[str]) -> str:
-        """
-        Attempts to fetch and register the Gen VIII pixelated icon as an application emoji
-        so p!p shows the tiny pixel sprite. If unavailable or upload fails, returns '' (blank).
-        """
         if dex_id in self.box_icon_cache:
             return self.box_icon_cache[dex_id]
         if not icon_url or not self.session:
             self.box_icon_cache[dex_id] = ""
             return ""
         try:
-            # Check existing application emojis first
             app_emojis = await bot.fetch_application_emojis()
             target_name = f"pkmn_{dex_id}"
             for em in app_emojis:
@@ -590,7 +587,6 @@ class PokeAPIClient:
             self.box_icon_cache[dex_id] = val
             return val
         except Exception:
-            # Never fall back to 🔹 or random emojis—leave strictly blank
             self.box_icon_cache[dex_id] = ""
             return ""
 
@@ -641,7 +637,6 @@ class SceneRenderer:
 
     @classmethod
     def _draw_flying_sky(cls, canvas: Image.Image):
-        """Soft, low-detail pastel sky with gentle, understated clouds."""
         overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
         clouds = [
@@ -658,24 +653,17 @@ class SceneRenderer:
 
     @classmethod
     def _draw_electric_forest(cls, canvas: Image.Image):
-        """Calm, muted forest silhouettes with small, subtle yellow lightning."""
         overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-
-        # Soft ground slope
         draw.rectangle([0, 315, cls.WIDTH, cls.HEIGHT], fill=(68, 86, 68, 170))
-
-        # Minimalist distant tree silhouettes (low detail, muted sage/olive)
         tree_positions = [55, 125, 515, 585]
         for tx in tree_positions:
             draw.rectangle([tx - 6, 235, tx + 6, 325], fill=(64, 78, 62, 150))
             draw.polygon([(tx, 145), (tx - 38, 245), (tx + 38, 245)], fill=(74, 94, 74, 155))
             draw.polygon([(tx, 180), (tx - 44, 275), (tx + 44, 275)], fill=(66, 86, 66, 160))
-
         overlay = overlay.filter(ImageFilter.GaussianBlur(radius=3))
         canvas.alpha_composite(overlay)
 
-        # Small, subtle muted yellow lightning bolts in the background sky
         bolt_layer = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
         bdraw = ImageDraw.Draw(bolt_layer)
         bolts = [
@@ -689,11 +677,8 @@ class SceneRenderer:
 
     @classmethod
     def _draw_water_ocean(cls, canvas: Image.Image):
-        """Muted underwater ocean scene with soft light beams falling from top behind the Pokémon."""
         overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-
-        # Soft angled light rays descending from top-center behind the sprite
         rays = [
             [(220, 0), (275, 0), (195, 340), (110, 340)],
             [(295, 0), (355, 0), (345, 360), (255, 360)],
@@ -701,20 +686,14 @@ class SceneRenderer:
         ]
         for poly in rays:
             draw.polygon(poly, fill=(186, 222, 238, 42))
-
-        # Subtle soft seafloor curve at the very bottom
         draw.ellipse([-60, 335, cls.WIDTH + 60, 440], fill=(42, 82, 112, 140))
-
-        # Tiny faint bubbles
         for bx, by, br in [(140, 260, 4), (152, 225, 3), (490, 245, 4), (502, 205, 3)]:
             draw.ellipse([bx - br, by - br, bx + br, by + br], outline=(195, 228, 242, 75), width=1)
-
         overlay = overlay.filter(ImageFilter.GaussianBlur(radius=6))
         canvas.alpha_composite(overlay)
 
     @classmethod
     def _draw_grass_meadow(cls, canvas: Image.Image):
-        """Plain, low-detail muted meadow horizon."""
         overlay = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
         draw.ellipse([-80, 295, 440, 430], fill=(96, 130, 94, 145))
@@ -733,7 +712,7 @@ class SceneRenderer:
     @classmethod
     async def render_card(
         cls,
-        session: aiohttp.ClientSession,
+        session: Optional[aiohttp.ClientSession],
         sprite_url: Optional[str],
         types: List[str],
     ) -> Optional[discord.File]:
@@ -752,13 +731,12 @@ class SceneRenderer:
 
         cls._draw_subtle_ground_shadow(canvas)
 
-        if sprite_url:
+        if sprite_url and session:
             try:
                 async with session.get(sprite_url) as resp:
                     if resp.status == 200:
                         raw_bytes = await resp.read()
                         sprite = Image.open(io.BytesIO(raw_bytes)).convert("RGBA")
-                        # Resize cleanly so Pokémon stands out clearly against the muted scene
                         target_h = 265
                         ratio = target_h / max(1, sprite.height)
                         target_w = int(sprite.width * ratio)
@@ -838,15 +816,7 @@ def gmax_badge() -> str:
     return GMAX_EMOJI
 
 
-def distribute_iv_total(
-    target_total: int,
-    pinned: Dict[str, int],
-) -> Optional[Dict[str, int]]:
-    """
-    Distributes `target_total` (0..186) across all 6 stats (0..31 each),
-    respecting `pinned` stats, and distributing remaining points randomly.
-    Returns None if impossible.
-    """
+def distribute_iv_total(target_total: int, pinned: Dict[str, int]) -> Optional[Dict[str, int]]:
     remaining_keys = [k for k in STAT_KEYS if k not in pinned]
     pinned_sum = sum(pinned.values())
     rem_points = target_total - pinned_sum
@@ -855,7 +825,6 @@ def distribute_iv_total(
         return None
 
     alloc = {k: 0 for k in remaining_keys}
-    # Randomized incremental distribution within [0, 31]
     pool = list(remaining_keys)
     for _ in range(rem_points):
         valid_choices = [k for k in pool if alloc[k] < 31]
@@ -903,7 +872,7 @@ def build_pokemon_payload(
 
 
 # ==============================================================================
-# INTERACTIVE VIEWS (INFO PAGINATION, LIST PAGINATION, CONFIRMATIONS)
+# INTERACTIVE VIEWS
 # ==============================================================================
 class InfoPaginatorView(discord.ui.View):
     def __init__(self, bot: "PokeBot", user: discord.abc.User, collection: List[Dict[str, Any]], start_idx: int):
@@ -1052,7 +1021,6 @@ class BuyConfirmView(discord.ui.View):
 
         if self.item_key == "incense":
             total_spawns = item["spawns"] * self.quantity
-            # Automatically activates and resumes incense in the channel
             self.bot.db.activate_or_add_incense(self.channel_id, spawns=total_spawns, interval=item["interval"])
             await interaction.response.edit_message(
                 content=(
@@ -1148,7 +1116,6 @@ class PokeBot(commands.Bot):
         if custom_mon is None:
             if not self.pokeapi.all_pokemon_names:
                 return
-            # Pick a random base dex species (1..1025)
             rand_id = random.randint(1, 1025)
             pdata = await self.pokeapi.get_pokemon_data(str(rand_id))
             if not pdata:
@@ -1179,7 +1146,6 @@ class PokeBot(commands.Bot):
         mon: Dict[str, Any],
         total_count: int,
     ) -> Tuple[discord.Embed, Optional[discord.File]]:
-        # Leading shiny and/or Gmax emoji(s) before "Level <lvl> <Name>"
         prefixes = []
         if mon["shiny"]:
             prefixes.append(SHINY_EMOJI)
@@ -1209,7 +1175,6 @@ class PokeBot(commands.Bot):
             f"**Types:** {types_str}"
         )
 
-        # Unbolded "IV:" across all 6 stats as requested
         stats_lines = []
         for k in STAT_KEYS:
             stats_lines.append(f"**{STAT_LABELS[k]}:** {calc[k]} – IV: {ivs[k]}/31")
@@ -1245,7 +1210,6 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    # Count non-command messages toward natural channel spawns (every 18 messages)
     if not message.content.lower().startswith(PREFIX):
         ch_id = message.channel.id
         bot.channel_activity[ch_id] = bot.channel_activity.get(ch_id, 0) + 1
@@ -1257,7 +1221,7 @@ async def on_message(message: discord.Message):
 
 
 # ==============================================================================
-# CATCH COMMAND (p!c / p!catch) WITH ALTERNATE & FORM BASE NAMES
+# CATCH COMMAND (p!c / p!catch)
 # ==============================================================================
 @bot.command(name="catch", aliases=["c"])
 async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
@@ -1275,7 +1239,6 @@ async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
     valid_names.add(bot.pokeapi._normalize(spawn["display_name"]))
     valid_names.add(bot.pokeapi._normalize(spawn["slug"]))
 
-    # Also match if user types base species name for a regional/alt form (e.g., "vulpix" for "alolan vulpix")
     base_species = spawn["slug"].split("-")[0]
     valid_names.add(bot.pokeapi._normalize(base_species))
 
@@ -1305,7 +1268,7 @@ async def info_cmd(ctx: commands.Context, target: str = ""):
         return
 
     user_row = bot.db.ensure_user(ctx.author.id)
-    idx = len(collection) - 1  # Default to latest
+    idx = len(collection) - 1
 
     t = target.strip().lower()
     if t in ("latest", "l", ""):
@@ -1336,28 +1299,33 @@ async def info_cmd(ctx: commands.Context, target: str = ""):
 
 
 # ==============================================================================
-# POKÉMON COLLECTION LIST (p!p / p!pokemon) WITH MULTI-FLAG FILTERING & SORTING
+# POKÉMON COLLECTION LIST (p!p / p!pokemon)
 # ==============================================================================
-def _parse_numeric_filter(tokens: List[str], start_i: int) -> Tuple[Optional[str], Optional[int], int]:
+def _parse_numeric_filter(tokens: List[str], start_i: int) -> Tuple[Optional[str], Optional[int], int, Optional[str]]:
     """
     Parses `<num>`, `> <num>`, `><num>`, `< <num>`, or `<<num>` starting at `start_i`.
-    No range (1-10) or `=` syntax—plain `<num>` means exact equality.
-    Returns (op, value, next_index).
+    Plain `<num>` means exact equality. Rejects `1-10` ranges or `=` syntax.
     """
     if start_i >= len(tokens):
-        return None, None, start_i
+        return None, None, start_i, "Expected a number after flag."
     tok = tokens[start_i]
     if tok in (">", "<"):
         if start_i + 1 < len(tokens) and tokens[start_i + 1].isdigit():
-            return tok, int(tokens[start_i + 1]), start_i + 2
-        return None, None, start_i + 1
-    if tok.startswith(">") and tok[1:].isdigit():
-        return ">", int(tok[1:]), start_i + 1
-    if tok.startswith("<") and tok[1:].isdigit():
-        return "<", int(tok[1:]), start_i + 1
+            return tok, int(tokens[start_i + 1]), start_i + 2, None
+        return None, None, start_i + 1, f"Expected a number after `{tok}`."
+    if tok.startswith(">"):
+        rest = tok[1:]
+        if rest.isdigit():
+            return ">", int(rest), start_i + 1, None
+        return None, None, start_i + 1, f"Invalid comparison `{tok}`."
+    if tok.startswith("<"):
+        rest = tok[1:]
+        if rest.isdigit():
+            return "<", int(rest), start_i + 1, None
+        return None, None, start_i + 1, f"Invalid comparison `{tok}`."
     if tok.isdigit():
-        return "==", int(tok), start_i + 1
-    return None, None, start_i + 1
+        return "==", int(tok), start_i + 1, None
+    return None, None, start_i + 1, f"Invalid filter value `{tok}`. Use a number, `> <num>`, or `< <num>`."
 
 
 def _match_op(actual: int, op: str, target: int) -> bool:
@@ -1383,7 +1351,7 @@ async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
     name_filter: Optional[str] = None
     limit_count: Optional[int] = None
     order_by: Optional[str] = None
-    numeric_filters: List[Tuple[str, str, int]] = []  # (field, op, val)
+    numeric_filters: List[Tuple[str, str, int]] = []
 
     stat_flag_map = {
         "--lvl": "level",
@@ -1421,23 +1389,27 @@ async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
                 limit_count = max(1, int(tokens[i + 1]))
                 i += 2
             else:
-                i += 1
+                await ctx.send(f"Invalid `--lim` value. Provide a positive number like `--lim 10`.")
+                return
         elif tok in ("--o", "--order"):
             if i + 1 < len(tokens):
                 order_by = tokens[i + 1].lower()
                 i += 2
             else:
-                i += 1
+                await ctx.send(f"Invalid `--o` value. Use `iv`, `iv+`, `iv-`, `lvl`, `lvl+`, or `lvl-`.")
+                return
         elif tok in stat_flag_map:
             field = stat_flag_map[tok]
-            op, val, nxt = _parse_numeric_filter(tokens, i + 1)
+            op, val, nxt, err = _parse_numeric_filter(tokens, i + 1)
+            if err:
+                await ctx.send(f"Filter `{tok}`: {err}")
+                return
             if op is not None and val is not None:
                 numeric_filters.append((field, op, val))
             i = nxt
         else:
             i += 1
 
-    # Apply all filters with logical AND
     filtered = []
     for mon in collection:
         if only_shiny and not mon["shiny"]:
@@ -1462,7 +1434,6 @@ async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
         await ctx.send("No pokémon matched your filters.")
         return
 
-    # Sorting (--o iv | iv+ | iv- | lvl | lvl+ | lvl-)
     if order_by in ("iv", "iv-"):
         filtered.sort(key=lambda m: m["iv_percent"], reverse=True)
     elif order_by == "iv+":
@@ -1475,7 +1446,6 @@ async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
     if limit_count is not None:
         filtered = filtered[:limit_count]
 
-    # Pre-warm Gen VIII pixelated box icon emojis for visible items (leaves blank if unavailable)
     unique_dex = {m["dex_id"] for m in filtered[:60]}
     for did in unique_dex:
         if did not in bot.pokeapi.box_icon_cache:
@@ -1673,43 +1643,63 @@ async def incense_cmd(ctx: commands.Context, action: str = ""):
 # ==============================================================================
 # OWNER-ONLY CUSTOM SPAWNER (p!spawnmon)
 # ==============================================================================
-def _parse_spawnmon_args(raw: str) -> Tuple[Optional[str], Optional[int], Optional[float], Dict[str, int], Optional[bool], Optional[bool], Optional[str]]:
-    """
-    Parses:
-      p!spawnmon <mon name> [level] [iv%] [(stat val, ...)] [shiny] [gmax]
-    Everything after <mon name> is optional (defaults to RNG).
-    Returns: (mon_name, level, target_iv_pct, pinned_stats, shiny, gmax, error_msg)
-    """
+def _parse_spawnmon_args(
+    raw: str,
+) -> Tuple[Optional[str], Optional[int], Optional[float], Dict[str, int], Optional[bool], Optional[bool], Optional[str]]:
     text = raw.strip()
     if not text:
-        return None, None, None, {}, None, None, f"Usage: `{PREFIX}spawnmon <mon> [level] [iv%] [(stat val, ...)] [shiny] [gmax]`"
+        return (
+            None,
+            None,
+            None,
+            {},
+            None,
+            None,
+            f"Usage: `{PREFIX}spawnmon <mon> [level] [iv%] [(stat val, ...)] [shiny] [gmax]`",
+        )
 
     pinned_raw: Dict[str, int] = {}
-    # Extract bracketed stat overrides like (attack 31, spdiv 31)
     bracket_match = re.search(r"\(([^)]+)\)", text)
     if bracket_match:
         inside = bracket_match.group(1)
-        # Remove the bracketed section cleanly from text
-        text = (text[:bracket_match.start()] + " " + text[bracket_match.end():]).strip()
+        text = (text[: bracket_match.start()] + " " + text[bracket_match.end() :]).strip()
         for entry in inside.split(","):
             entry = entry.strip()
             if not entry:
                 continue
             parts = entry.split()
             if len(parts) != 2 or not parts[1].isdigit():
-                return None, None, None, {}, None, None, (
-                    f"Invalid stat override `{entry}`. Use format like `(attack 31, spdiv 31)`."
+                return (
+                    None,
+                    None,
+                    None,
+                    {},
+                    None,
+                    None,
+                    f"Invalid stat override `{entry}`. Use format like `(attack 31, spdiv 31)`.",
                 )
             stat_token = re.sub(r"[^a-z]", "", parts[0].lower())
             if stat_token not in STAT_ALIASES:
-                return None, None, None, {}, None, None, (
-                    f"Unknown stat `{parts[0]}`. Valid stats: `hp`, `attack`, `defense`, `spatk`, `spdiv`, `spd`."
+                return (
+                    None,
+                    None,
+                    None,
+                    {},
+                    None,
+                    None,
+                    f"Unknown stat `{parts[0]}`. Valid stats: `hp`, `attack`, `defense`, `spatk`, `spdiv`, `spd`.",
                 )
             canon_key = STAT_ALIASES[stat_token]
             val = int(parts[1])
             if not (0 <= val <= 31):
-                return None, None, None, {}, None, None, (
-                    f"Stat `{STAT_LABELS[canon_key]}` must be between `0` and `31` (got `{val}`)."
+                return (
+                    None,
+                    None,
+                    None,
+                    {},
+                    None,
+                    None,
+                    f"Stat `{STAT_LABELS[canon_key]}` must be between `0` and `31` (got `{val}`).",
                 )
             pinned_raw[canon_key] = val
 
@@ -1737,7 +1727,7 @@ def _parse_spawnmon_args(raw: str) -> Tuple[Optional[str], Optional[int], Option
                 iv_pct = val
             except ValueError:
                 name_tokens.append(tok)
-        elif tok.isdigit() and name_tokens and level is None:
+        elif tok.isdigit() and level is None:
             lvl_val = int(tok)
             if not (1 <= lvl_val <= 100):
                 return None, None, None, {}, None, None, "Level must be between `1` and `100`."
@@ -1777,13 +1767,11 @@ async def spawnmon_cmd(ctx: commands.Context, *, raw_args: str = ""):
         if not pinned_raw:
             ivs = distribute_iv_total(target_total, {})
         else:
-            # Validate pinned stats sequentially so if too many stats are given or sum exceeds target,
-            # we lock in the valid prefix that can still reach the exact target_total and give a clear suggestion.
             accepted: Dict[str, int] = {}
             rejected_notes: List[str] = []
             items = list(pinned_raw.items())
 
-            for idx, (k, val) in enumerate(items):
+            for k, val in items:
                 remaining_slots_after = 6 - (len(accepted) + 1)
                 new_sum = sum(accepted.values()) + val
                 rem_needed = target_total - new_sum
@@ -1820,9 +1808,11 @@ async def spawnmon_cmd(ctx: commands.Context, *, raw_args: str = ""):
                 extra_msg = rejected_notes[0] if rejected_notes else (
                     f"Only the first **{len(accepted)}** stat(s) ({kept_str}) were locked in so the remaining stats could match **{iv_pct:.2f}%**."
                 )
-                note_msg = f"IV doesn't match all given stats — kept `{kept_str}` and randomized the rest to hit exact **{iv_pct:.2f}%**. Suggestion: {extra_msg}"
+                note_msg = (
+                    f"IV doesn't match all given stats — kept `{kept_str}` and randomized the rest to hit exact "
+                    f"**{iv_pct:.2f}%**. Suggestion: {extra_msg}"
+                )
     elif pinned_raw:
-        # Pinned stats provided without an explicit overall IV% -> keep pinned and randomize the rest
         ivs = {k: pinned_raw.get(k, random.randint(0, 31)) for k in STAT_KEYS}
 
     mon = build_pokemon_payload(
@@ -1840,4 +1830,8 @@ async def spawnmon_cmd(ctx: commands.Context, *, raw_args: str = ""):
 
 
 if __name__ == "__main__":
+    if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        raise RuntimeError(
+            "Missing DISCORD_BOT_TOKEN. Set it in your environment variables or Streamlit Secrets before starting the bot."
+        )
     bot.run(BOT_TOKEN)
