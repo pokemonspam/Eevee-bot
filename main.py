@@ -36,6 +36,61 @@ FEMALE_EMOJI = "<:Female:1566169649249263627>"
 # Optional custom pixel emoji map keyed by slug (e.g. "eevee": "<:eevee:123456789012345678>")
 PIXEL_SPRITE_EMOJIS: dict[str, str] = {}
 
+REGIONAL_PREFIX_MAP: dict[str, str] = {
+    "alolan": "alola",
+    "alola": "alola",
+    "galarian": "galar",
+    "galar": "galar",
+    "hisuian": "hisui",
+    "hisui": "hisui",
+    "paldean": "paldea",
+    "paldea": "paldea",
+}
+
+REGIONAL_SUFFIX_TO_LABEL: dict[str, str] = {
+    "alola": "Alolan",
+    "galar": "Galarian",
+    "hisui": "Hisuian",
+    "paldea": "Paldean",
+}
+
+GMAX_ELIGIBLE_SLUGS: set[str] = {
+    "venusaur",
+    "charizard",
+    "blastoise",
+    "butterfree",
+    "pikachu",
+    "meowth",
+    "machamp",
+    "gengar",
+    "kingler",
+    "lapras",
+    "eevee",
+    "snorlax",
+    "garbodor",
+    "melmetal",
+    "rillaboom",
+    "cinderace",
+    "inteleon",
+    "corviknight",
+    "orbeetle",
+    "drednaw",
+    "coalossal",
+    "flapple",
+    "appletun",
+    "sandaconda",
+    "toxtricity-amped",
+    "toxtricity-low-key",
+    "centiskorch",
+    "hatterene",
+    "grimmsnarl",
+    "alcremie",
+    "copperajah",
+    "duraludon",
+    "urshifu-single-strike",
+    "urshifu-rapid-strike",
+}
+
 STARTERS_BY_REGION: dict[str, list[str]] = {
     "Kanto": ["Bulbasaur", "Charmander", "Squirtle"],
     "Johto": ["Chikorita", "Cyndaquil", "Totodile"],
@@ -142,6 +197,56 @@ def normalize_prefix_text(content: str) -> str:
     return content
 
 
+def normalize_pokemon_query(name_or_id: str | int) -> list[str]:
+    raw = str(name_or_id).strip().lower()
+    if not raw:
+        return []
+    if raw.isdigit():
+        return [raw]
+
+    tokens = [t for t in re.split(r"[\s-]+", raw) if t]
+    candidates: list[str] = []
+
+    def _add(c: str):
+        if c and c not in candidates:
+            candidates.append(c)
+
+    _add("-".join(tokens))
+
+    if tokens and tokens[0] in REGIONAL_PREFIX_MAP:
+        reg_slug = REGIONAL_PREFIX_MAP[tokens[0]]
+        rest = "-".join(tokens[1:])
+        if rest:
+            _add(f"{rest}-{reg_slug}")
+
+    if len(tokens) >= 2 and tokens[-1] in REGIONAL_PREFIX_MAP:
+        reg_slug = REGIONAL_PREFIX_MAP[tokens[-1]]
+        base = "-".join(tokens[:-1])
+        _add(f"{base}-{reg_slug}")
+
+    return candidates
+
+
+def format_regional_display_name(slug: str) -> str:
+    clean = slug.strip().lower()
+    for suffix, label in REGIONAL_SUFFIX_TO_LABEL.items():
+        marker = f"-{suffix}"
+        if clean.endswith(marker):
+            base = clean[: -len(marker)].replace("-", " ").title()
+            return f"{label} {base}".strip()
+    return clean.replace("-", " ").title()
+
+
+def has_gmax_factor(slug: str) -> bool:
+    clean = (slug or "").strip().lower()
+    if clean in GMAX_ELIGIBLE_SLUGS:
+        return True
+    for base in GMAX_ELIGIBLE_SLUGS:
+        if clean.startswith(f"{base}-"):
+            return True
+    return False
+
+
 def gmax_badge() -> str:
     return GMAX_EMOJI
 
@@ -212,7 +317,11 @@ class Database:
                 incense_remaining REAL DEFAULT 0,
                 incense_channel_id INTEGER,
                 incense_spawns_left INTEGER DEFAULT 0,
-                incense_interval INTEGER DEFAULT 20
+                incense_interval INTEGER DEFAULT 20,
+                started_at REAL DEFAULT 0,
+                total_caught INTEGER DEFAULT 0,
+                shiny_caught INTEGER DEFAULT 0,
+                gmax_caught INTEGER DEFAULT 0
             )
         """)
         cur.execute("PRAGMA table_info(users)")
@@ -237,6 +346,20 @@ class Database:
             cur.execute("ALTER TABLE users ADD COLUMN incense_spawns_left INTEGER DEFAULT 0")
         if "incense_interval" not in cols:
             cur.execute("ALTER TABLE users ADD COLUMN incense_interval INTEGER DEFAULT 20")
+        if "started_at" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN started_at REAL DEFAULT 0")
+        if "total_caught" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN total_caught INTEGER DEFAULT 0")
+        if "shiny_caught" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN shiny_caught INTEGER DEFAULT 0")
+        if "gmax_caught" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN gmax_caught INTEGER DEFAULT 0")
+
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET started_at = ? WHERE started_at IS NULL OR started_at <= 0",
+                (time.time(),),
+            )
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pokemon (
@@ -286,14 +409,42 @@ class Database:
         self.conn.commit()
 
     def ensure_user(self, user_id: int) -> sqlite3.Row:
+        now = time.time()
         with self.conn:
             self.conn.execute(
-                "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
-                (user_id,),
+                "INSERT OR IGNORE INTO users (user_id, started_at) VALUES (?, ?)",
+                (user_id, now),
+            )
+            self.conn.execute(
+                "UPDATE users SET started_at = ? WHERE user_id = ? AND (started_at IS NULL OR started_at <= 0)",
+                (now, user_id),
             )
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         return cur.fetchone()
+
+    def record_catch_stats(self, user_id: int, is_shiny: bool = False, is_gmax: bool = False):
+        self.ensure_user(user_id)
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE users
+                SET total_caught = COALESCE(total_caught, 0) + 1,
+                    shiny_caught = COALESCE(shiny_caught, 0) + ?,
+                    gmax_caught = COALESCE(gmax_caught, 0) + ?
+                WHERE user_id = ?
+                """,
+                (1 if is_shiny else 0, 1 if is_gmax else 0, user_id),
+            )
+
+    def get_unique_dex_count(self, user_id: int) -> int:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT COUNT(DISTINCT dex_id) AS cnt FROM pokemon WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return int(row["cnt"] or 0) if row else 0
 
     def add_balance(self, user_id: int, amount: int):
         self.ensure_user(user_id)
@@ -647,65 +798,92 @@ class PokeAPIClient:
         if self.session and not self.session.closed and not self._external_session:
             await self.session.close()
 
-    async def get_pokemon_data(self, name_or_id: str | int) -> Optional[dict[str, Any]]:
-        key = str(name_or_id).strip().lower().replace(" ", "-")
-        if not key:
-            return None
-        if key in self._cache:
-            return self._cache[key]
-
+    async def _fetch_json(self, url: str) -> Optional[dict[str, Any]]:
         session = await self._get_session()
-        url = f"https://pokeapi.co/api/v2/pokemon/{key}"
         try:
             async with session.get(url) as resp:
                 if resp.status != 200:
                     return None
-                data = await resp.json()
+                return await resp.json()
         except Exception:
             return None
 
+    async def get_pokemon_data(self, name_or_id: str | int) -> Optional[dict[str, Any]]:
+        candidates = normalize_pokemon_query(name_or_id)
+        if not candidates:
+            return None
+
+        for key in candidates:
+            if key in self._cache:
+                return self._cache[key]
+
+        data: Optional[dict[str, Any]] = None
+        matched_key = candidates[0]
+        for key in candidates:
+            fetched = await self._fetch_json(f"https://pokeapi.co/api/v2/pokemon/{key}")
+            if fetched:
+                data = fetched
+                matched_key = key
+                break
+
+        if not data:
+            return None
+
         dex_id = int(data.get("id", 0))
-        slug = str(data.get("name", key)).lower()
-        display_name = slug.replace("-", " ").title()
+        slug = str(data.get("name", matched_key)).lower()
+        display_name = format_regional_display_name(slug)
         types = [
             t["type"]["name"].lower()
             for t in sorted(data.get("types", []), key=lambda x: x.get("slot", 0))
         ]
-        other = data.get("sprites", {}).get("other", {})
+        sprites = data.get("sprites", {})
+        other = sprites.get("other", {})
         official = other.get("official-artwork", {})
         home = other.get("home", {})
 
         artwork_url = (
             official.get("front_default")
             or home.get("front_default")
-            or data.get("sprites", {}).get("front_default")
+            or sprites.get("front_default")
         )
         shiny_artwork_url = (
             official.get("front_shiny")
             or home.get("front_shiny")
-            or data.get("sprites", {}).get("front_shiny")
-            or artwork_url
+            or sprites.get("front_shiny")
         )
 
         gender_rate = 4
+        species_dex_id = dex_id
         try:
             species_url = data.get("species", {}).get("url")
             if species_url:
-                async with session.get(species_url) as sresp:
-                    if sresp.status == 200:
-                        sdata = await sresp.json()
-                        gender_rate = int(sdata.get("gender_rate", 4))
-                        for name_entry in sdata.get("names", []):
-                            if name_entry.get("language", {}).get("name") == "en":
-                                base_en = name_entry.get("name")
-                                if base_en and slug == str(sdata.get("name", "")).lower():
-                                    display_name = base_en
+                sdata = await self._fetch_json(species_url)
+                if sdata:
+                    gender_rate = int(sdata.get("gender_rate", 4))
+                    species_dex_id = int(sdata.get("id", dex_id) or dex_id)
+                    if not shiny_artwork_url and slug != str(sdata.get("name", "")).lower():
+                        for var in sdata.get("varieties", []):
+                            if var.get("is_default"):
+                                def_url = var.get("pokemon", {}).get("url")
+                                if def_url:
+                                    def_p = await self._fetch_json(def_url)
+                                    if def_p:
+                                        dspr = def_p.get("sprites", {})
+                                        doth = dspr.get("other", {})
+                                        shiny_artwork_url = (
+                                            doth.get("official-artwork", {}).get("front_shiny")
+                                            or doth.get("home", {}).get("front_shiny")
+                                            or dspr.get("front_shiny")
+                                        )
                                 break
         except Exception:
             pass
 
+        if not shiny_artwork_url:
+            shiny_artwork_url = artwork_url
+
         payload = {
-            "dex_id": dex_id,
+            "dex_id": species_dex_id or dex_id,
             "slug": slug,
             "display_name": display_name,
             "types": types,
@@ -713,7 +891,9 @@ class PokeAPIClient:
             "shiny_artwork_url": shiny_artwork_url,
             "gender_rate": gender_rate,
         }
-        self._cache[key] = payload
+        for c in candidates:
+            self._cache[c] = payload
+        self._cache[matched_key] = payload
         self._cache[slug] = payload
         if dex_id:
             self._cache[str(dex_id)] = payload
@@ -809,7 +989,6 @@ def generate_ivs_with_target(
                 seen_stats.add(stat_key)
                 deduped_pinned.append((stat_key, max(0, min(31, int(val)))))
 
-        # First check if all pinned values fit within target_sum and remaining capacity
         all_pinned_sum = sum(v for _, v in deduped_pinned)
         remaining_after_all = len(STAT_KEYS) - len(deduped_pinned)
         min_possible_after_all = all_pinned_sum
@@ -820,7 +999,6 @@ def generate_ivs_with_target(
                 ivs[stat_key] = val
                 locked.add(stat_key)
         else:
-            # Take prefix of pinned stats that fit cleanly within budget/bounds
             running_sum = 0
             for idx, (stat_key, val) in enumerate(deduped_pinned):
                 rem_slots = len(STAT_KEYS) - (idx + 1)
@@ -884,25 +1062,25 @@ def build_pokemon_payload(
     level = custom_level if custom_level is not None else random.randint(1, 50)
     nature = random.choice(NATURES)
     gender = roll_gender(int(pdata.get("gender_rate", 4)))
+    slug = str(pdata.get("slug", "")).lower()
+    eligible_gmax = has_gmax_factor(slug)
 
     if exact_forced_flags:
         is_shiny = bool(force_shiny)
-        is_gmax = bool(force_gmax)
+        is_gmax = bool(force_gmax) and eligible_gmax
     else:
         chain_bonus = min(shiny_chain * 0.0005, 0.05)
         base_shiny_chance = 1.0 / 512.0 + chain_bonus
         is_shiny = True if force_shiny else (random.random() < base_shiny_chance)
-        is_gmax = True if force_gmax else (random.random() < 0.02)
+        is_gmax = (True if force_gmax else (random.random() < 0.02)) and eligible_gmax
 
-    artwork = (
-        pdata.get("shiny_artwork_url")
-        if is_shiny
-        else pdata.get("artwork_url")
-    )
+    shiny_art = pdata.get("shiny_artwork_url") or pdata.get("artwork_url")
+    normal_art = pdata.get("artwork_url")
+    artwork = shiny_art if is_shiny else normal_art
 
     return {
         "dex_id": pdata["dex_id"],
-        "slug": pdata["slug"],
+        "slug": slug,
         "display_name": pdata["display_name"],
         "types": pdata.get("types", []),
         "level": level,
@@ -913,8 +1091,8 @@ def build_pokemon_payload(
         "gmax": is_gmax,
         "ivs": ivs,
         "iv_percent": iv_percent,
-        "artwork_url": pdata.get("artwork_url"),
-        "shiny_artwork_url": pdata.get("shiny_artwork_url"),
+        "artwork_url": normal_art,
+        "shiny_artwork_url": shiny_art,
         "active_artwork_url": artwork,
     }
 
@@ -939,96 +1117,87 @@ class SceneRenderer:
         rng: random.Random,
     ) -> Image.Image:
         w, h = self.width, self.height
-        horizon_y = int(h * 0.62)
+        horizon_y = int(h * 0.64)
 
         scene = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(scene)
 
-        # Distant ridge / hill silhouettes
-        far_color = (
-            max(0, min(255, int(c1_bot[0] * 0.72))),
-            max(0, min(255, int(c1_bot[1] * 0.72))),
-            max(0, min(255, int(c1_bot[2] * 0.72))),
-            155,
+        far_tree = (
+            max(0, min(255, int(c1_bot[0] * 0.58 + 12))),
+            max(0, min(255, int(c1_bot[1] * 0.72 + 24))),
+            max(0, min(255, int(c1_bot[2] * 0.68 + 18))),
+            150,
         )
-        mid_color = (
-            max(0, min(255, int(c1_bot[0] * 0.55))),
-            max(0, min(255, int(c1_bot[1] * 0.55))),
-            max(0, min(255, int(c1_bot[2] * 0.55))),
-            200,
+        mid_tree = (
+            max(0, min(255, int(c1_bot[0] * 0.42 + 8))),
+            max(0, min(255, int(c1_bot[1] * 0.56 + 18))),
+            max(0, min(255, int(c1_bot[2] * 0.52 + 12))),
+            195,
         )
 
-        if primary_type in ("grass", "bug"):
-            # Rolling forest hills & tree silhouettes
-            pts_far = [(0, h), (0, horizon_y - 25)]
-            for x in range(0, w + 32, 32):
-                py = horizon_y - 28 - int(18 * abs((x / 160.0) % 2 - 1) - 6)
-                pts_far.append((x, py))
-            pts_far.append((w, h))
-            sdraw.polygon(pts_far, fill=far_color)
-
-            for tx in range(18, w, 42):
-                th = rng.randint(36, 72)
-                tw = rng.randint(16, 28)
-                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y + 8), fill=mid_color)
-        elif primary_type in ("fire", "ground", "rock"):
-            # Sun-baked dunes / mesa / craggy peaks
-            pts_far = [(0, h), (0, horizon_y - 10)]
-            peaks = [(0, horizon_y - 12), (130, horizon_y - 68), (275, horizon_y - 22), (455, horizon_y - 78), (w, horizon_y - 18)]
-            pts_far.extend(peaks)
-            pts_far.append((w, h))
-            sdraw.polygon(pts_far, fill=far_color)
-
-            pts_mid = [(0, h), (0, horizon_y + 6), (190, horizon_y - 34), (390, horizon_y - 8), (w, horizon_y - 32), (w, h)]
-            sdraw.polygon(pts_mid, fill=mid_color)
+        if primary_type in ("grass", "bug", "normal"):
+            # Soft woodland trees & grassy ground
+            for tx in range(20, w, 56):
+                th = rng.randint(44, 86)
+                tw = rng.randint(22, 36)
+                sdraw.rectangle((tx - 3, horizon_y - th // 2, tx + 3, horizon_y + 4), fill=mid_tree)
+                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y - th // 3 + 12), fill=far_tree)
+            for tx in range(42, w, 68):
+                th = rng.randint(32, 64)
+                tw = rng.randint(18, 28)
+                sdraw.ellipse((tx - tw, horizon_y - th + 6, tx + tw, horizon_y + 6), fill=mid_tree)
         elif primary_type in ("water", "ice"):
-            # Coastal waves & distant sea stacks / icebergs
-            for wy in range(horizon_y - 14, h, 14):
-                wave_alpha = min(190, 95 + (wy - (horizon_y - 14)) * 2)
-                wave_col = (c1_glow[0], c1_glow[1], c1_glow[2], wave_alpha // 3)
-                sdraw.line([(0, wy), (w, wy)], fill=wave_col, width=3)
-            sdraw.polygon([(70, horizon_y), (125, horizon_y - 54), (185, horizon_y)], fill=far_color)
-            sdraw.polygon([(450, horizon_y), (515, horizon_y - 62), (575, horizon_y)], fill=far_color)
-        elif primary_type in ("ghost", "dark", "psychic"):
-            # Moonlit ruins / misty pillars & starry sky accents
-            for _ in range(18):
-                sx = rng.randint(24, w - 24)
-                sy = rng.randint(18, horizon_y - 20)
-                sr = rng.randint(1, 2)
-                sdraw.ellipse((sx - sr, sy - sr, sx + sr, sy + sr), fill=(c1_glow[0], c1_glow[1], c1_glow[2], 140))
-            for px in (75, 535):
-                sdraw.rectangle((px, horizon_y - 68, px + 26, horizon_y + 12), fill=mid_color)
-                sdraw.rectangle((px - 4, horizon_y - 74, px + 30, horizon_y - 64), fill=far_color)
+            # Calm water bands & soft shore
+            for wy in range(horizon_y - 24, h, 16):
+                sdraw.line([(0, wy), (w, wy)], fill=(c1_glow[0], c1_glow[1], c1_glow[2], 42), width=3)
+            sdraw.polygon([(80, horizon_y), (140, horizon_y - 44), (200, horizon_y)], fill=far_tree)
+            sdraw.polygon([(440, horizon_y), (505, horizon_y - 52), (565, horizon_y)], fill=far_tree)
+        elif primary_type in ("flying",):
+            # Open sky with soft clouds & gentle horizon
+            for cx_cloud, cy_cloud, cr in [(120, 82, 26), (144, 78, 32), (170, 84, 24), (480, 74, 28), (506, 70, 34), (532, 76, 24)]:
+                sdraw.ellipse((cx_cloud - cr, cy_cloud - cr // 2, cx_cloud + cr, cy_cloud + cr // 2), fill=(255, 255, 255, 48))
+        elif primary_type in ("fire",):
+            # Warm dusk & subtle ember glow above ground
+            for ex in range(45, w - 45, 75):
+                ey = rng.randint(horizon_y - 24, horizon_y + 10)
+                sdraw.ellipse((ex - 10, ey - 14, ex + 10, ey + 6), fill=(255, 155, 75, 55))
+        elif primary_type in ("ground", "rock"):
+            # Earthy ground mounds & stones
+            for rx, ry, rw, rh in [(95, horizon_y - 12, 36, 18), (520, horizon_y - 16, 44, 22), (240, horizon_y + 26, 24, 12), (410, horizon_y + 34, 28, 14)]:
+                sdraw.ellipse((rx - rw, ry - rh, rx + rw, ry + rh), fill=mid_tree)
+        elif primary_type in ("ghost", "dark"):
+            # Night sky with soft moon & dark silhouettes
+            sdraw.ellipse((510, 48, 554, 92), fill=(235, 240, 255, 65))
+            for tx in range(28, w, 64):
+                th = rng.randint(40, 76)
+                tw = rng.randint(18, 28)
+                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y + 6), fill=mid_tree)
+        elif primary_type in ("fairy",):
+            # Soft pastel meadow & gentle sparkles
+            for spx, spy in [(115, 95), (210, 72), (430, 84), (525, 108), (165, 145), (475, 140)]:
+                sdraw.ellipse((spx - 5, spy - 5, spx + 5, spy + 5), fill=(255, 215, 240, 65))
         else:
-            # Scenic meadow & distant mountain range
-            pts_far = [(0, h), (0, horizon_y - 15), (160, horizon_y - 64), (340, horizon_y - 24), (510, horizon_y - 58), (w, horizon_y - 16), (w, h)]
-            sdraw.polygon(pts_far, fill=far_color)
+            for tx in range(24, w, 60):
+                th = rng.randint(36, 70)
+                tw = rng.randint(18, 28)
+                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y + 6), fill=far_tree)
 
-        # Ground plane below horizon
         ground_top = (
-            max(0, min(255, int(c1_bot[0] * 0.65))),
-            max(0, min(255, int(c1_bot[1] * 0.65))),
-            max(0, min(255, int(c1_bot[2] * 0.65))),
-            235,
+            max(0, min(255, int(c1_bot[0] * 0.52 + 8))),
+            max(0, min(255, int(c1_bot[1] * 0.68 + 20))),
+            max(0, min(255, int(c1_bot[2] * 0.60 + 14))),
+            225,
         )
         ground_bot = (
-            max(0, min(255, int(c1_bot[0] * 0.35))),
-            max(0, min(255, int(c1_bot[1] * 0.35))),
-            max(0, min(255, int(c1_bot[2] * 0.35))),
-            255,
+            max(0, min(255, int(c1_bot[0] * 0.32))),
+            max(0, min(255, int(c1_bot[1] * 0.45))),
+            max(0, min(255, int(c1_bot[2] * 0.38))),
+            245,
         )
         sdraw.rectangle((0, horizon_y, w, h), fill=ground_top)
-        sdraw.rectangle((0, int(h * 0.82), w, h), fill=ground_bot)
+        sdraw.rectangle((0, int(h * 0.84), w, h), fill=ground_bot)
 
-        # Subtle grass/foliage tufts or ground pebbles along terrain
-        tuft_color = (c2_glow[0], c2_glow[1], c2_glow[2], 85)
-        for _ in range(22):
-            gx = rng.randint(25, w - 25)
-            gy = rng.randint(horizon_y + 6, h - 18)
-            sdraw.line([(gx, gy), (gx - 4, gy - 7)], fill=tuft_color, width=2)
-            sdraw.line([(gx, gy), (gx + 4, gy - 6)], fill=tuft_color, width=2)
-
-        scene = scene.filter(ImageFilter.GaussianBlur(radius=2))
+        scene = scene.filter(ImageFilter.GaussianBlur(radius=4))
         return Image.alpha_composite(base, scene)
 
     def render_spawn_card(
@@ -1073,7 +1242,8 @@ class SceneRenderer:
                     255,
                 )
 
-        rng = random.Random(f"{primary_type}-{secondary_type}-{is_shiny}-{is_gmax}")
+        # Keep wild spawn image clean without shiny/gmax overlays during spawning
+        rng = random.Random(f"{primary_type}-{secondary_type}")
         base = self._draw_nature_scene(
             base=base,
             primary_type=primary_type,
@@ -1085,48 +1255,15 @@ class SceneRenderer:
             rng=rng,
         )
 
-        glow_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        gdraw = ImageDraw.Draw(glow_layer)
         cx, cy = w // 2, h // 2 - 8
-        glow_color = (255, 225, 130) if is_shiny else c1_glow
-        for radius, alpha in [(165, 26), (120, 46), (78, 72), (44, 96)]:
-            gdraw.ellipse(
-                (cx - radius, cy - radius, cx + radius, cy + radius),
-                fill=(glow_color[0], glow_color[1], glow_color[2], alpha),
-            )
-        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=18))
-        base = Image.alpha_composite(base, glow_layer)
-
-        bokeh = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        bdraw = ImageDraw.Draw(bokeh)
-        for _ in range(14):
-            bx = rng.randint(40, w - 40)
-            by = rng.randint(30, h - 50)
-            br = rng.randint(8, 26)
-            ba = rng.randint(12, 32)
-            accent = c2_glow if rng.random() > 0.5 else c1_glow
-            bdraw.ellipse(
-                (bx - br, by - br, bx + br, by + br),
-                fill=(accent[0], accent[1], accent[2], ba),
-            )
-        bokeh = bokeh.filter(ImageFilter.GaussianBlur(radius=5))
-        base = Image.alpha_composite(base, bokeh)
-
         shadow_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(shadow_layer)
         sdraw.ellipse(
-            (cx - 95, h - 78, cx + 95, h - 42),
-            fill=(0, 0, 0, 115),
+            (cx - 95, h - 76, cx + 95, h - 42),
+            fill=(0, 0, 0, 120),
         )
-        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=10))
+        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=9))
         base = Image.alpha_composite(base, shadow_layer)
-
-        vignette = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        vdraw = ImageDraw.Draw(vignette)
-        vdraw.rectangle((0, 0, w, h), outline=(10, 12, 18, 120), width=14)
-        vdraw.rectangle((10, 10, w - 10, h - 10), outline=(255, 255, 255, 36), width=2)
-        vignette = vignette.filter(ImageFilter.GaussianBlur(radius=4))
-        base = Image.alpha_composite(base, vignette)
 
         if sprite is not None:
             max_side = 285 if is_gmax else 260
@@ -1163,7 +1300,6 @@ def build_info_embed(
         "gmax": bool(row["gmax"]),
     }
     header = format_mon_header(mon)
-    gender_sym = format_gender_symbol(row["gender"])
     level = int(row["level"] or 1)
     xp_val = int(row["xp"] or 0)
     xp_cap = xp_cap_for_level(level)
@@ -1179,7 +1315,7 @@ def build_info_embed(
     iv_pct = float(row["iv_percent"] if row["iv_percent"] is not None else calc_iv_percent(ivs))
 
     embed = discord.Embed(
-        title=f"Level {level} {header} {gender_sym}",
+        title=f"{header} Level {level}" if (mon["shiny"] or mon["gmax"]) else f"Level {level} {row['display_name']}",
         color=discord.Color.from_rgb(235, 135, 175),
     )
     embed.set_thumbnail(url=user.display_avatar.url)
@@ -1214,9 +1350,19 @@ def build_info_embed(
     return embed, artwork_url
 
 
+def _resolve_pixel_sprite_emoji(slug: str) -> str:
+    clean = (slug or "").strip().lower()
+    if clean in PIXEL_SPRITE_EMOJIS and PIXEL_SPRITE_EMOJIS[clean]:
+        return PIXEL_SPRITE_EMOJIS[clean]
+    base_slug = clean.split("-", 1)[0]
+    if base_slug in PIXEL_SPRITE_EMOJIS and PIXEL_SPRITE_EMOJIS[base_slug]:
+        return PIXEL_SPRITE_EMOJIS[base_slug]
+    return ""
+
+
 def format_pokemon_row_line(row: sqlite3.Row) -> str:
     slug = str(row["slug"] or "").lower()
-    sprite_emoji = PIXEL_SPRITE_EMOJIS.get(slug, "")
+    sprite_emoji = _resolve_pixel_sprite_emoji(slug)
 
     badges: list[str] = []
     if sprite_emoji:
@@ -1228,8 +1374,8 @@ def format_pokemon_row_line(row: sqlite3.Row) -> str:
 
     gender_sym = format_gender_symbol(row["gender"])
     iv_pct = float(row["iv_percent"] or 0.0)
-    prefix_str = f"{' '.join(badges)} " if badges else ""
-    return f"`{row['slot_num']}` {prefix_str}{row['display_name']} {gender_sym} • Lvl. {row['level']} • {iv_pct:.2f}%"
+    prefix_str = f"{'  '.join(badges)}  " if badges else "  "
+    return f"`{row['slot_num']}`{prefix_str}{row['display_name']}  {gender_sym}  •  Lvl. {row['level']}  •  {iv_pct:.2f}%"
 
 
 def build_pokemon_list_embed(
@@ -1260,6 +1406,54 @@ def build_pokemon_list_embed(
         color=discord.Color.from_rgb(235, 135, 175),
     )
     embed.set_footer(text=f"Showing entries {start_idx + 1}–{end_idx} out of {total}.")
+    return embed
+
+
+def _format_relative_duration(started_ts: float) -> str:
+    elapsed = max(0, int(time.time() - started_ts))
+    years = elapsed // (365 * 24 * 3600)
+    if years >= 1:
+        return f"{years} year{'s' if years != 1 else ''} ago"
+    days = elapsed // (24 * 3600)
+    if days >= 1:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    hours = elapsed // 3600
+    if hours >= 1:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    minutes = max(1, elapsed // 60)
+    return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+
+
+def build_profile_embed(
+    user_row: sqlite3.Row,
+    target_user: discord.User | discord.Member,
+    unique_dex: int,
+    max_dex: int = 1025,
+) -> discord.Embed:
+    started_ts = float(user_row["started_at"] or time.time())
+    started_str = datetime.fromtimestamp(started_ts).strftime("%d %B %Y %H:%M")
+    rel_str = _format_relative_duration(started_ts)
+
+    total_caught = int(user_row["total_caught"] or 0)
+    shiny_caught = int(user_row["shiny_caught"] or 0)
+    gmax_caught = int(user_row["gmax_caught"] or 0)
+    dex_pct = round((unique_dex / max(1, max_dex)) * 100.0)
+
+    desc = (
+        f"**Trainer Profile**\n"
+        f"Started at {started_str} ({rel_str})!\n\n"
+        f"**Pokémon Caught**\n"
+        f"Total: {total_caught}\n"
+        f"Pokédex: {unique_dex}/{max_dex} ({dex_pct}%)\n"
+        f"Gigantamax: {gmax_caught}\n"
+        f"Shiny: {shiny_caught}"
+    )
+
+    embed = discord.Embed(
+        description=desc,
+        color=discord.Color.from_rgb(235, 195, 75),
+    )
+    embed.set_author(name=target_user.display_name, icon_url=target_user.display_avatar.url)
     return embed
 
 
@@ -1497,7 +1691,7 @@ async def build_shiny_hunt_embed(bot_instance: "PokeBot", user_id: int) -> disco
 
     if hunt_slug:
         pdata = await bot_instance.pokeapi.get_pokemon_data(hunt_slug)
-        hunt_label = pdata["display_name"] if pdata else hunt_slug.replace("-", " ").title()
+        hunt_label = pdata["display_name"] if pdata else format_regional_display_name(hunt_slug)
     else:
         hunt_label = "None"
 
@@ -1621,17 +1815,14 @@ class PokeBot(commands.Bot):
                 force_gmax=force_gmax,
             )
 
-        art_url = (
-            spawn.get("shiny_artwork_url")
-            if spawn.get("shiny")
-            else spawn.get("artwork_url")
-        )
+        # Render normal artwork during wild spawn; reveal shiny/gmax only after catch
+        art_url = spawn.get("artwork_url") or spawn.get("shiny_artwork_url")
         sprite = await self.pokeapi.fetch_image(art_url)
         card_buf = self.renderer.render_spawn_card(
             sprite=sprite,
             types=spawn.get("types", []),
-            is_shiny=bool(spawn.get("shiny")),
-            is_gmax=bool(spawn.get("gmax")),
+            is_shiny=False,
+            is_gmax=False,
         )
 
         channel_id = getattr(channel, "id", 0)
@@ -1708,6 +1899,31 @@ async def start_cmd(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="profile", aliases=["pf"])
+async def profile_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    tokens = raw_args.strip().split()
+    target = _extract_target_user(ctx, tokens) if tokens else ctx.author
+    if target is None:
+        target = ctx.author
+
+    user_row = bot.db.ensure_user(target.id)
+    unique_dex = bot.db.get_unique_dex_count(target.id)
+    discord_user: discord.User | discord.Member
+    if isinstance(target, (discord.Member, discord.User)):
+        discord_user = target
+    else:
+        fetched = bot.get_user(target.id)
+        discord_user = fetched if fetched is not None else ctx.author
+
+    embed = build_profile_embed(
+        user_row=user_row,
+        target_user=discord_user,
+        unique_dex=unique_dex,
+        max_dex=bot.pokeapi._max_dex,
+    )
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="pick")
 async def pick_cmd(ctx: commands.Context, *, mon_name: str = "eevee"):
     pdata = await bot.pokeapi.get_pokemon_data(mon_name.strip())
@@ -1742,18 +1958,24 @@ async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
         await ctx.send("There is no wild pokémon to catch right now!")
         return
 
-    clean_guess = guess.strip().lower().replace(" ", "-")
+    clean_guess = guess.strip().lower()
+    clean_slug_guess = clean_guess.replace(" ", "-")
     valid_names = {
         str(spawn["slug"]).lower(),
         str(spawn["display_name"]).lower(),
         str(spawn["display_name"]).lower().replace(" ", "-"),
     }
-    if not clean_guess or clean_guess not in valid_names:
+    if not clean_guess or (clean_guess not in valid_names and clean_slug_guess not in valid_names):
         await ctx.send("That is not the right pokémon! Try again.")
         return
 
     del bot.active_spawns[ctx.channel.id]
     slot = bot.db.insert_pokemon(ctx.author.id, spawn)
+    bot.db.record_catch_stats(
+        ctx.author.id,
+        is_shiny=bool(spawn.get("shiny")),
+        is_gmax=bool(spawn.get("gmax")),
+    )
     gender_sym = format_gender_symbol(spawn.get("gender"))
     iv_pct = float(spawn.get("iv_percent", 0.0))
 
