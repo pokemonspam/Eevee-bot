@@ -3,6 +3,8 @@ import os
 import random
 import re
 import sqlite3
+import time
+from datetime import datetime
 from io import BytesIO
 from typing import Any, Optional
 
@@ -21,11 +23,15 @@ except ImportError:
 # Configuration & Environment Loading
 # ==============================================================================
 PREFIX = "p!"
-OWNER_IDS = {772797011899973633}
+BOT_ID = 1558161013273133137
+OWNER_ID = 772797011899973633
+OWNER_IDS = {OWNER_ID}
 DB_PATH = os.getenv("BOT_DB_PATH", "poketwo_bot.db")
 
 SHINY_EMOJI = "✨"
-GMAX_EMOJI = "💥"
+GMAX_EMOJI = "<:Gmax:1575503911932919948>"
+MALE_EMOJI = "<:male:1566169579300851852>"
+FEMALE_EMOJI = "<:Female:1566169649249263627>"
 
 # Optional custom pixel emoji map keyed by slug (e.g. "eevee": "<:eevee:123456789012345678>")
 PIXEL_SPRITE_EMOJIS: dict[str, str] = {}
@@ -117,11 +123,20 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
+def _mention_prefixes() -> list[str]:
+    return [f"<@{BOT_ID}>", f"<@!{BOT_ID}>"]
+
+
 def get_prefix(bot_instance: commands.Bot, message: discord.Message) -> list[str]:
-    return ["p!", "P!"]
+    return ["p!", "P!", *_mention_prefixes()]
 
 
 def normalize_prefix_text(content: str) -> str:
+    stripped = content.lstrip()
+    for m_prefix in (f"<@!{BOT_ID}>", f"<@{BOT_ID}>"):
+        if stripped.startswith(m_prefix):
+            rest = stripped[len(m_prefix):].lstrip()
+            return PREFIX + rest
     if len(content) >= 2 and content[:2].lower() == "p!":
         return PREFIX + content[2:]
     return content
@@ -145,9 +160,9 @@ def format_mon_header(mon: dict[str, Any]) -> str:
 def format_gender_symbol(gender: Optional[str]) -> str:
     g = (gender or "").lower()
     if g in ("male", "m", "♂"):
-        return "♂"
+        return MALE_EMOJI
     if g in ("female", "f", "♀"):
-        return "♀"
+        return FEMALE_EMOJI
     return "?"
 
 
@@ -193,7 +208,11 @@ class Database:
                 selected_slot INTEGER,
                 shiny_hunt_slug TEXT,
                 shiny_chain INTEGER DEFAULT 0,
-                incense_until REAL DEFAULT 0
+                incense_until REAL DEFAULT 0,
+                incense_remaining REAL DEFAULT 0,
+                incense_channel_id INTEGER,
+                incense_spawns_left INTEGER DEFAULT 0,
+                incense_interval INTEGER DEFAULT 20
             )
         """)
         cur.execute("PRAGMA table_info(users)")
@@ -210,6 +229,14 @@ class Database:
             cur.execute("ALTER TABLE users ADD COLUMN shiny_chain INTEGER DEFAULT 0")
         if "incense_until" not in cols:
             cur.execute("ALTER TABLE users ADD COLUMN incense_until REAL DEFAULT 0")
+        if "incense_remaining" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN incense_remaining REAL DEFAULT 0")
+        if "incense_channel_id" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN incense_channel_id INTEGER")
+        if "incense_spawns_left" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN incense_spawns_left INTEGER DEFAULT 0")
+        if "incense_interval" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN incense_interval INTEGER DEFAULT 20")
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pokemon (
@@ -332,6 +359,123 @@ class Database:
             cur.execute("SELECT shiny_chain FROM users WHERE user_id = ?", (user_id,))
             row = cur.fetchone()
             return int(row["shiny_chain"] or 0) if row else 0
+
+    def start_incense(
+        self,
+        user_id: int,
+        channel_id: int,
+        duration_sec: int = 900,
+        spawns_count: int = 45,
+        interval_sec: int = 20,
+    ):
+        self.ensure_user(user_id)
+        until_ts = time.time() + duration_sec
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE users
+                SET incense_until = ?,
+                    incense_remaining = 0,
+                    incense_channel_id = ?,
+                    incense_spawns_left = ?,
+                    incense_interval = ?
+                WHERE user_id = ?
+                """,
+                (until_ts, channel_id, spawns_count, interval_sec, user_id),
+            )
+
+    def pause_incense(self, user_id: int) -> tuple[bool, float]:
+        row = self.ensure_user(user_id)
+        now = time.time()
+        until_ts = float(row["incense_until"] or 0.0)
+        rem = float(row["incense_remaining"] or 0.0)
+        spawns_left = int(row["incense_spawns_left"] or 0)
+        if until_ts > now and spawns_left > 0:
+            left = max(0.0, until_ts - now)
+            with self.conn:
+                self.conn.execute(
+                    """
+                    UPDATE users
+                    SET incense_until = 0,
+                        incense_remaining = ?
+                    WHERE user_id = ?
+                    """,
+                    (left, user_id),
+                )
+            return True, left
+        if rem > 0 and spawns_left > 0:
+            return False, rem
+        return False, 0.0
+
+    def resume_incense(self, user_id: int, channel_id: Optional[int] = None) -> tuple[bool, float]:
+        row = self.ensure_user(user_id)
+        now = time.time()
+        until_ts = float(row["incense_until"] or 0.0)
+        rem = float(row["incense_remaining"] or 0.0)
+        spawns_left = int(row["incense_spawns_left"] or 0)
+        if rem > 0 and spawns_left > 0:
+            new_until = now + rem
+            with self.conn:
+                if channel_id is not None:
+                    self.conn.execute(
+                        """
+                        UPDATE users
+                        SET incense_until = ?,
+                            incense_remaining = 0,
+                            incense_channel_id = ?
+                        WHERE user_id = ?
+                        """,
+                        (new_until, channel_id, user_id),
+                    )
+                else:
+                    self.conn.execute(
+                        """
+                        UPDATE users
+                        SET incense_until = ?,
+                            incense_remaining = 0
+                        WHERE user_id = ?
+                        """,
+                        (new_until, user_id),
+                    )
+            return True, rem
+        if until_ts > now and spawns_left > 0:
+            return False, max(0.0, until_ts - now)
+        return False, 0.0
+
+    def get_active_incense_users(self) -> list[sqlite3.Row]:
+        now = time.time()
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM users
+            WHERE incense_until > ?
+              AND COALESCE(incense_spawns_left, 0) > 0
+              AND incense_channel_id IS NOT NULL
+            """,
+            (now,),
+        )
+        return cur.fetchall()
+
+    def decrement_incense_spawn(self, user_id: int) -> int:
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE users
+                SET incense_spawns_left = MAX(0, COALESCE(incense_spawns_left, 0) - 1)
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+            cur = self.conn.cursor()
+            cur.execute("SELECT incense_spawns_left FROM users WHERE user_id = ?", (user_id,))
+            row = cur.fetchone()
+            left = int(row["incense_spawns_left"] or 0) if row else 0
+            if left <= 0:
+                self.conn.execute(
+                    "UPDATE users SET incense_until = 0, incense_remaining = 0 WHERE user_id = ?",
+                    (user_id,),
+                )
+            return left
 
     def increment_species_catch(self, user_id: int, slug: str) -> int:
         self.ensure_user(user_id)
@@ -686,8 +830,6 @@ def generate_ivs_with_target(
                     locked.add(stat_key)
                     running_sum = tentative_sum
                 else:
-                    # If the very first stat can't fit target_sum, still allow valid stat
-                    # and let remaining stats be RNG
                     if idx == 0 and val <= max_total:
                         ivs[stat_key] = val
                         locked.add(stat_key)
@@ -701,13 +843,11 @@ def generate_ivs_with_target(
     locked_sum = sum(ivs[k] for k in locked)
     desired_unlocked_sum = max(0, min(len(unlocked) * 31, target_sum - locked_sum))
 
-    # Distribute desired_unlocked_sum across unlocked stats with slight RNG variance
     base_share = desired_unlocked_sum // len(unlocked)
     remainder = desired_unlocked_sum % len(unlocked)
     for idx, k in enumerate(unlocked):
         ivs[k] = max(0, min(31, base_share + (1 if idx < remainder else 0)))
 
-    # Add gentle jitter while preserving sum
     for _ in range(12):
         a, b = random.sample(unlocked, 2) if len(unlocked) >= 2 else (unlocked[0], unlocked[0])
         if a == b:
@@ -787,6 +927,110 @@ class SceneRenderer:
         self.width = width
         self.height = height
 
+    def _draw_nature_scene(
+        self,
+        base: Image.Image,
+        primary_type: str,
+        secondary_type: str,
+        c1_top: tuple[int, int, int],
+        c1_bot: tuple[int, int, int],
+        c1_glow: tuple[int, int, int],
+        c2_glow: tuple[int, int, int],
+        rng: random.Random,
+    ) -> Image.Image:
+        w, h = self.width, self.height
+        horizon_y = int(h * 0.62)
+
+        scene = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        sdraw = ImageDraw.Draw(scene)
+
+        # Distant ridge / hill silhouettes
+        far_color = (
+            max(0, min(255, int(c1_bot[0] * 0.72))),
+            max(0, min(255, int(c1_bot[1] * 0.72))),
+            max(0, min(255, int(c1_bot[2] * 0.72))),
+            155,
+        )
+        mid_color = (
+            max(0, min(255, int(c1_bot[0] * 0.55))),
+            max(0, min(255, int(c1_bot[1] * 0.55))),
+            max(0, min(255, int(c1_bot[2] * 0.55))),
+            200,
+        )
+
+        if primary_type in ("grass", "bug"):
+            # Rolling forest hills & tree silhouettes
+            pts_far = [(0, h), (0, horizon_y - 25)]
+            for x in range(0, w + 32, 32):
+                py = horizon_y - 28 - int(18 * abs((x / 160.0) % 2 - 1) - 6)
+                pts_far.append((x, py))
+            pts_far.append((w, h))
+            sdraw.polygon(pts_far, fill=far_color)
+
+            for tx in range(18, w, 42):
+                th = rng.randint(36, 72)
+                tw = rng.randint(16, 28)
+                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y + 8), fill=mid_color)
+        elif primary_type in ("fire", "ground", "rock"):
+            # Sun-baked dunes / mesa / craggy peaks
+            pts_far = [(0, h), (0, horizon_y - 10)]
+            peaks = [(0, horizon_y - 12), (130, horizon_y - 68), (275, horizon_y - 22), (455, horizon_y - 78), (w, horizon_y - 18)]
+            pts_far.extend(peaks)
+            pts_far.append((w, h))
+            sdraw.polygon(pts_far, fill=far_color)
+
+            pts_mid = [(0, h), (0, horizon_y + 6), (190, horizon_y - 34), (390, horizon_y - 8), (w, horizon_y - 32), (w, h)]
+            sdraw.polygon(pts_mid, fill=mid_color)
+        elif primary_type in ("water", "ice"):
+            # Coastal waves & distant sea stacks / icebergs
+            for wy in range(horizon_y - 14, h, 14):
+                wave_alpha = min(190, 95 + (wy - (horizon_y - 14)) * 2)
+                wave_col = (c1_glow[0], c1_glow[1], c1_glow[2], wave_alpha // 3)
+                sdraw.line([(0, wy), (w, wy)], fill=wave_col, width=3)
+            sdraw.polygon([(70, horizon_y), (125, horizon_y - 54), (185, horizon_y)], fill=far_color)
+            sdraw.polygon([(450, horizon_y), (515, horizon_y - 62), (575, horizon_y)], fill=far_color)
+        elif primary_type in ("ghost", "dark", "psychic"):
+            # Moonlit ruins / misty pillars & starry sky accents
+            for _ in range(18):
+                sx = rng.randint(24, w - 24)
+                sy = rng.randint(18, horizon_y - 20)
+                sr = rng.randint(1, 2)
+                sdraw.ellipse((sx - sr, sy - sr, sx + sr, sy + sr), fill=(c1_glow[0], c1_glow[1], c1_glow[2], 140))
+            for px in (75, 535):
+                sdraw.rectangle((px, horizon_y - 68, px + 26, horizon_y + 12), fill=mid_color)
+                sdraw.rectangle((px - 4, horizon_y - 74, px + 30, horizon_y - 64), fill=far_color)
+        else:
+            # Scenic meadow & distant mountain range
+            pts_far = [(0, h), (0, horizon_y - 15), (160, horizon_y - 64), (340, horizon_y - 24), (510, horizon_y - 58), (w, horizon_y - 16), (w, h)]
+            sdraw.polygon(pts_far, fill=far_color)
+
+        # Ground plane below horizon
+        ground_top = (
+            max(0, min(255, int(c1_bot[0] * 0.65))),
+            max(0, min(255, int(c1_bot[1] * 0.65))),
+            max(0, min(255, int(c1_bot[2] * 0.65))),
+            235,
+        )
+        ground_bot = (
+            max(0, min(255, int(c1_bot[0] * 0.35))),
+            max(0, min(255, int(c1_bot[1] * 0.35))),
+            max(0, min(255, int(c1_bot[2] * 0.35))),
+            255,
+        )
+        sdraw.rectangle((0, horizon_y, w, h), fill=ground_top)
+        sdraw.rectangle((0, int(h * 0.82), w, h), fill=ground_bot)
+
+        # Subtle grass/foliage tufts or ground pebbles along terrain
+        tuft_color = (c2_glow[0], c2_glow[1], c2_glow[2], 85)
+        for _ in range(22):
+            gx = rng.randint(25, w - 25)
+            gy = rng.randint(horizon_y + 6, h - 18)
+            sdraw.line([(gx, gy), (gx - 4, gy - 7)], fill=tuft_color, width=2)
+            sdraw.line([(gx, gy), (gx + 4, gy - 6)], fill=tuft_color, width=2)
+
+        scene = scene.filter(ImageFilter.GaussianBlur(radius=2))
+        return Image.alpha_composite(base, scene)
+
     def render_spawn_card(
         self,
         sprite: Optional[Image.Image],
@@ -829,6 +1073,18 @@ class SceneRenderer:
                     255,
                 )
 
+        rng = random.Random(f"{primary_type}-{secondary_type}-{is_shiny}-{is_gmax}")
+        base = self._draw_nature_scene(
+            base=base,
+            primary_type=primary_type,
+            secondary_type=secondary_type,
+            c1_top=c1_top,
+            c1_bot=c1_bot,
+            c1_glow=c1_glow,
+            c2_glow=c2_glow,
+            rng=rng,
+        )
+
         glow_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         gdraw = ImageDraw.Draw(glow_layer)
         cx, cy = w // 2, h // 2 - 8
@@ -843,7 +1099,6 @@ class SceneRenderer:
 
         bokeh = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         bdraw = ImageDraw.Draw(bokeh)
-        rng = random.Random(f"{primary_type}-{secondary_type}-{is_shiny}-{is_gmax}")
         for _ in range(14):
             bx = rng.randint(40, w - 40)
             by = rng.randint(30, h - 50)
@@ -874,7 +1129,7 @@ class SceneRenderer:
         base = Image.alpha_composite(base, vignette)
 
         if sprite is not None:
-            max_side = 235 if is_gmax else 205
+            max_side = 285 if is_gmax else 260
             sp = sprite.copy()
             sp.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
 
@@ -885,7 +1140,7 @@ class SceneRenderer:
             sp_shadow = sp_shadow.filter(ImageFilter.GaussianBlur(radius=6))
 
             px_x = (w - sp.width) // 2
-            px_y = (h - sp.height) // 2 - 4
+            px_y = max(10, (h - sp.height) // 2 - 8)
             base.paste(sp_shadow, (px_x, px_y + 8), mask=sp_shadow)
             base.paste(sp, (px_x, px_y), mask=sp)
 
@@ -1058,6 +1313,53 @@ class PokemonListView(discord.ui.View):
                 pass
 
 
+class ShinyResetConfirmView(discord.ui.View):
+    def __init__(self, author_id: int, current_chain: int, db: Database):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.current_chain = current_chain
+        self.db = db
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the command author can confirm or cancel this reset.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        row = self.db.ensure_user(self.author_id)
+        self.db.set_shiny_hunt(self.author_id, row["shiny_hunt_slug"], reset_chain=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            embed=make_embed(
+                "Shiny Hunt Reset",
+                f"Your shiny hunt chain has been reset from **{self.current_chain}** to **0**.",
+                (112, 186, 134),
+            ),
+            view=self,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            embed=make_embed(
+                "Reset Cancelled",
+                f"Kept your shiny hunt chain at **{self.current_chain}**.",
+                (148, 163, 184),
+            ),
+            view=self,
+        )
+        self.stop()
+
+
 class HuntConfirmView(discord.ui.View):
     def __init__(
         self,
@@ -1209,8 +1511,37 @@ async def build_shiny_hunt_embed(bot_instance: "PokeBot", user_id: int) -> disco
         color=discord.Color.from_rgb(235, 135, 175),
     )
     embed.add_field(name="Currently Hunting", value=hunt_label, inline=False)
-    embed.add_field(name="Chain", value=str(chain), inline=False)
+    embed.add_field(name="Chain", value=f"**{chain}**", inline=False)
     return embed
+
+
+def _format_incense_footer(user_row: sqlite3.Row) -> str:
+    now = time.time()
+    until_ts = float(user_row["incense_until"] or 0.0)
+    rem = float(user_row["incense_remaining"] or 0.0)
+    spawns_left = int(user_row["incense_spawns_left"] or 0)
+    interval = int(user_row["incense_interval"] or 20)
+
+    if until_ts > now and spawns_left > 0:
+        status = "Active"
+        sec_left = max(0.0, until_ts - now)
+        end_dt = datetime.fromtimestamp(until_ts).strftime("%d/%m/%Y %H:%M")
+    elif rem > 0 and spawns_left > 0:
+        status = "Paused"
+        sec_left = rem
+        end_dt = datetime.fromtimestamp(now + rem).strftime("%d/%m/%Y %H:%M")
+    else:
+        status = "Inactive"
+        sec_left = 0.0
+        end_dt = datetime.fromtimestamp(now).strftime("%d/%m/%Y %H:%M")
+
+    mins_left = max(0, int(sec_left // 60))
+    return (
+        f"Incense: {status}.\n"
+        f"Spawns Remaining: {spawns_left}.\n"
+        f"Spawn Interval: {interval}s.\n"
+        f"Ends in {mins_left}m at | {end_dt}"
+    )
 
 
 # ==============================================================================
@@ -1230,10 +1561,44 @@ class PokeBot(commands.Bot):
         self.renderer = SceneRenderer()
         self.active_spawns: dict[int, dict[str, Any]] = {}
         self.channel_msg_counts: dict[int, int] = {}
+        self._incense_task: Optional[asyncio.Task] = None
+
+    async def setup_hook(self):
+        self._incense_task = asyncio.create_task(self._incense_loop())
 
     async def close(self):
+        if self._incense_task and not self._incense_task.done():
+            self._incense_task.cancel()
         await self.pokeapi.close()
         await super().close()
+
+    async def _incense_loop(self):
+        while not self.is_closed():
+            try:
+                await asyncio.sleep(5)
+                now = time.time()
+                active_rows = self.db.get_active_incense_users()
+                for urow in active_rows:
+                    uid = int(urow["user_id"])
+                    ch_id = int(urow["incense_channel_id"])
+                    interval = int(urow["incense_interval"] or 20)
+                    until_ts = float(urow["incense_until"] or 0.0)
+                    last_spawn = float(self.active_spawns.get(ch_id, {}).get("_incense_last_ts", 0.0))
+                    if until_ts > now and (now - last_spawn) >= interval:
+                        channel = self.get_channel(ch_id) or await self.fetch_channel(ch_id)
+                        if channel:
+                            left = self.db.decrement_incense_spawn(uid)
+                            updated_row = self.db.ensure_user(uid)
+                            footer_txt = _format_incense_footer(updated_row)
+                            await self.trigger_random_spawn(
+                                channel,
+                                incense_footer=footer_txt if left > 0 else None,
+                                incense_last_ts=now,
+                            )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
 
     async def trigger_random_spawn(
         self,
@@ -1241,6 +1606,8 @@ class PokeBot(commands.Bot):
         custom_mon: Optional[dict[str, Any]] = None,
         force_shiny: bool = False,
         force_gmax: bool = False,
+        incense_footer: Optional[str] = None,
+        incense_last_ts: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
         if custom_mon is not None:
             spawn = dict(custom_mon)
@@ -1268,11 +1635,18 @@ class PokeBot(commands.Bot):
         )
 
         channel_id = getattr(channel, "id", 0)
-        self.active_spawns[channel_id] = spawn
+        spawn_record = dict(spawn)
+        if incense_last_ts is not None:
+            spawn_record["_incense_last_ts"] = incense_last_ts
+        self.active_spawns[channel_id] = spawn_record
+
+        desc = f"Guess the pokémon and type `{PREFIX}c <pokémon>` to catch it!"
+        if incense_footer:
+            desc = f"{desc}\n\n{incense_footer}"
 
         embed = discord.Embed(
             title="A wild pokémon has appeared!",
-            description=f"Guess the pokémon and type `{PREFIX}c <pokémon>` to catch it!",
+            description=desc,
             color=discord.Color.from_rgb(120, 195, 145),
         )
         file = discord.File(fp=card_buf, filename="spawn.png")
@@ -1397,7 +1771,7 @@ async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
 
     if hunt_slug and spawn["slug"] == hunt_slug:
         new_chain = bot.db.increment_shiny_chain(ctx.author.id)
-        msg += f"\n\n+1 Shiny chain! ({new_chain})"
+        msg += f"\n\n+1 Shiny chain! (**{new_chain}**)"
     elif spawn.get("shiny") and old_chain > 0:
         bot.db.set_shiny_hunt(ctx.author.id, hunt_slug or "", reset_chain=True)
 
@@ -1506,12 +1880,31 @@ async def release_cmd(ctx: commands.Context, slot: int):
 
 @bot.command(name="shinyhunt", aliases=["sh"])
 async def shinyhunt_cmd(ctx: commands.Context, *, mon_name: str = ""):
-    if not mon_name.strip():
+    cleaned_arg = mon_name.strip()
+    if cleaned_arg.lower() == "reset":
+        user_row = bot.db.ensure_user(ctx.author.id)
+        old_chain = int(user_row["shiny_chain"] or 0)
+        view = ShinyResetConfirmView(
+            author_id=ctx.author.id,
+            current_chain=old_chain,
+            db=bot.db,
+        )
+        await ctx.send(
+            embed=make_embed(
+                "Confirm Shiny Hunt Reset",
+                f"Are you sure you want to reset your shiny hunt chain (**{old_chain}**)?",
+                (235, 135, 175),
+            ),
+            view=view,
+        )
+        return
+
+    if not cleaned_arg:
         embed = await build_shiny_hunt_embed(bot, ctx.author.id)
         await ctx.send(embed=embed, view=ShinyHuntView(ctx, bot))
         return
 
-    pdata = await bot.pokeapi.get_pokemon_data(mon_name.strip())
+    pdata = await bot.pokeapi.get_pokemon_data(cleaned_arg)
     if not pdata:
         await ctx.send(
             embed=make_embed(
@@ -1690,11 +2083,20 @@ async def buy_cmd(ctx: commands.Context, *, item_name: str = ""):
             )
             return
         bot.db.add_balance(ctx.author.id, -cost)
-        await bot.trigger_random_spawn(ctx.channel)
+        bot.db.start_incense(
+            ctx.author.id,
+            ctx.channel.id,
+            duration_sec=900,
+            spawns_count=45,
+            interval_sec=20,
+        )
+        updated_row = bot.db.ensure_user(ctx.author.id)
+        footer_txt = _format_incense_footer(updated_row)
+        await bot.trigger_random_spawn(ctx.channel, incense_footer=footer_txt)
         await ctx.send(
             embed=make_embed(
                 "Incense Activated",
-                f"Spent **{cost:,} pc** and summoned a wild pokémon!",
+                f"Spent **{cost:,} pc** and activated Incense in this channel!",
                 (112, 186, 134),
             )
         )
@@ -1709,7 +2111,52 @@ async def buy_cmd(ctx: commands.Context, *, item_name: str = ""):
 
 
 @bot.command(name="inc")
-async def inc_cmd(ctx: commands.Context):
+async def inc_cmd(ctx: commands.Context, action: str = ""):
+    act = action.strip().lower()
+    if act in ("p", "pause"):
+        ok, rem_sec = bot.db.pause_incense(ctx.author.id)
+        mins = int(rem_sec // 60)
+        secs = int(rem_sec % 60)
+        if ok:
+            await ctx.send(
+                embed=make_embed(
+                    "Incense Paused",
+                    f"Paused your incense with **{mins}m {secs}s** remaining. Use `{PREFIX}inc r` to resume.",
+                    (235, 135, 175),
+                )
+            )
+        else:
+            await ctx.send(
+                embed=make_embed(
+                    "Cannot Pause Incense",
+                    "You don't have an active incense timer running right now.",
+                    (186, 108, 108),
+                )
+            )
+        return
+
+    if act in ("r", "resume"):
+        ok, rem_sec = bot.db.resume_incense(ctx.author.id, channel_id=ctx.channel.id)
+        mins = int(rem_sec // 60)
+        secs = int(rem_sec % 60)
+        if ok:
+            await ctx.send(
+                embed=make_embed(
+                    "Incense Resumed",
+                    f"Resumed your incense in this channel with **{mins}m {secs}s** remaining.",
+                    (112, 186, 134),
+                )
+            )
+        else:
+            await ctx.send(
+                embed=make_embed(
+                    "Cannot Resume Incense",
+                    "You don't have a paused incense timer to resume.",
+                    (186, 108, 108),
+                )
+            )
+        return
+
     await buy_cmd(ctx, item_name="incense")
 
 
@@ -1739,6 +2186,46 @@ def _parse_signed_amount(tokens: list[str]) -> Optional[int]:
         if re.match(r"^[+-]?\d+$", t):
             return int(t)
     return None
+
+
+@bot.command(name="owner")
+async def owner_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    tokens = raw_args.strip().split()
+    if not tokens:
+        await ctx.send(
+            embed=make_embed(
+                "Bot Owner",
+                f"Configured bot owner: <@{OWNER_ID}> (`{OWNER_ID}`).",
+                (235, 135, 175),
+            )
+        )
+        return
+
+    target = _extract_target_user(ctx, tokens)
+    if target is None:
+        cleaned = re.sub(r"[<@!>]", "", tokens[0])
+        if cleaned.isdigit():
+            target_id = int(cleaned)
+        else:
+            await ctx.send(
+                embed=make_embed(
+                    "Invalid User",
+                    f"Usage: `{PREFIX}owner [@user | user_id]`",
+                    (186, 108, 108),
+                )
+            )
+            return
+    else:
+        target_id = target.id
+
+    is_own = target_id == OWNER_ID
+    await ctx.send(
+        embed=make_embed(
+            "Owner Check",
+            f"<@{target_id}> (`{target_id}`) is {'the configured bot owner.' if is_own else 'not the configured bot owner.'}",
+            (112, 186, 134) if is_own else (186, 108, 108),
+        )
+    )
 
 
 @bot.command(name="addbal")
@@ -1837,13 +2324,11 @@ async def spawnmon_cmd(ctx: commands.Context, *, args: str = ""):
         await bot.trigger_random_spawn(ctx.channel)
         return
 
-    # Pull trailing flags (shiny / gmax)
     flag_tokens = re.findall(r"\b(?:shiny|gmax)\b", raw, flags=re.IGNORECASE)
     force_shiny = any(f.lower() == "shiny" for f in flag_tokens)
     force_gmax = any(f.lower() == "gmax" for f in flag_tokens)
     cleaned_core = re.sub(r"\b(?:shiny|gmax)\b", "", raw, flags=re.IGNORECASE).strip()
 
-    # Match `<name> <level> <iv_spec>` where iv_spec may contain parentheses e.g. `80%(atk-31,spd-31)`
     match = re.match(
         r"^(.+?)\s+(\d+)\s+([0-9]+(?:\.[0-9]+)?\s*%?(?:\s*\([^)]*\))?)\s*$",
         cleaned_core,
