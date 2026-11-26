@@ -34,8 +34,8 @@ BOT_TOKEN = _load_bot_token()
 PREFIX = "p!"
 DB_PATH = "pokebot.db"
 
-# Replace with your actual Discord User ID(s) for owner-only commands (p!spawnmon)
-OWNER_IDS = {123456789012345678}
+# Bot owner Discord User ID(s) for owner-only commands (p!spawnmon)
+OWNER_IDS = {772797011899973633}
 
 # Optional custom emoji overrides for Shiny / Gigantamax / Gender badges
 SHINY_EMOJI = "✨"
@@ -90,6 +90,19 @@ EXTRA_ALIASES: Dict[str, List[str]] = {
     "tatsugiri": ["sharitatsu"],
 }
 
+STARTER_LIST = [
+    "bulbasaur", "charmander", "squirtle",
+    "chikorita", "cyndaquil", "totodile",
+    "treecko", "torchic", "mudkip",
+    "turtwig", "chimchar", "piplup",
+    "snivy", "tepig", "oshawott",
+    "chespin", "fennekin", "froakie",
+    "rowlet", "litten", "popplio",
+    "grookey", "scorbunny", "sobble",
+    "sprigatito", "fuecoco", "quaxly",
+    "pikachu", "eevee",
+]
+
 SHOP_ITEMS: Dict[str, Dict[str, Any]] = {
     "incense": {
         "name": "Incense",
@@ -111,6 +124,22 @@ SHOP_ITEMS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def make_embed(
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    color: Tuple[int, int, int] = (104, 152, 178),
+    footer: Optional[str] = None,
+) -> discord.Embed:
+    emb = discord.Embed(
+        title=title,
+        description=description,
+        color=discord.Color.from_rgb(*color),
+    )
+    if footer:
+        emb.set_footer(text=footer)
+    return emb
+
+
 # ==============================================================================
 # DATABASE LAYER
 # ==============================================================================
@@ -127,9 +156,15 @@ class Database:
                 user_id INTEGER PRIMARY KEY,
                 balance INTEGER DEFAULT 500,
                 selected_pokemon_id INTEGER DEFAULT NULL,
-                redeems INTEGER DEFAULT 0
+                redeems INTEGER DEFAULT 0,
+                shiny_hunt_slug TEXT DEFAULT NULL
             )
         """)
+        # Safe migration if upgrading from an older users table
+        cols = [r["name"] for r in cur.execute("PRAGMA table_info(users)").fetchall()]
+        if "shiny_hunt_slug" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN shiny_hunt_slug TEXT DEFAULT NULL")
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pokemon (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,6 +235,14 @@ class Database:
         self.conn.execute(
             "UPDATE users SET selected_pokemon_id = ? WHERE user_id = ?",
             (pokemon_id, user_id),
+        )
+        self.conn.commit()
+
+    def set_shiny_hunt(self, user_id: int, slug: str):
+        self.ensure_user(user_id)
+        self.conn.execute(
+            "UPDATE users SET shiny_hunt_slug = ? WHERE user_id = ?",
+            (slug, user_id),
         )
         self.conn.commit()
 
@@ -884,7 +927,10 @@ class InfoPaginatorView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
-            await interaction.response.send_message("Only the command invoker can use these buttons.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=make_embed("Not Allowed", "Only the command invoker can use these buttons.", (186, 108, 108)),
+                ephemeral=True,
+            )
             return False
         return True
 
@@ -912,7 +958,10 @@ class ListPaginatorView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
-            await interaction.response.send_message("Only the command invoker can browse this list.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=make_embed("Not Allowed", "Only the command invoker can browse this list.", (186, 108, 108)),
+                ephemeral=True,
+            )
             return False
         return True
 
@@ -938,7 +987,10 @@ class ReleaseConfirmView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
-            await interaction.response.send_message("This confirmation isn't for you.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=make_embed("Not Allowed", "This confirmation isn't for you.", (186, 108, 108)),
+                ephemeral=True,
+            )
             return False
         return True
 
@@ -952,18 +1004,18 @@ class ReleaseConfirmView(discord.ui.View):
             child.disabled = True
         if deleted:
             self.db.add_balance(self.user.id, self.reward_pc)
-            await interaction.response.edit_message(
-                content=(
+            emb = make_embed(
+                "Pokémon Released",
+                (
                     f"Released your Level {self.mon['level']} {self.mon['display_name']} "
                     f"({self.mon['iv_percent']:.2f}%) and received **{self.reward_pc:,} pc**!"
                 ),
-                view=self,
+                (88, 166, 132),
             )
+            await interaction.response.edit_message(content=None, embed=emb, view=self)
         else:
-            await interaction.response.edit_message(
-                content="That Pokémon is no longer in your collection.",
-                view=self,
-            )
+            emb = make_embed("Not Found", "That Pokémon is no longer in your collection.", (186, 108, 108))
+            await interaction.response.edit_message(content=None, embed=emb, view=self)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -972,7 +1024,8 @@ class ReleaseConfirmView(discord.ui.View):
         self.resolved = True
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="Release cancelled.", view=self)
+        emb = make_embed("Release Cancelled", "Your Pokémon was kept.", (130, 140, 150))
+        await interaction.response.edit_message(content=None, embed=emb, view=self)
 
 
 class BuyConfirmView(discord.ui.View):
@@ -996,7 +1049,10 @@ class BuyConfirmView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
-            await interaction.response.send_message("This purchase prompt isn't for you.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=make_embed("Not Allowed", "This purchase prompt isn't for you.", (186, 108, 108)),
+                ephemeral=True,
+            )
             return False
         return True
 
@@ -1010,10 +1066,8 @@ class BuyConfirmView(discord.ui.View):
 
         user_row = self.bot.db.ensure_user(self.user.id)
         if user_row["balance"] < self.total_cost:
-            await interaction.response.edit_message(
-                content="You no longer have enough Pokécoins for this purchase.",
-                view=self,
-            )
+            emb = make_embed("Insufficient Balance", "You no longer have enough Pokécoins for this purchase.", (186, 108, 108))
+            await interaction.response.edit_message(content=None, embed=emb, view=self)
             return
 
         self.bot.db.add_balance(self.user.id, -self.total_cost)
@@ -1022,37 +1076,41 @@ class BuyConfirmView(discord.ui.View):
         if self.item_key == "incense":
             total_spawns = item["spawns"] * self.quantity
             self.bot.db.activate_or_add_incense(self.channel_id, spawns=total_spawns, interval=item["interval"])
-            await interaction.response.edit_message(
-                content=(
-                    f"Purchased **{self.quantity}x {item['name']}** for **{self.total_cost:,} pc**! "
-                    f"Incense is now **active and running** in this channel ({total_spawns} spawns remaining)."
+            emb = make_embed(
+                "Purchase Complete",
+                (
+                    f"Purchased **{self.quantity}x {item['name']}** for **{self.total_cost:,} pc**!\n"
+                    f"Incense is now **active and running** in this channel (**{total_spawns}** spawns remaining)."
                 ),
-                view=self,
+                (88, 166, 132),
             )
+            await interaction.response.edit_message(content=None, embed=emb, view=self)
         elif self.item_key == "rare candy":
             sel_id = user_row["selected_pokemon_id"]
             if not sel_id:
                 self.bot.db.add_balance(self.user.id, self.total_cost)
-                await interaction.response.edit_message(
-                    content="You don't have a selected Pokémon to level up. Purchase refunded.",
-                    view=self,
-                )
+                emb = make_embed("Purchase Refunded", "You don't have a selected Pokémon to level up. Purchase refunded.", (186, 108, 108))
+                await interaction.response.edit_message(content=None, embed=emb, view=self)
                 return
             self.bot.db.conn.execute(
                 "UPDATE pokemon SET level = MIN(100, level + ?) WHERE id = ? AND owner_id = ?",
                 (self.quantity, sel_id, self.user.id),
             )
             self.bot.db.conn.commit()
-            await interaction.response.edit_message(
-                content=f"Purchased **{self.quantity}x Rare Candy** for **{self.total_cost:,} pc**! Your selected Pokémon leveled up!",
-                view=self,
+            emb = make_embed(
+                "Purchase Complete",
+                f"Purchased **{self.quantity}x Rare Candy** for **{self.total_cost:,} pc**! Your selected Pokémon leveled up!",
+                (88, 166, 132),
             )
+            await interaction.response.edit_message(content=None, embed=emb, view=self)
         elif self.item_key == "redeem":
             self.bot.db.add_redeems(self.user.id, self.quantity)
-            await interaction.response.edit_message(
-                content=f"Purchased **{self.quantity}x Redeem** for **{self.total_cost:,} pc**!",
-                view=self,
+            emb = make_embed(
+                "Purchase Complete",
+                f"Purchased **{self.quantity}x Redeem** for **{self.total_cost:,} pc**!",
+                (88, 166, 132),
             )
+            await interaction.response.edit_message(content=None, embed=emb, view=self)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1061,7 +1119,8 @@ class BuyConfirmView(discord.ui.View):
         self.resolved = True
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="Purchase cancelled.", view=self)
+        emb = make_embed("Purchase Cancelled", "No Pokécoins were spent.", (130, 140, 150))
+        await interaction.response.edit_message(content=None, embed=emb, view=self)
 
 
 # ==============================================================================
@@ -1175,6 +1234,7 @@ class PokeBot(commands.Bot):
             f"**Types:** {types_str}"
         )
 
+        # Unbolded "IV:" across all 6 stats
         stats_lines = []
         for k in STAT_KEYS:
             stats_lines.append(f"**{STAT_LABELS[k]}:** {calc[k]} – IV: {ivs[k]}/31")
@@ -1221,17 +1281,98 @@ async def on_message(message: discord.Message):
 
 
 # ==============================================================================
+# STARTER, REDEEM SPAWN & SHINY HUNT COMMANDS (p!start, p!pick, p!rs, p!sh)
+# ==============================================================================
+@bot.command(name="start")
+async def start_cmd(ctx: commands.Context):
+    collection = bot.db.get_user_pokemon(ctx.author.id)
+    if collection:
+        await ctx.send(embed=make_embed("Already Started", "You have already started your journey!", (186, 108, 108)))
+        return
+    emb = make_embed(
+        "Welcome to the Pokémon World!",
+        (
+            f"Choose your starter pokémon using `{PREFIX}pick <pokémon>`!\n\n"
+            "**Available Starters:**\n"
+            + ", ".join(s.capitalize() for s in STARTER_LIST)
+        ),
+        (88, 166, 132),
+    )
+    await ctx.send(embed=emb)
+
+
+@bot.command(name="pick")
+async def pick_cmd(ctx: commands.Context, *, starter_name: str = ""):
+    collection = bot.db.get_user_pokemon(ctx.author.id)
+    if collection:
+        await ctx.send(embed=make_embed("Already Started", "You already picked your starter pokémon!", (186, 108, 108)))
+        return
+    choice = starter_name.strip().lower()
+    if choice not in STARTER_LIST:
+        await ctx.send(embed=make_embed("Invalid Starter", f"Use `{PREFIX}start` to see the valid starter list.", (186, 108, 108)))
+        return
+    pdata = await bot.pokeapi.get_pokemon_data(choice)
+    if not pdata:
+        await ctx.send(embed=make_embed("Error", "Could not load starter data. Try again in a moment.", (186, 108, 108)))
+        return
+    mon = build_pokemon_payload(pdata, level=5)
+    bot.db.insert_pokemon(ctx.author.id, mon)
+    await ctx.send(
+        embed=make_embed(
+            "Starter Chosen!",
+            (
+                f"Congratulations {ctx.author.mention}! You chose **Level 5 {mon['display_name']}** "
+                f"({mon['iv_percent']:.2f}%) as your starter!"
+            ),
+            (88, 166, 132),
+        )
+    )
+
+
+@bot.command(name="redeemspawn", aliases=["rs"])
+async def redeemspawn_cmd(ctx: commands.Context, *, mon_name: str = ""):
+    user = bot.db.ensure_user(ctx.author.id)
+    if user["redeems"] <= 0 and ctx.author.id not in OWNER_IDS:
+        await ctx.send(embed=make_embed("No Redeems", f"You don't have any redeems! Buy one from `{PREFIX}shop`.", (186, 108, 108)))
+        return
+    if not mon_name.strip():
+        await ctx.send(embed=make_embed("Usage", f"`{PREFIX}rs <pokémon name>`", (104, 152, 178)))
+        return
+    pdata = await bot.pokeapi.get_pokemon_data(mon_name.strip())
+    if not pdata:
+        await ctx.send(embed=make_embed("Not Found", f"Could not find a pokémon matching `{mon_name}`.", (186, 108, 108)))
+        return
+    if ctx.author.id not in OWNER_IDS:
+        bot.db.add_redeems(ctx.author.id, -1)
+    mon = build_pokemon_payload(pdata)
+    await bot.trigger_random_spawn(ctx.channel, custom_mon=mon)
+
+
+@bot.command(name="shinyhunt", aliases=["sh"])
+async def shinyhunt_cmd(ctx: commands.Context, *, mon_name: str = ""):
+    if not mon_name.strip():
+        await ctx.send(embed=make_embed("Usage", f"`{PREFIX}sh <pokémon name>`", (104, 152, 178)))
+        return
+    pdata = await bot.pokeapi.get_pokemon_data(mon_name.strip())
+    if not pdata:
+        await ctx.send(embed=make_embed("Not Found", f"Could not find a pokémon matching `{mon_name}`.", (186, 108, 108)))
+        return
+    bot.db.set_shiny_hunt(ctx.author.id, pdata["slug"])
+    await ctx.send(embed=make_embed("Shiny Hunt Set", f"Now shiny hunting **{pdata['display_name']}**!", (88, 166, 132)))
+
+
+# ==============================================================================
 # CATCH COMMAND (p!c / p!catch)
 # ==============================================================================
 @bot.command(name="catch", aliases=["c"])
 async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
     if not guess.strip():
-        await ctx.send(f"Usage: `{PREFIX}catch <pokémon name>`")
+        await ctx.send(embed=make_embed("Usage", f"`{PREFIX}catch <pokémon name>`", (104, 152, 178)))
         return
 
     spawn = bot.db.get_spawn(ctx.channel.id)
     if not spawn:
-        await ctx.send("There is no wild pokémon in this channel right now!")
+        await ctx.send(embed=make_embed("No Wild Pokémon", "There is no wild pokémon in this channel right now!", (186, 108, 108)))
         return
 
     norm_guess = bot.pokeapi._normalize(guess)
@@ -1243,7 +1384,7 @@ async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
     valid_names.add(bot.pokeapi._normalize(base_species))
 
     if norm_guess not in valid_names:
-        await ctx.send("That is the wrong pokémon!")
+        await ctx.send(embed=make_embed("Wrong Pokémon", "That is the wrong pokémon!", (186, 108, 108)))
         return
 
     bot.db.clear_spawn(ctx.channel.id)
@@ -1252,8 +1393,14 @@ async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
     shiny_tag = f" {SHINY_EMOJI}" if spawn["shiny"] else ""
     gmax_tag = f" {gmax_badge()}" if spawn["gmax"] else ""
     await ctx.send(
-        f"Congratulations {ctx.author.mention}! You caught a Level {spawn['level']} "
-        f"**{spawn['display_name']}**{shiny_tag}{gmax_tag} ({spawn['iv_percent']:.2f}%)!"
+        embed=make_embed(
+            "Pokémon Caught!",
+            (
+                f"Congratulations {ctx.author.mention}! You caught a Level {spawn['level']} "
+                f"**{spawn['display_name']}**{shiny_tag}{gmax_tag} ({spawn['iv_percent']:.2f}%)!"
+            ),
+            (88, 166, 132),
+        )
     )
 
 
@@ -1264,7 +1411,7 @@ async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
 async def info_cmd(ctx: commands.Context, target: str = ""):
     collection = bot.db.get_user_pokemon(ctx.author.id)
     if not collection:
-        await ctx.send("You haven't caught any pokémon yet!")
+        await ctx.send(embed=make_embed("Empty Collection", "You haven't caught any pokémon yet!", (186, 108, 108)))
         return
 
     user_row = bot.db.ensure_user(ctx.author.id)
@@ -1284,10 +1431,10 @@ async def info_cmd(ctx: commands.Context, target: str = ""):
         if 1 <= num <= len(collection):
             idx = num - 1
         else:
-            await ctx.send(f"Invalid pokémon number. You have **{len(collection)}** pokémon.")
+            await ctx.send(embed=make_embed("Invalid Number", f"Invalid pokémon number. You have **{len(collection)}** pokémon.", (186, 108, 108)))
             return
     else:
-        await ctx.send(f"Usage: `{PREFIX}info [number | latest]`")
+        await ctx.send(embed=make_embed("Usage", f"`{PREFIX}info [number | latest]`", (104, 152, 178)))
         return
 
     embed, file = await bot.build_info_embed(ctx.author, collection[idx], len(collection))
@@ -1302,10 +1449,6 @@ async def info_cmd(ctx: commands.Context, target: str = ""):
 # POKÉMON COLLECTION LIST (p!p / p!pokemon)
 # ==============================================================================
 def _parse_numeric_filter(tokens: List[str], start_i: int) -> Tuple[Optional[str], Optional[int], int, Optional[str]]:
-    """
-    Parses `<num>`, `> <num>`, `><num>`, `< <num>`, or `<<num>` starting at `start_i`.
-    Plain `<num>` means exact equality. Rejects `1-10` ranges or `=` syntax.
-    """
     if start_i >= len(tokens):
         return None, None, start_i, "Expected a number after flag."
     tok = tokens[start_i]
@@ -1342,7 +1485,7 @@ def _match_op(actual: int, op: str, target: int) -> bool:
 async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
     collection = bot.db.get_user_pokemon(ctx.author.id)
     if not collection:
-        await ctx.send("You don't have any pokémon yet!")
+        await ctx.send(embed=make_embed("Empty Collection", "You don't have any pokémon yet!", (186, 108, 108)))
         return
 
     tokens = args.split()
@@ -1389,20 +1532,20 @@ async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
                 limit_count = max(1, int(tokens[i + 1]))
                 i += 2
             else:
-                await ctx.send(f"Invalid `--lim` value. Provide a positive number like `--lim 10`.")
+                await ctx.send(embed=make_embed("Invalid Filter", "Invalid `--lim` value. Provide a positive number like `--lim 10`.", (186, 108, 108)))
                 return
         elif tok in ("--o", "--order"):
             if i + 1 < len(tokens):
                 order_by = tokens[i + 1].lower()
                 i += 2
             else:
-                await ctx.send(f"Invalid `--o` value. Use `iv`, `iv+`, `iv-`, `lvl`, `lvl+`, or `lvl-`.")
+                await ctx.send(embed=make_embed("Invalid Filter", "Invalid `--o` value. Use `iv`, `iv+`, `iv-`, `lvl`, `lvl+`, or `lvl-`.", (186, 108, 108)))
                 return
         elif tok in stat_flag_map:
             field = stat_flag_map[tok]
             op, val, nxt, err = _parse_numeric_filter(tokens, i + 1)
             if err:
-                await ctx.send(f"Filter `{tok}`: {err}")
+                await ctx.send(embed=make_embed("Invalid Filter", f"Filter `{tok}`: {err}", (186, 108, 108)))
                 return
             if op is not None and val is not None:
                 numeric_filters.append((field, op, val))
@@ -1431,7 +1574,7 @@ async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
         filtered.append(mon)
 
     if not filtered:
-        await ctx.send("No pokémon matched your filters.")
+        await ctx.send(embed=make_embed("No Matches", "No pokémon matched your filters.", (186, 108, 108)))
         return
 
     if order_by in ("iv", "iv-"):
@@ -1499,32 +1642,32 @@ async def pokemon_list_cmd(ctx: commands.Context, *, args: str = ""):
 async def select_cmd(ctx: commands.Context, number: str = ""):
     collection = bot.db.get_user_pokemon(ctx.author.id)
     if not collection:
-        await ctx.send("You don't have any pokémon to select.")
+        await ctx.send(embed=make_embed("Empty Collection", "You don't have any pokémon to select.", (186, 108, 108)))
         return
     if not number.isdigit():
-        await ctx.send(f"Usage: `{PREFIX}select <number>`")
+        await ctx.send(embed=make_embed("Usage", f"`{PREFIX}select <number>`", (104, 152, 178)))
         return
     num = int(number)
     if not (1 <= num <= len(collection)):
-        await ctx.send(f"Invalid pokémon number. Choose between `1` and `{len(collection)}`.")
+        await ctx.send(embed=make_embed("Invalid Number", f"Invalid pokémon number. Choose between `1` and `{len(collection)}`.", (186, 108, 108)))
         return
     mon = collection[num - 1]
     bot.db.set_selected(ctx.author.id, mon["id"])
-    await ctx.send(f"You selected your Level {mon['level']} **{mon['display_name']}** (No. {num}).")
+    await ctx.send(embed=make_embed("Pokémon Selected", f"You selected your Level {mon['level']} **{mon['display_name']}** (No. {num}).", (88, 166, 132)))
 
 
 @bot.command(name="release", aliases=["r"])
 async def release_cmd(ctx: commands.Context, number: str = ""):
     collection = bot.db.get_user_pokemon(ctx.author.id)
     if not collection:
-        await ctx.send("You don't have any pokémon to release.")
+        await ctx.send(embed=make_embed("Empty Collection", "You don't have any pokémon to release.", (186, 108, 108)))
         return
     if not number.isdigit():
-        await ctx.send(f"Usage: `{PREFIX}release <number>`")
+        await ctx.send(embed=make_embed("Usage", f"`{PREFIX}release <number>`", (104, 152, 178)))
         return
     num = int(number)
     if not (1 <= num <= len(collection)):
-        await ctx.send(f"Invalid pokémon number. Choose between `1` and `{len(collection)}`.")
+        await ctx.send(embed=make_embed("Invalid Number", f"Invalid pokémon number. Choose between `1` and `{len(collection)}`.", (186, 108, 108)))
         return
 
     mon = collection[num - 1]
@@ -1535,7 +1678,7 @@ async def release_cmd(ctx: commands.Context, number: str = ""):
         f"{mon['display_name']} {gen_sym} ({mon['iv_percent']:.2f}%) No. {num} for {reward_pc} pc?"
     )
     view = ReleaseConfirmView(bot.db, ctx.author, mon, reward_pc)
-    await ctx.send(prompt, view=view)
+    await ctx.send(embed=make_embed("Confirm Release", prompt, (204, 146, 82)), view=view)
 
 
 # ==============================================================================
@@ -1545,7 +1688,11 @@ async def release_cmd(ctx: commands.Context, number: str = ""):
 async def balance_cmd(ctx: commands.Context):
     user = bot.db.ensure_user(ctx.author.id)
     await ctx.send(
-        f"**{ctx.author.display_name}'s Balance:** {user['balance']:,} Pokécoins • {user['redeems']} Redeems"
+        embed=make_embed(
+            f"{ctx.author.display_name}'s Balance",
+            f"**{user['balance']:,} Pokécoins** • **{user['redeems']}** Redeems",
+            (104, 152, 178),
+        )
     )
 
 
@@ -1570,7 +1717,7 @@ async def shop_cmd(ctx: commands.Context):
 async def buy_cmd(ctx: commands.Context, *, raw_args: str = ""):
     raw_args = raw_args.strip().lower()
     if not raw_args:
-        await ctx.send(f"Usage: `{PREFIX}buy <item name> [quantity]`")
+        await ctx.send(embed=make_embed("Usage", f"`{PREFIX}buy <item name> [quantity]`", (104, 152, 178)))
         return
 
     parts = raw_args.split()
@@ -1582,7 +1729,7 @@ async def buy_cmd(ctx: commands.Context, *, raw_args: str = ""):
         item_query = raw_args
 
     if item_query not in SHOP_ITEMS:
-        await ctx.send(f"Unknown shop item `{item_query}`. Check `{PREFIX}shop` for available items.")
+        await ctx.send(embed=make_embed("Unknown Item", f"Unknown shop item `{item_query}`. Check `{PREFIX}shop` for available items.", (186, 108, 108)))
         return
 
     item = SHOP_ITEMS[item_query]
@@ -1591,14 +1738,20 @@ async def buy_cmd(ctx: commands.Context, *, raw_args: str = ""):
 
     if user["balance"] < total_cost:
         await ctx.send(
-            f"You need **{total_cost:,} pc** to buy {qty}x **{item['name']}**, "
-            f"but you only have **{user['balance']:,} pc**."
+            embed=make_embed(
+                "Insufficient Balance",
+                (
+                    f"You need **{total_cost:,} pc** to buy {qty}x **{item['name']}**, "
+                    f"but you only have **{user['balance']:,} pc**."
+                ),
+                (186, 108, 108),
+            )
         )
         return
 
     view = BuyConfirmView(bot, ctx.author, ctx.channel.id, item_query, qty, total_cost)
     await ctx.send(
-        f"Are you sure you want to buy **{qty}x {item['name']}** for **{total_cost:,} pc**?",
+        embed=make_embed("Confirm Purchase", f"Are you sure you want to buy **{qty}x {item['name']}** for **{total_cost:,} pc**?", (104, 152, 178)),
         view=view,
     )
 
@@ -1612,31 +1765,47 @@ async def incense_cmd(ctx: commands.Context, action: str = ""):
     if act in ("r", "resume"):
         row = bot.db.set_incense_paused(ctx.channel.id, paused=False)
         if not row:
-            await ctx.send("There is no active incense in this channel.")
+            await ctx.send(embed=make_embed("No Incense", "There is no active incense in this channel.", (186, 108, 108)))
         else:
             await ctx.send(
-                f"Incense **resumed** in this channel! (**{row['remaining_spawns']}** spawns remaining)."
+                embed=make_embed(
+                    "Incense Resumed",
+                    f"Incense **resumed** in this channel! (**{row['remaining_spawns']}** spawns remaining).",
+                    (88, 166, 132),
+                )
             )
     elif act in ("p", "pause"):
         row = bot.db.set_incense_paused(ctx.channel.id, paused=True)
         if not row:
-            await ctx.send("There is no active incense in this channel.")
+            await ctx.send(embed=make_embed("No Incense", "There is no active incense in this channel.", (186, 108, 108)))
         else:
             await ctx.send(
-                f"Incense **paused** in this channel. (**{row['remaining_spawns']}** spawns remaining). "
-                f"Use `{PREFIX}inc r` to resume."
+                embed=make_embed(
+                    "Incense Paused",
+                    (
+                        f"Incense **paused** in this channel. (**{row['remaining_spawns']}** spawns remaining).\n"
+                        f"Use `{PREFIX}inc r` to resume."
+                    ),
+                    (204, 146, 82),
+                )
             )
     else:
         cur = bot.db.conn.cursor()
         cur.execute("SELECT * FROM incense_channels WHERE channel_id = ?", (ctx.channel.id,))
         row = cur.fetchone()
         if not row:
-            await ctx.send(f"No active incense in this channel. Buy one with `{PREFIX}buy incense`.")
+            await ctx.send(embed=make_embed("No Incense", f"No active incense in this channel. Buy one with `{PREFIX}buy incense`.", (104, 152, 178)))
         else:
             state = "Paused" if row["paused"] else "Running"
             await ctx.send(
-                f"**Channel Incense:** {state} • **{row['remaining_spawns']}** spawns left "
-                f"(every {row['interval_sec']}s).\nUse `{PREFIX}inc r` to resume or `{PREFIX}inc p` to pause."
+                embed=make_embed(
+                    "Channel Incense",
+                    (
+                        f"**Status:** {state} • **{row['remaining_spawns']}** spawns left (every {row['interval_sec']}s).\n"
+                        f"Use `{PREFIX}inc r` to resume or `{PREFIX}inc p` to pause."
+                    ),
+                    (104, 152, 178),
+                )
             )
 
 
@@ -1745,17 +1914,17 @@ def _parse_spawnmon_args(
 @bot.command(name="spawnmon")
 async def spawnmon_cmd(ctx: commands.Context, *, raw_args: str = ""):
     if ctx.author.id not in OWNER_IDS:
-        await ctx.send("Only the bot owner can use this command.")
+        await ctx.send(embed=make_embed("Owner Only", "Only the bot owner can use this command.", (186, 108, 108)))
         return
 
     mon_name, level, iv_pct, pinned_raw, shiny_flag, gmax_flag, err = _parse_spawnmon_args(raw_args)
     if err:
-        await ctx.send(err)
+        await ctx.send(embed=make_embed("Invalid Arguments", err, (186, 108, 108)))
         return
 
     pdata = await bot.pokeapi.get_pokemon_data(mon_name)
     if not pdata:
-        await ctx.send(f"Could not find a pokémon matching `{mon_name}`.")
+        await ctx.send(embed=make_embed("Not Found", f"Could not find a pokémon matching `{mon_name}`.", (186, 108, 108)))
         return
 
     ivs: Optional[Dict[str, int]] = None
@@ -1793,13 +1962,13 @@ async def spawnmon_cmd(ctx: commands.Context, *, raw_args: str = ""):
                 accepted[k] = val
 
             if not accepted and rejected_notes:
-                await ctx.send(f"IV doesn't match stats! {rejected_notes[0]}")
+                await ctx.send(embed=make_embed("IV Mismatch", f"IV doesn't match stats! {rejected_notes[0]}", (186, 108, 108)))
                 return
 
             ivs = distribute_iv_total(target_total, accepted)
             if ivs is None:
                 await ctx.send(
-                    f"IV doesn't match stats! Target `{iv_pct:.2f}%` requires a total of `{target_total}/186` IV points."
+                    embed=make_embed("IV Mismatch", f"IV doesn't match stats! Target `{iv_pct:.2f}%` requires a total of `{target_total}/186` IV points.", (186, 108, 108))
                 )
                 return
 
@@ -1824,7 +1993,7 @@ async def spawnmon_cmd(ctx: commands.Context, *, raw_args: str = ""):
     )
 
     if note_msg:
-        await ctx.send(note_msg)
+        await ctx.send(embed=make_embed("IV Adjustment", note_msg, (204, 146, 82)))
 
     await bot.trigger_random_spawn(ctx.channel, custom_mon=mon)
 
