@@ -1,6 +1,7 @@
 import asyncio
 import os
 import random
+import re
 import sqlite3
 from io import BytesIO
 from typing import Any, Optional
@@ -29,6 +30,18 @@ GMAX_EMOJI = "💥"
 # Optional custom pixel emoji map keyed by slug (e.g. "eevee": "<:eevee:123456789012345678>")
 PIXEL_SPRITE_EMOJIS: dict[str, str] = {}
 
+STARTERS_BY_REGION: dict[str, list[str]] = {
+    "Kanto": ["Bulbasaur", "Charmander", "Squirtle"],
+    "Johto": ["Chikorita", "Cyndaquil", "Totodile"],
+    "Hoenn": ["Treecko", "Torchic", "Mudkip"],
+    "Sinnoh": ["Turtwig", "Chimchar", "Piplup"],
+    "Unova": ["Snivy", "Tepig", "Oshawott"],
+    "Kalos": ["Chespin", "Fennekin", "Froakie"],
+    "Alola": ["Rowlet", "Litten", "Popplio"],
+    "Galar": ["Grookey", "Scorbunny", "Sobble"],
+    "Paldea": ["Sprigatito", "Fuecoco", "Quaxly"],
+}
+
 NATURES = [
     "Hardy", "Lonely", "Brave", "Adamant", "Naughty",
     "Bold", "Docile", "Relaxed", "Impish", "Lax",
@@ -45,6 +58,26 @@ STAT_LABELS = {
     "spa": "Sp. Atk",
     "spd": "Sp. Def",
     "spe": "Speed",
+}
+
+STAT_ALIASES = {
+    "hp": "hp",
+    "atk": "atk",
+    "attack": "atk",
+    "def": "def",
+    "defense": "def",
+    "spa": "spa",
+    "spatk": "spa",
+    "sp.atk": "spa",
+    "sp_atk": "spa",
+    "special-attack": "spa",
+    "spd": "spd",
+    "spdef": "spd",
+    "sp.def": "spd",
+    "sp_def": "spd",
+    "special-defense": "spd",
+    "spe": "spe",
+    "speed": "spe",
 }
 
 TYPE_PALETTES = {
@@ -84,6 +117,16 @@ def get_secret_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
+def get_prefix(bot_instance: commands.Bot, message: discord.Message) -> list[str]:
+    return ["p!", "P!"]
+
+
+def normalize_prefix_text(content: str) -> str:
+    if len(content) >= 2 and content[:2].lower() == "p!":
+        return PREFIX + content[2:]
+    return content
+
+
 def gmax_badge() -> str:
     return GMAX_EMOJI
 
@@ -111,6 +154,10 @@ def format_gender_symbol(gender: Optional[str]) -> str:
 def calc_iv_percent(ivs: dict[str, int]) -> float:
     total = sum(int(ivs.get(k, 0)) for k in STAT_KEYS)
     return round((total / (31 * len(STAT_KEYS))) * 100.0, 2)
+
+
+def xp_cap_for_level(level: int) -> int:
+    return max(250, int(level) * 250)
 
 
 def make_embed(
@@ -187,7 +234,8 @@ class Database:
                 iv_percent REAL DEFAULT 0.0,
                 artwork_url TEXT,
                 shiny_artwork_url TEXT,
-                types_json TEXT
+                types_json TEXT,
+                UNIQUE(user_id, slot_num)
             )
         """)
         cur.execute("PRAGMA table_info(pokemon)")
@@ -196,6 +244,9 @@ class Database:
             cur.execute("ALTER TABLE pokemon ADD COLUMN gmax INTEGER DEFAULT 0")
         if "shiny_artwork_url" not in pcols:
             cur.execute("ALTER TABLE pokemon ADD COLUMN shiny_artwork_url TEXT")
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_pokemon_user_slot ON pokemon(user_id, slot_num)"
+        )
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS species_catches (
@@ -208,98 +259,98 @@ class Database:
         self.conn.commit()
 
     def ensure_user(self, user_id: int) -> sqlite3.Row:
-        self.conn.execute(
-            "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
-            (user_id,),
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+                (user_id,),
+            )
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         return cur.fetchone()
 
     def add_balance(self, user_id: int, amount: int):
         self.ensure_user(user_id)
-        self.conn.execute(
-            "UPDATE users SET balance = MAX(0, balance + ?) WHERE user_id = ?",
-            (amount, user_id),
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET balance = MAX(0, balance + ?) WHERE user_id = ?",
+                (amount, user_id),
+            )
 
     def add_shards(self, user_id: int, amount: int):
         self.ensure_user(user_id)
-        self.conn.execute(
-            "UPDATE users SET shards = MAX(0, shards + ?) WHERE user_id = ?",
-            (amount, user_id),
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET shards = MAX(0, shards + ?) WHERE user_id = ?",
+                (amount, user_id),
+            )
 
     def add_redeems(self, user_id: int, amount: int):
         self.ensure_user(user_id)
-        self.conn.execute(
-            "UPDATE users SET redeems = MAX(0, redeems + ?) WHERE user_id = ?",
-            (amount, user_id),
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET redeems = MAX(0, redeems + ?) WHERE user_id = ?",
+                (amount, user_id),
+            )
 
     def consume_redeem(self, user_id: int) -> bool:
         self.ensure_user(user_id)
-        cur = self.conn.cursor()
-        cur.execute("SELECT redeems FROM users WHERE user_id = ?", (user_id,))
-        row = cur.fetchone()
-        current = int(row["redeems"] or 0) if row else 0
-        if current <= 0:
-            return False
-        self.conn.execute(
-            "UPDATE users SET redeems = redeems - 1 WHERE user_id = ? AND redeems > 0",
-            (user_id,),
-        )
-        self.conn.commit()
-        return True
+        with self.conn:
+            cur = self.conn.cursor()
+            cur.execute("SELECT redeems FROM users WHERE user_id = ?", (user_id,))
+            row = cur.fetchone()
+            current = int(row["redeems"] or 0) if row else 0
+            if current <= 0:
+                return False
+            cur.execute(
+                "UPDATE users SET redeems = redeems - 1 WHERE user_id = ? AND redeems > 0",
+                (user_id,),
+            )
+            return True
 
     def set_shiny_hunt(self, user_id: int, slug: Optional[str], reset_chain: bool = False):
         self.ensure_user(user_id)
-        if reset_chain:
-            self.conn.execute(
-                "UPDATE users SET shiny_hunt_slug = ?, shiny_chain = 0 WHERE user_id = ?",
-                (slug or None, user_id),
-            )
-        else:
-            self.conn.execute(
-                "UPDATE users SET shiny_hunt_slug = ? WHERE user_id = ?",
-                (slug or None, user_id),
-            )
-        self.conn.commit()
+        with self.conn:
+            if reset_chain:
+                self.conn.execute(
+                    "UPDATE users SET shiny_hunt_slug = ?, shiny_chain = 0 WHERE user_id = ?",
+                    (slug or None, user_id),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE users SET shiny_hunt_slug = ? WHERE user_id = ?",
+                    (slug or None, user_id),
+                )
 
     def increment_shiny_chain(self, user_id: int) -> int:
         self.ensure_user(user_id)
-        self.conn.execute(
-            "UPDATE users SET shiny_chain = COALESCE(shiny_chain, 0) + 1 WHERE user_id = ?",
-            (user_id,),
-        )
-        self.conn.commit()
-        cur = self.conn.cursor()
-        cur.execute("SELECT shiny_chain FROM users WHERE user_id = ?", (user_id,))
-        row = cur.fetchone()
-        return int(row["shiny_chain"] or 0) if row else 0
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET shiny_chain = COALESCE(shiny_chain, 0) + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+            cur = self.conn.cursor()
+            cur.execute("SELECT shiny_chain FROM users WHERE user_id = ?", (user_id,))
+            row = cur.fetchone()
+            return int(row["shiny_chain"] or 0) if row else 0
 
     def increment_species_catch(self, user_id: int, slug: str) -> int:
         self.ensure_user(user_id)
-        self.conn.execute(
-            """
-            INSERT INTO species_catches (user_id, slug, catch_count)
-            VALUES (?, ?, 1)
-            ON CONFLICT(user_id, slug) DO UPDATE SET catch_count = catch_count + 1
-            """,
-            (user_id, slug),
-        )
-        self.conn.commit()
-        cur = self.conn.cursor()
-        cur.execute(
-            "SELECT catch_count FROM species_catches WHERE user_id = ? AND slug = ?",
-            (user_id, slug),
-        )
-        row = cur.fetchone()
-        return int(row["catch_count"]) if row else 0
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO species_catches (user_id, slug, catch_count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id, slug) DO UPDATE SET catch_count = catch_count + 1
+                """,
+                (user_id, slug),
+            )
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT catch_count FROM species_catches WHERE user_id = ? AND slug = ?",
+                (user_id, slug),
+            )
+            row = cur.fetchone()
+            return int(row["catch_count"]) if row else 0
 
     def next_slot_num(self, user_id: int) -> int:
         cur = self.conn.cursor()
@@ -312,49 +363,57 @@ class Database:
 
     def insert_pokemon(self, user_id: int, mon: dict[str, Any]) -> int:
         user = self.ensure_user(user_id)
-        slot_num = self.next_slot_num(user_id)
         ivs = mon["ivs"]
         shiny_int = 1 if mon.get("shiny") else 0
         gmax_int = 1 if mon.get("gmax") else 0
-        self.conn.execute(
-            """
-            INSERT INTO pokemon (
-                user_id, slot_num, dex_id, slug, display_name, level, xp,
-                nature, gender, shiny, gmax,
-                iv_hp, iv_atk, iv_def, iv_spa, iv_spd, iv_spe,
-                iv_percent, artwork_url, shiny_artwork_url, types_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                slot_num,
-                mon["dex_id"],
-                mon["slug"],
-                mon["display_name"],
-                mon["level"],
-                mon.get("xp", 0),
-                mon["nature"],
-                mon["gender"],
-                shiny_int,
-                gmax_int,
-                ivs["hp"],
-                ivs["atk"],
-                ivs["def"],
-                ivs["spa"],
-                ivs["spd"],
-                ivs["spe"],
-                mon["iv_percent"],
-                mon.get("artwork_url"),
-                mon.get("shiny_artwork_url"),
-                ",".join(mon.get("types", [])),
-            ),
-        )
-        if user["selected_slot"] is None:
-            self.conn.execute(
-                "UPDATE users SET selected_slot = ? WHERE user_id = ?",
-                (slot_num, user_id),
+
+        with self.conn:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT COALESCE(MAX(slot_num), 0) + 1 AS next_slot FROM pokemon WHERE user_id = ?",
+                (user_id,),
             )
-        self.conn.commit()
+            row = cur.fetchone()
+            slot_num = int(row["next_slot"] or 1) if row else 1
+
+            cur.execute(
+                """
+                INSERT INTO pokemon (
+                    user_id, slot_num, dex_id, slug, display_name, level, xp,
+                    nature, gender, shiny, gmax,
+                    iv_hp, iv_atk, iv_def, iv_spa, iv_spd, iv_spe,
+                    iv_percent, artwork_url, shiny_artwork_url, types_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    slot_num,
+                    mon["dex_id"],
+                    mon["slug"],
+                    mon["display_name"],
+                    mon["level"],
+                    mon.get("xp", 0),
+                    mon["nature"],
+                    mon["gender"],
+                    shiny_int,
+                    gmax_int,
+                    ivs["hp"],
+                    ivs["atk"],
+                    ivs["def"],
+                    ivs["spa"],
+                    ivs["spd"],
+                    ivs["spe"],
+                    mon["iv_percent"],
+                    mon.get("artwork_url"),
+                    mon.get("shiny_artwork_url"),
+                    ",".join(mon.get("types", [])),
+                ),
+            )
+            if user["selected_slot"] is None:
+                cur.execute(
+                    "UPDATE users SET selected_slot = ? WHERE user_id = ?",
+                    (slot_num, user_id),
+                )
         return slot_num
 
     def get_all_pokemon(self, user_id: int) -> list[sqlite3.Row]:
@@ -383,11 +442,11 @@ class Database:
         all_mons = self.get_all_pokemon(user_id)
         if all_mons:
             first_slot = int(all_mons[0]["slot_num"])
-            self.conn.execute(
-                "UPDATE users SET selected_slot = ? WHERE user_id = ?",
-                (first_slot, user_id),
-            )
-            self.conn.commit()
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE users SET selected_slot = ? WHERE user_id = ?",
+                    (first_slot, user_id),
+                )
             return all_mons[0]
         return None
 
@@ -396,30 +455,30 @@ class Database:
         if not row:
             return False
         self.ensure_user(user_id)
-        self.conn.execute(
-            "UPDATE users SET selected_slot = ? WHERE user_id = ?",
-            (slot_num, user_id),
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET selected_slot = ? WHERE user_id = ?",
+                (slot_num, user_id),
+            )
         return True
 
     def release_pokemon(self, user_id: int, slot_num: int) -> Optional[sqlite3.Row]:
         row = self.get_pokemon_by_slot(user_id, slot_num)
         if not row:
             return None
-        self.conn.execute(
-            "DELETE FROM pokemon WHERE user_id = ? AND slot_num = ?",
-            (user_id, slot_num),
-        )
         user = self.ensure_user(user_id)
-        if user["selected_slot"] == slot_num:
-            remaining = self.get_all_pokemon(user_id)
-            next_sel = int(remaining[0]["slot_num"]) if remaining else None
+        with self.conn:
             self.conn.execute(
-                "UPDATE users SET selected_slot = ? WHERE user_id = ?",
-                (next_sel, user_id),
+                "DELETE FROM pokemon WHERE user_id = ? AND slot_num = ?",
+                (user_id, slot_num),
             )
-        self.conn.commit()
+            if user["selected_slot"] == slot_num:
+                remaining = self.get_all_pokemon(user_id)
+                next_sel = int(remaining[0]["slot_num"]) if remaining else None
+                self.conn.execute(
+                    "UPDATE users SET selected_slot = ? WHERE user_id = ?",
+                    (next_sel, user_id),
+                )
         return row
 
 
@@ -550,22 +609,150 @@ def roll_gender(gender_rate: int) -> str:
     return "female" if random.uniform(0, 100) < female_threshold else "male"
 
 
+def parse_iv_spec(spec_text: str) -> tuple[float, list[tuple[str, int]]]:
+    """
+    Parses strings like:
+      - "80%" or "80"
+      - "80%(atk-31,spd-31)" or "75.5% (hp-31, spe-28)"
+    Returns (iv_percent, ordered_pinned_stats).
+    """
+    raw = spec_text.strip()
+    match = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*%?\s*(?:\(([^)]*)\))?\s*$", raw, re.IGNORECASE)
+    if not match:
+        raise ValueError("Invalid IV format.")
+
+    iv_pct = max(0.0, min(100.0, float(match.group(1))))
+    pinned: list[tuple[str, int]] = []
+    inner = match.group(2)
+    if inner:
+        for chunk in inner.split(","):
+            part = chunk.strip().lower()
+            if not part:
+                continue
+            m = re.match(r"^([a-z0-9_.-]+)\s*[-:=]\s*([0-9]{1,2})$", part)
+            if not m:
+                continue
+            stat_key = STAT_ALIASES.get(m.group(1))
+            val = max(0, min(31, int(m.group(2))))
+            if stat_key:
+                pinned.append((stat_key, val))
+    return round(iv_pct, 2), pinned
+
+
+def generate_ivs_with_target(
+    target_iv_pct: float,
+    pinned: Optional[list[tuple[str, int]]] = None,
+) -> tuple[dict[str, int], float]:
+    """
+    Generates 6 IVs (0..31) aiming for target_iv_pct.
+    - If pinned stats are provided:
+      * Checks if applying all pinned stats still allows the remaining stats (0..31)
+        to reach target_sum = round((target_iv_pct / 100.0) * 186).
+      * If not all fit within budget/bounds, applies valid pinned entries in order
+        only while feasible, and rolls remaining stats with RNG.
+    """
+    max_total = 31 * len(STAT_KEYS)  # 186
+    target_sum = max(0, min(max_total, round((target_iv_pct / 100.0) * max_total)))
+
+    ivs: dict[str, int] = {k: random.randint(0, 31) for k in STAT_KEYS}
+    locked: set[str] = set()
+
+    if pinned:
+        seen_stats: set[str] = set()
+        deduped_pinned: list[tuple[str, int]] = []
+        for stat_key, val in pinned:
+            if stat_key not in seen_stats:
+                seen_stats.add(stat_key)
+                deduped_pinned.append((stat_key, max(0, min(31, int(val)))))
+
+        # First check if all pinned values fit within target_sum and remaining capacity
+        all_pinned_sum = sum(v for _, v in deduped_pinned)
+        remaining_after_all = len(STAT_KEYS) - len(deduped_pinned)
+        min_possible_after_all = all_pinned_sum
+        max_possible_after_all = all_pinned_sum + (remaining_after_all * 31)
+
+        if min_possible_after_all <= target_sum <= max_possible_after_all:
+            for stat_key, val in deduped_pinned:
+                ivs[stat_key] = val
+                locked.add(stat_key)
+        else:
+            # Take prefix of pinned stats that fit cleanly within budget/bounds
+            running_sum = 0
+            for idx, (stat_key, val) in enumerate(deduped_pinned):
+                rem_slots = len(STAT_KEYS) - (idx + 1)
+                tentative_sum = running_sum + val
+                if tentative_sum <= target_sum <= tentative_sum + (rem_slots * 31):
+                    ivs[stat_key] = val
+                    locked.add(stat_key)
+                    running_sum = tentative_sum
+                else:
+                    # If the very first stat can't fit target_sum, still allow valid stat
+                    # and let remaining stats be RNG
+                    if idx == 0 and val <= max_total:
+                        ivs[stat_key] = val
+                        locked.add(stat_key)
+                    break
+
+    unlocked = [k for k in STAT_KEYS if k not in locked]
+    if not unlocked:
+        actual_pct = round((sum(ivs.values()) / max_total) * 100.0, 2)
+        return ivs, actual_pct
+
+    locked_sum = sum(ivs[k] for k in locked)
+    desired_unlocked_sum = max(0, min(len(unlocked) * 31, target_sum - locked_sum))
+
+    # Distribute desired_unlocked_sum across unlocked stats with slight RNG variance
+    base_share = desired_unlocked_sum // len(unlocked)
+    remainder = desired_unlocked_sum % len(unlocked)
+    for idx, k in enumerate(unlocked):
+        ivs[k] = max(0, min(31, base_share + (1 if idx < remainder else 0)))
+
+    # Add gentle jitter while preserving sum
+    for _ in range(12):
+        a, b = random.sample(unlocked, 2) if len(unlocked) >= 2 else (unlocked[0], unlocked[0])
+        if a == b:
+            break
+        delta = random.randint(1, 5)
+        if ivs[a] - delta >= 0 and ivs[b] + delta <= 31:
+            ivs[a] -= delta
+            ivs[b] += delta
+
+    return ivs, round(target_iv_pct, 2)
+
+
 def build_pokemon_payload(
     pdata: dict[str, Any],
     force_shiny: bool = False,
     force_gmax: bool = False,
     shiny_chain: int = 0,
+    custom_level: Optional[int] = None,
+    custom_iv_pct: Optional[float] = None,
+    pinned_ivs: Optional[list[tuple[str, int]]] = None,
+    exact_forced_flags: bool = False,
 ) -> dict[str, Any]:
-    ivs = {k: random.randint(0, 31) for k in STAT_KEYS}
-    iv_percent = calc_iv_percent(ivs)
-    level = random.randint(1, 50)
+    if custom_iv_pct is not None:
+        ivs, iv_percent = generate_ivs_with_target(custom_iv_pct, pinned=pinned_ivs)
+    else:
+        ivs, iv_percent = generate_ivs_with_target(
+            target_iv_pct=calc_iv_percent({k: random.randint(0, 31) for k in STAT_KEYS}),
+            pinned=pinned_ivs,
+        )
+        if pinned_ivs is None:
+            ivs = {k: random.randint(0, 31) for k in STAT_KEYS}
+            iv_percent = calc_iv_percent(ivs)
+
+    level = custom_level if custom_level is not None else random.randint(1, 50)
     nature = random.choice(NATURES)
     gender = roll_gender(int(pdata.get("gender_rate", 4)))
 
-    chain_bonus = min(shiny_chain * 0.0005, 0.05)
-    base_shiny_chance = 1.0 / 512.0 + chain_bonus
-    is_shiny = True if force_shiny else (random.random() < base_shiny_chance)
-    is_gmax = True if force_gmax else (random.random() < 0.02)
+    if exact_forced_flags:
+        is_shiny = bool(force_shiny)
+        is_gmax = bool(force_gmax)
+    else:
+        chain_bonus = min(shiny_chain * 0.0005, 0.05)
+        base_shiny_chance = 1.0 / 512.0 + chain_bonus
+        is_shiny = True if force_shiny else (random.random() < base_shiny_chance)
+        is_gmax = True if force_gmax else (random.random() < 0.02)
 
     artwork = (
         pdata.get("shiny_artwork_url")
@@ -618,14 +805,22 @@ class SceneRenderer:
             secondary_type, TYPE_PALETTES["normal"]
         )
 
-        # Base vertical gradient blending primary & secondary type tones
         base = Image.new("RGBA", (w, h), (20, 22, 30, 255))
         px = base.load()
         for y in range(h):
             t = y / max(1, h - 1)
-            r = int((c1_top[0] * (1 - t) + c1_bot[0] * t) * 0.65 + (c2_top[0] * (1 - t) + c2_bot[0] * t) * 0.35)
-            g = int((c1_top[1] * (1 - t) + c1_bot[1] * t) * 0.65 + (c2_top[1] * (1 - t) + c2_bot[1] * t) * 0.35)
-            b = int((c1_top[2] * (1 - t) + c1_bot[2] * t) * 0.65 + (c2_top[2] * (1 - t) + c2_bot[2] * t) * 0.35)
+            r = int(
+                (c1_top[0] * (1 - t) + c1_bot[0] * t) * 0.65
+                + (c2_top[0] * (1 - t) + c2_bot[0] * t) * 0.35
+            )
+            g = int(
+                (c1_top[1] * (1 - t) + c1_bot[1] * t) * 0.65
+                + (c2_top[1] * (1 - t) + c2_bot[1] * t) * 0.35
+            )
+            b = int(
+                (c1_top[2] * (1 - t) + c1_bot[2] * t) * 0.65
+                + (c2_top[2] * (1 - t) + c2_bot[2] * t) * 0.35
+            )
             for x in range(w):
                 px[x, y] = (
                     max(0, min(255, r)),
@@ -634,7 +829,6 @@ class SceneRenderer:
                     255,
                 )
 
-        # Radial spotlight behind the Pokémon
         glow_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         gdraw = ImageDraw.Draw(glow_layer)
         cx, cy = w // 2, h // 2 - 8
@@ -647,7 +841,6 @@ class SceneRenderer:
         glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=18))
         base = Image.alpha_composite(base, glow_layer)
 
-        # Soft ambient bokeh accents
         bokeh = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         bdraw = ImageDraw.Draw(bokeh)
         rng = random.Random(f"{primary_type}-{secondary_type}-{is_shiny}-{is_gmax}")
@@ -664,7 +857,6 @@ class SceneRenderer:
         bokeh = bokeh.filter(ImageFilter.GaussianBlur(radius=5))
         base = Image.alpha_composite(base, bokeh)
 
-        # Ground shadow oval under Pokémon
         shadow_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(shadow_layer)
         sdraw.ellipse(
@@ -674,7 +866,6 @@ class SceneRenderer:
         shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=10))
         base = Image.alpha_composite(base, shadow_layer)
 
-        # Subtle edge vignette & clean inner frame
         vignette = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         vdraw = ImageDraw.Draw(vignette)
         vdraw.rectangle((0, 0, w, h), outline=(10, 12, 18, 120), width=14)
@@ -682,7 +873,6 @@ class SceneRenderer:
         vignette = vignette.filter(ImageFilter.GaussianBlur(radius=4))
         base = Image.alpha_composite(base, vignette)
 
-        # Place centered Pokémon artwork with drop shadow
         if sprite is not None:
             max_side = 235 if is_gmax else 205
             sp = sprite.copy()
@@ -708,7 +898,10 @@ class SceneRenderer:
 # ==============================================================================
 # Embed & UI Builders
 # ==============================================================================
-def build_info_embed(row: sqlite3.Row, user: discord.User | discord.Member) -> tuple[discord.Embed, Optional[str]]:
+def build_info_embed(
+    row: sqlite3.Row,
+    user: discord.User | discord.Member,
+) -> tuple[discord.Embed, Optional[str]]:
     mon = {
         "display_name": row["display_name"],
         "shiny": bool(row["shiny"]),
@@ -716,6 +909,9 @@ def build_info_embed(row: sqlite3.Row, user: discord.User | discord.Member) -> t
     }
     header = format_mon_header(mon)
     gender_sym = format_gender_symbol(row["gender"])
+    level = int(row["level"] or 1)
+    xp_val = int(row["xp"] or 0)
+    xp_cap = xp_cap_for_level(level)
 
     ivs = {
         "hp": int(row["iv_hp"] or 0),
@@ -725,30 +921,29 @@ def build_info_embed(row: sqlite3.Row, user: discord.User | discord.Member) -> t
         "spd": int(row["iv_spd"] or 0),
         "spe": int(row["iv_spe"] or 0),
     }
-    total_iv_sum = sum(ivs.values())
-    iv_pct = float(row["iv_percent"] or calc_iv_percent(ivs))
+    iv_pct = float(row["iv_percent"] if row["iv_percent"] is not None else calc_iv_percent(ivs))
 
     embed = discord.Embed(
-        title=f"Level {row['level']} {header} {gender_sym}",
+        title=f"Level {level} {header} {gender_sym}",
         color=discord.Color.from_rgb(235, 135, 175),
     )
     embed.set_thumbnail(url=user.display_avatar.url)
 
     details_text = (
-        f"**XP:** {int(row['xp'] or 0)}\n"
+        f"**XP:** {xp_val}/{xp_cap}\n"
         f"**Nature:** {row['nature'] or 'Hardy'}\n"
         f"**Gender:** {(row['gender'] or 'Genderless').capitalize()}"
     )
     embed.add_field(name="Details", value=details_text, inline=False)
 
     stats_text = (
-        f"**HP:** {ivs['hp']} — IV: {ivs['hp']}/31\n"
-        f"**Attack:** {ivs['atk']} — IV: {ivs['atk']}/31\n"
-        f"**Defense:** {ivs['def']} — IV: {ivs['def']}/31\n"
-        f"**Sp. Atk:** {ivs['spa']} — IV: {ivs['spa']}/31\n"
-        f"**Sp. Def:** {ivs['spd']} — IV: {ivs['spd']}/31\n"
-        f"**Speed:** {ivs['spe']} — IV: {ivs['spe']}/31\n"
-        f"**Total IV:** {total_iv_sum}/186 ({iv_pct:.2f}%)"
+        f"**HP:** {ivs['hp']} - IV: {ivs['hp']}/31\n"
+        f"**Attack:** {ivs['atk']} - IV: {ivs['atk']}/31\n"
+        f"**Defense:** {ivs['def']} - IV: {ivs['def']}/31\n"
+        f"**Sp. Atk:** {ivs['spa']} - IV: {ivs['spa']}/31\n"
+        f"**Sp. Def:** {ivs['spd']} - IV: {ivs['spd']}/31\n"
+        f"**Speed:** {ivs['spe']} - IV: {ivs['spe']}/31\n"
+        f"**Total IV:** {iv_pct:.2f}%"
     )
     embed.add_field(name="Stats", value=stats_text, inline=False)
 
@@ -766,18 +961,20 @@ def build_info_embed(row: sqlite3.Row, user: discord.User | discord.Member) -> t
 
 def format_pokemon_row_line(row: sqlite3.Row) -> str:
     slug = str(row["slug"] or "").lower()
-    pixel_prefix = PIXEL_SPRITE_EMOJIS.get(slug, "")
-    mon_badges = []
+    sprite_emoji = PIXEL_SPRITE_EMOJIS.get(slug, "")
+
+    badges: list[str] = []
+    if sprite_emoji:
+        badges.append(sprite_emoji)
     if row["shiny"]:
-        mon_badges.append(SHINY_EMOJI)
+        badges.append(SHINY_EMOJI)
     if row["gmax"]:
-        mon_badges.append(gmax_badge())
-    badges_str = f" {' '.join(mon_badges)}" if mon_badges else ""
+        badges.append(gmax_badge())
+
     gender_sym = format_gender_symbol(row["gender"])
     iv_pct = float(row["iv_percent"] or 0.0)
-    left_icons = f"{pixel_prefix}{badges_str}".strip()
-    name_part = f"{left_icons} {row['display_name']} {gender_sym}".strip() if left_icons else f"{row['display_name']} {gender_sym}".strip()
-    return f"`{row['slot_num']}` {name_part} • Lvl. {row['level']} • {iv_pct:.2f}%"
+    prefix_str = f"{' '.join(badges)} " if badges else ""
+    return f"`{row['slot_num']}` {prefix_str}{row['display_name']} {gender_sym} • Lvl. {row['level']} • {iv_pct:.2f}%"
 
 
 def build_pokemon_list_embed(
@@ -789,7 +986,7 @@ def build_pokemon_list_embed(
     if total == 0:
         embed = discord.Embed(
             title="Your pokémon",
-            description="You don't have any pokémon yet! Catch wild pokémon with `p!c <name>`.",
+            description=f"You don't have any pokémon yet! Catch wild pokémon with `{PREFIX}c <name>`.",
             color=discord.Color.from_rgb(235, 135, 175),
         )
         embed.set_footer(text="Showing entries 0–0 out of 0.")
@@ -1024,7 +1221,7 @@ class PokeBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(
-            command_prefix=PREFIX,
+            command_prefix=get_prefix,
             intents=intents,
             owner_ids=OWNER_IDS,
         )
@@ -1097,6 +1294,10 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
+    normalized_content = normalize_prefix_text(message.content)
+    if normalized_content != message.content:
+        message.content = normalized_content
+
     if not message.content.startswith(PREFIX) and message.channel is not None:
         ch_id = message.channel.id
         count = bot.channel_msg_counts.get(ch_id, 0) + 1
@@ -1124,6 +1325,12 @@ async def start_cmd(ctx: commands.Context):
         ),
         (235, 135, 175),
     )
+    for region_name, starters in STARTERS_BY_REGION.items():
+        embed.add_field(
+            name=f"{region_name} region starters",
+            value=", ".join(starters),
+            inline=False,
+        )
     await ctx.send(embed=embed)
 
 
@@ -1506,23 +1713,199 @@ async def inc_cmd(ctx: commands.Context):
     await buy_cmd(ctx, item_name="incense")
 
 
-@bot.command(name="spawnmon")
+# ==============================================================================
+# Owner-Only Commands
+# ==============================================================================
+def _extract_target_user(ctx: commands.Context, tokens: list[str]) -> Optional[discord.Member | discord.User]:
+    if ctx.message.mentions:
+        return ctx.message.mentions[0]
+    for tok in tokens:
+        cleaned = re.sub(r"[<@!>]", "", tok)
+        if cleaned.isdigit():
+            uid = int(cleaned)
+            member = ctx.guild.get_member(uid) if ctx.guild else None
+            if member:
+                return member
+            user = bot.get_user(uid)
+            if user:
+                return user
+            return discord.Object(id=uid)  # type: ignore[return-value]
+    return None
+
+
+def _parse_signed_amount(tokens: list[str]) -> Optional[int]:
+    for tok in tokens:
+        t = tok.strip().replace(",", "")
+        if re.match(r"^[+-]?\d+$", t):
+            return int(t)
+    return None
+
+
+@bot.command(name="addbal")
 @commands.is_owner()
-async def spawnmon_cmd(ctx: commands.Context, *, mon_name: str = ""):
-    if not mon_name.strip():
-        await bot.trigger_random_spawn(ctx.channel)
-        return
-    pdata = await bot.pokeapi.get_pokemon_data(mon_name.strip())
-    if not pdata:
+async def addbal_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    tokens = raw_args.strip().split()
+    amount = _parse_signed_amount(tokens)
+    target = _extract_target_user(ctx, tokens)
+    if amount is None or target is None:
         await ctx.send(
             embed=make_embed(
-                "Not Found",
-                f"Could not find a pokémon matching `{mon_name}`.",
+                "Invalid Usage",
+                f"Usage: `{PREFIX}addbal <amount> pc @user`",
                 (186, 108, 108),
             )
         )
         return
-    mon = build_pokemon_payload(pdata)
+
+    bot.db.add_balance(target.id, amount)
+    user_row = bot.db.ensure_user(target.id)
+    mention_str = target.mention if hasattr(target, "mention") else f"<@{target.id}>"
+    await ctx.send(
+        embed=make_embed(
+            "Balance Updated",
+            f"Adjusted {mention_str}'s balance by **{amount:+,} pc**.\nNew balance: **{int(user_row['balance'] or 0):,} pc**",
+            (112, 186, 134),
+        )
+    )
+
+
+@bot.command(name="addredeems")
+@commands.is_owner()
+async def addredeems_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    tokens = raw_args.strip().split()
+    amount = _parse_signed_amount(tokens)
+    target = _extract_target_user(ctx, tokens)
+    if amount is None or target is None:
+        await ctx.send(
+            embed=make_embed(
+                "Invalid Usage",
+                f"Usage: `{PREFIX}addredeems <amount> @user`",
+                (186, 108, 108),
+            )
+        )
+        return
+
+    bot.db.add_redeems(target.id, amount)
+    user_row = bot.db.ensure_user(target.id)
+    mention_str = target.mention if hasattr(target, "mention") else f"<@{target.id}>"
+    await ctx.send(
+        embed=make_embed(
+            "Redeems Updated",
+            f"Adjusted {mention_str}'s redeems by **{amount:+,}**.\nNew redeems: **{int(user_row['redeems'] or 0):,}**",
+            (112, 186, 134),
+        )
+    )
+
+
+@bot.command(name="addshards")
+@commands.is_owner()
+async def addshards_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    tokens = raw_args.strip().split()
+    amount = _parse_signed_amount(tokens)
+    target = _extract_target_user(ctx, tokens)
+    if amount is None or target is None:
+        await ctx.send(
+            embed=make_embed(
+                "Invalid Usage",
+                f"Usage: `{PREFIX}addshards <amount> @user`",
+                (186, 108, 108),
+            )
+        )
+        return
+
+    bot.db.add_shards(target.id, amount)
+    user_row = bot.db.ensure_user(target.id)
+    mention_str = target.mention if hasattr(target, "mention") else f"<@{target.id}>"
+    await ctx.send(
+        embed=make_embed(
+            "Shards Updated",
+            f"Adjusted {mention_str}'s shards by **{amount:+,}**.\nNew shards: **{int(user_row['shards'] or 0):,}**",
+            (112, 186, 134),
+        )
+    )
+
+
+@bot.command(name="spawnmon")
+@commands.is_owner()
+async def spawnmon_cmd(ctx: commands.Context, *, args: str = ""):
+    """
+    Syntax:
+      p!spawnmon <mon_name> <level> <iv%[(stat-val,...)]> [shiny] [gmax]
+    """
+    raw = args.strip()
+    if not raw:
+        await bot.trigger_random_spawn(ctx.channel)
+        return
+
+    # Pull trailing flags (shiny / gmax)
+    flag_tokens = re.findall(r"\b(?:shiny|gmax)\b", raw, flags=re.IGNORECASE)
+    force_shiny = any(f.lower() == "shiny" for f in flag_tokens)
+    force_gmax = any(f.lower() == "gmax" for f in flag_tokens)
+    cleaned_core = re.sub(r"\b(?:shiny|gmax)\b", "", raw, flags=re.IGNORECASE).strip()
+
+    # Match `<name> <level> <iv_spec>` where iv_spec may contain parentheses e.g. `80%(atk-31,spd-31)`
+    match = re.match(
+        r"^(.+?)\s+(\d+)\s+([0-9]+(?:\.[0-9]+)?\s*%?(?:\s*\([^)]*\))?)\s*$",
+        cleaned_core,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        pdata = await bot.pokeapi.get_pokemon_data(cleaned_core)
+        if not pdata:
+            await ctx.send(
+                embed=make_embed(
+                    "Not Found",
+                    f"Could not find a pokémon matching `{cleaned_core}`.\nUsage: `{PREFIX}spawnmon <mon> <level> <iv%> [shiny] [gmax]`",
+                    (186, 108, 108),
+                )
+            )
+            return
+        mon = build_pokemon_payload(
+            pdata,
+            force_shiny=force_shiny,
+            force_gmax=force_gmax,
+            exact_forced_flags=True,
+        )
+        await bot.trigger_random_spawn(ctx.channel, custom_mon=mon)
+        return
+
+    mon_query = match.group(1).strip()
+    custom_level = max(1, min(100, int(match.group(2))))
+    iv_spec_raw = match.group(3).strip()
+
+    try:
+        target_iv_pct, pinned_ivs = parse_iv_spec(iv_spec_raw)
+    except ValueError:
+        await ctx.send(
+            embed=make_embed(
+                "Invalid IV Format",
+                "Could not parse IV specification. Example: `80%(atk-31,spd-31)` or `75.5`.",
+                (186, 108, 108),
+            )
+        )
+        return
+
+    pdata = await bot.pokeapi.get_pokemon_data(mon_query)
+    if not pdata:
+        await ctx.send(
+            embed=make_embed(
+                "Not Found",
+                f"Could not find a pokémon matching `{mon_query}`.",
+                (186, 108, 108),
+            )
+        )
+        return
+
+    mon = build_pokemon_payload(
+        pdata,
+        force_shiny=force_shiny,
+        force_gmax=force_gmax,
+        custom_level=custom_level,
+        custom_iv_pct=target_iv_pct,
+        pinned_ivs=pinned_ivs if pinned_ivs else None,
+        exact_forced_flags=True,
+    )
     await bot.trigger_random_spawn(ctx.channel, custom_mon=mon)
 
 
