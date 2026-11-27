@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import random
@@ -12,7 +13,7 @@ from typing import Any, Optional
 import aiohttp
 import discord
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 try:
     import streamlit as st
@@ -35,7 +36,7 @@ GMAX_EMOJI = "<:Gmax:1575503911932919948>"
 MALE_EMOJI = "<:male:1566169579300851852>"
 FEMALE_EMOJI = "<:Female:1566169649249263627>"
 
-# Optional custom pixel emoji map keyed by slug (e.g. "eevee": "<:eevee:123456789012345678>")
+# Optional custom pixel emoji map keyed by slug/dex/mon_<id>
 # Automatically merged with PIXEL_EMOJI_JSON_PATH on startup if present.
 PIXEL_SPRITE_EMOJIS: dict[str, str] = {}
 
@@ -158,6 +159,10 @@ INCENSE_SHARD_PRICES: dict[tuple[str, int], tuple[int, int]] = {
     ("1d", 20): (4320, 1200),
     ("1d", 10): (8640, 2400),
 }
+
+RARE_CANDY_PRICE_PC = 75
+SHINY_CHARM_PRICE_SHARDS = 150
+SHINY_CHARM_DURATION_SEC = 7 * 24 * 3600
 
 STARTERS_BY_REGION: dict[str, list[str]] = {
     "Kanto": ["Bulbasaur", "Charmander", "Squirtle"],
@@ -357,6 +362,23 @@ def format_mon_header(mon: dict[str, Any]) -> str:
     return mon["display_name"]
 
 
+def format_info_title(row: sqlite3.Row) -> str:
+    slug = str(row["slug"] or "").lower()
+    is_shiny = bool(row["shiny"])
+    is_gmax = bool(row["gmax"]) or slug.endswith("-gmax")
+    display_name = str(row["display_name"] or format_regional_display_name(slug))
+    level = int(row["level"] or 1)
+
+    parts: list[str] = []
+    if is_shiny:
+        parts.append(SHINY_EMOJI)
+    if is_gmax:
+        parts.append(gmax_badge())
+    parts.append(f"Level {level}")
+    parts.append(display_name)
+    return " ".join(parts)
+
+
 def format_gender_symbol(gender: Optional[str]) -> str:
     g = (gender or "").lower()
     if g in ("male", "m", "♂"):
@@ -372,7 +394,31 @@ def calc_iv_percent(ivs: dict[str, int]) -> float:
 
 
 def xp_cap_for_level(level: int) -> int:
-    return max(250, int(level) * 250)
+    lvl = max(1, int(level))
+    curve = {1: 750, 2: 1050, 3: 1250}
+    if lvl in curve:
+        return curve[lvl]
+    return 1250 + (lvl - 3) * 200
+
+
+def _apply_shiny_tint(sprite: Image.Image) -> Image.Image:
+    rgba = sprite.convert("RGBA")
+    r, g, b, a = rgba.split()
+    rgb = Image.merge("RGB", (r, g, b))
+    # Shift hue/tone via channel swap + contrast boost for distinct shiny Gmax appearance
+    shifted = Image.merge("RGB", (b, r, g))
+    blended = Image.blend(rgb, shifted, 0.55)
+    sr, sg, sb = blended.split()
+    return Image.merge("RGBA", (sr, sg, sb, a))
+
+
+def _format_countdown_dhm(seconds_left: float) -> str:
+    total_sec = max(0, int(seconds_left))
+    days = total_sec // (24 * 3600)
+    rem_after_days = total_sec % (24 * 3600)
+    hours = rem_after_days // 3600
+    minutes = (rem_after_days % 3600) // 60
+    return f"{days}d {hours}h {minutes}m"
 
 
 def make_embed(
@@ -429,6 +475,8 @@ class Database:
                 balance INTEGER DEFAULT 0,
                 shards INTEGER DEFAULT 0,
                 redeems INTEGER DEFAULT 0,
+                rare_candies INTEGER DEFAULT 0,
+                shiny_charm_until REAL DEFAULT 0,
                 selected_slot INTEGER,
                 shiny_hunt_slug TEXT,
                 shiny_chain INTEGER DEFAULT 0,
@@ -449,6 +497,10 @@ class Database:
             cur.execute("ALTER TABLE users ADD COLUMN shards INTEGER DEFAULT 0")
         if "redeems" not in cols:
             cur.execute("ALTER TABLE users ADD COLUMN redeems INTEGER DEFAULT 0")
+        if "rare_candies" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN rare_candies INTEGER DEFAULT 0")
+        if "shiny_charm_until" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN shiny_charm_until REAL DEFAULT 0")
         if "selected_slot" not in cols:
             cur.execute("ALTER TABLE users ADD COLUMN selected_slot INTEGER")
         if "shiny_hunt_slug" not in cols:
@@ -603,6 +655,89 @@ class Database:
                 (user_id,),
             )
             return True
+
+    def add_rare_candies(self, user_id: int, amount: int):
+        self.ensure_user(user_id)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET rare_candies = MAX(0, COALESCE(rare_candies, 0) + ?) WHERE user_id = ?",
+                (amount, user_id),
+            )
+
+    def consume_rare_candies(self, user_id: int, qty: int) -> bool:
+        self.ensure_user(user_id)
+        qty = max(1, int(qty))
+        with self.conn:
+            cur = self.conn.cursor()
+            cur.execute("SELECT COALESCE(rare_candies, 0) AS rc FROM users WHERE user_id = ?", (user_id,))
+            row = cur.fetchone()
+            current = int(row["rc"] or 0) if row else 0
+            if current < qty:
+                return False
+            cur.execute(
+                "UPDATE users SET rare_candies = rare_candies - ? WHERE user_id = ? AND rare_candies >= ?",
+                (qty, user_id, qty),
+            )
+            return True
+
+    def get_shiny_charm_remaining(self, user_id: int) -> float:
+        row = self.ensure_user(user_id)
+        until_ts = float(row["shiny_charm_until"] or 0.0)
+        return max(0.0, until_ts - time.time())
+
+    def activate_shiny_charm(self, user_id: int, duration_sec: int = SHINY_CHARM_DURATION_SEC):
+        self.ensure_user(user_id)
+        until_ts = time.time() + duration_sec
+        with self.conn:
+            self.conn.execute(
+                "UPDATE users SET shiny_charm_until = ? WHERE user_id = ?",
+                (until_ts, user_id),
+            )
+
+    def grant_chat_xp(self, user_id: int, xp_gain: int) -> tuple[Optional[sqlite3.Row], list[int]]:
+        """
+        Adds chat XP to the user's selected Pokémon using Pokétwo-style level-up carry-over.
+        Returns (updated_row, list_of_new_levels_reached).
+        """
+        selected = self.get_selected_pokemon(user_id)
+        if not selected:
+            return None, []
+
+        row_id = int(selected["id"])
+        level = int(selected["level"] or 1)
+        xp = int(selected["xp"] or 0) + max(0, int(xp_gain))
+        levels_gained: list[int] = []
+
+        while level < 100:
+            cap = xp_cap_for_level(level)
+            if xp >= cap:
+                xp -= cap
+                level += 1
+                levels_gained.append(level)
+            else:
+                break
+
+        with self.conn:
+            self.conn.execute(
+                "UPDATE pokemon SET level = ?, xp = ? WHERE id = ?",
+                (level, xp, row_id),
+            )
+
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM pokemon WHERE id = ?", (row_id,))
+        return cur.fetchone(), levels_gained
+
+    def level_up_pokemon_by(self, user_id: int, slot_num: int, levels_to_add: int) -> Optional[sqlite3.Row]:
+        row = self.get_pokemon_by_slot(user_id, slot_num)
+        if not row:
+            return None
+        new_level = min(100, int(row["level"] or 1) + max(1, int(levels_to_add)))
+        with self.conn:
+            self.conn.execute(
+                "UPDATE pokemon SET level = ?, xp = 0 WHERE id = ?",
+                (new_level, int(row["id"])),
+            )
+        return self.get_pokemon_by_slot(user_id, slot_num)
 
     def set_shiny_hunt(self, user_id: int, slug: Optional[str], reset_chain: bool = False):
         self.ensure_user(user_id)
@@ -927,6 +1062,21 @@ class PokeAPIClient:
         except Exception:
             return None
 
+    async def _url_exists(self, url: Optional[str]) -> bool:
+        if not url:
+            return False
+        session = await self._get_session()
+        try:
+            async with session.head(url) as resp:
+                if resp.status == 200:
+                    return True
+                if resp.status in (405, 501):
+                    async with session.get(url) as gresp:
+                        return gresp.status == 200
+                return False
+        except Exception:
+            return False
+
     async def get_pokemon_data(self, name_or_id: str | int) -> Optional[dict[str, Any]]:
         candidates = normalize_pokemon_query(name_or_id)
         if not candidates:
@@ -948,8 +1098,6 @@ class PokeAPIClient:
         dex_id = int(data.get("id", 0)) if data else 0
         slug = str(data.get("name", matched_key)).lower() if data else matched_key
 
-        # If querying a Gmax form whose dedicated PokeAPI form entry isn't present,
-        # resolve base species data while keeping the -gmax slug and sprite override.
         if not data and matched_key.endswith("-gmax"):
             base_key = matched_key[:-5]
             base_data = await self._fetch_json(f"https://pokeapi.co/api/v2/pokemon/{base_key}")
@@ -972,17 +1120,34 @@ class PokeAPIClient:
         official = other.get("official-artwork", {})
         home = other.get("home", {})
 
+        is_gmax_form = slug.endswith("-gmax") or (slug in GMAX_SPRITE_OVERRIDES)
+        gmax_override_url = GMAX_SPRITE_OVERRIDES.get(slug)
+        if not gmax_override_url and not slug.endswith("-gmax"):
+            gmax_override_url = GMAX_SPRITE_OVERRIDES.get(f"{slug}-gmax")
+
         artwork_url = (
-            GMAX_SPRITE_OVERRIDES.get(slug)
-            or official.get("front_default")
-            or home.get("front_default")
-            or sprites.get("front_default")
+            gmax_override_url
+            if is_gmax_form and gmax_override_url
+            else (
+                official.get("front_default")
+                or home.get("front_default")
+                or sprites.get("front_default")
+            )
         )
-        shiny_artwork_url = (
-            official.get("front_shiny")
-            or home.get("front_shiny")
-            or sprites.get("front_shiny")
-        )
+
+        shiny_artwork_url: Optional[str] = None
+        if is_gmax_form and artwork_url:
+            shiny_candidate = artwork_url.replace("/official-artwork/", "/official-artwork/shiny/")
+            if await self._url_exists(shiny_candidate):
+                shiny_artwork_url = shiny_candidate
+            else:
+                shiny_artwork_url = artwork_url
+        else:
+            shiny_artwork_url = (
+                official.get("front_shiny")
+                or home.get("front_shiny")
+                or sprites.get("front_shiny")
+            )
 
         gender_rate = 4
         species_dex_id = dex_id
@@ -1039,7 +1204,11 @@ class PokeAPIClient:
                 return pdata
         return await self.get_pokemon_data("eevee")
 
-    async def fetch_image(self, url: Optional[str]) -> Optional[Image.Image]:
+    async def fetch_image(
+        self,
+        url: Optional[str],
+        apply_shiny_filter: bool = False,
+    ) -> Optional[Image.Image]:
         if not url:
             return None
         session = await self._get_session()
@@ -1049,6 +1218,8 @@ class PokeAPIClient:
                     return None
                 raw = await resp.read()
             img = Image.open(BytesIO(raw)).convert("RGBA")
+            if apply_shiny_filter:
+                img = _apply_shiny_tint(img)
             return img
         except Exception:
             return None
@@ -1161,6 +1332,7 @@ def build_pokemon_payload(
     force_shiny: bool = False,
     force_gmax: bool = False,
     shiny_chain: int = 0,
+    has_shiny_charm: bool = False,
     custom_level: Optional[int] = None,
     custom_iv_pct: Optional[float] = None,
     pinned_ivs: Optional[list[tuple[str, int]]] = None,
@@ -1188,18 +1360,27 @@ def build_pokemon_payload(
         is_gmax = bool(force_gmax) and eligible_gmax
     else:
         chain_bonus = min(shiny_chain * 0.0005, 0.05)
-        base_shiny_chance = 1.0 / 512.0 + chain_bonus
-        is_shiny = True if force_shiny else (random.random() < base_shiny_chance)
+        charm_bonus = 0.20 if has_shiny_charm else 0.0
+        shiny_chance = min(1.0, (1.0 / 512.0) + chain_bonus + charm_bonus)
+        is_shiny = True if force_shiny else (random.random() < shiny_chance)
         is_gmax = (True if force_gmax else (random.random() < 0.02)) and eligible_gmax
 
-    shiny_art = pdata.get("shiny_artwork_url") or pdata.get("artwork_url")
     normal_art = pdata.get("artwork_url")
-    if is_gmax and not slug.endswith("-gmax"):
-        gmax_slug = f"{slug}-gmax"
-        if gmax_slug in GMAX_SPRITE_OVERRIDES:
-            normal_art = GMAX_SPRITE_OVERRIDES[gmax_slug]
-            if not is_shiny:
-                shiny_art = normal_art
+    shiny_art = pdata.get("shiny_artwork_url") or normal_art
+
+    if is_gmax:
+        gmax_slug = slug if slug.endswith("-gmax") else f"{slug}-gmax"
+        gmax_url = GMAX_SPRITE_OVERRIDES.get(gmax_slug) or normal_art
+        normal_art = gmax_url
+        if is_shiny:
+            shiny_candidate = (
+                gmax_url.replace("/official-artwork/", "/official-artwork/shiny/")
+                if gmax_url and "/official-artwork/" in gmax_url
+                else None
+            )
+            shiny_art = shiny_candidate or gmax_url
+        else:
+            shiny_art = gmax_url
 
     artwork = shiny_art if is_shiny else normal_art
 
@@ -1226,7 +1407,7 @@ def build_pokemon_payload(
 # Wild Spawn Scene Renderer
 # ==============================================================================
 class SceneRenderer:
-    def __init__(self, width: int = 960, height: int = 540):
+    def __init__(self, width: int = 960, height: int = 620):
         self.width = width
         self.height = height
 
@@ -1242,91 +1423,128 @@ class SceneRenderer:
         rng: random.Random,
     ) -> Image.Image:
         w, h = self.width, self.height
-        horizon_y = int(h * 0.64)
+        horizon_y = int(h * 0.65)
 
         scene = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(scene)
 
-        far_tree = (
-            max(0, min(255, int(c1_bot[0] * 0.58 + 12))),
-            max(0, min(255, int(c1_bot[1] * 0.72 + 24))),
-            max(0, min(255, int(c1_bot[2] * 0.68 + 18))),
-            155,
+        sky_top = (
+            max(25, min(230, int(c1_top[0] * 0.72 + 25))),
+            max(35, min(235, int(c1_top[1] * 0.78 + 30))),
+            max(50, min(245, int(c1_top[2] * 0.85 + 35))),
+            255,
         )
-        mid_tree = (
-            max(0, min(255, int(c1_bot[0] * 0.42 + 8))),
-            max(0, min(255, int(c1_bot[1] * 0.56 + 18))),
-            max(0, min(255, int(c1_bot[2] * 0.52 + 12))),
-            200,
+        sky_bot = (
+            max(40, min(240, int(c1_glow[0] * 0.70 + 35))),
+            max(50, min(245, int(c1_glow[1] * 0.75 + 40))),
+            max(55, min(250, int(c1_glow[2] * 0.80 + 40))),
+            255,
         )
+        for y in range(horizon_y):
+            t = y / max(1, horizon_y - 1)
+            r = int(sky_top[0] * (1 - t) + sky_bot[0] * t)
+            g = int(sky_top[1] * (1 - t) + sky_bot[1] * t)
+            b = int(sky_top[2] * (1 - t) + sky_bot[2] * t)
+            sdraw.line([(0, y), (w, y)], fill=(r, g, b, 255))
 
-        if primary_type in ("grass", "bug", "normal"):
-            for tx in range(30, w, 84):
-                th = rng.randint(66, 128)
-                tw = rng.randint(34, 54)
-                sdraw.rectangle((tx - 4, horizon_y - th // 2, tx + 4, horizon_y + 6), fill=mid_tree)
-                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y - th // 3 + 18), fill=far_tree)
-            for tx in range(62, w, 102):
-                th = rng.randint(48, 96)
-                tw = rng.randint(28, 42)
-                sdraw.ellipse((tx - tw, horizon_y - th + 8, tx + tw, horizon_y + 8), fill=mid_tree)
-        elif primary_type in ("water", "ice"):
-            for wy in range(horizon_y - 36, h, 24):
-                sdraw.line([(0, wy), (w, wy)], fill=(c1_glow[0], c1_glow[1], c1_glow[2], 45), width=4)
-            sdraw.polygon([(120, horizon_y), (210, horizon_y - 66), (300, horizon_y)], fill=far_tree)
-            sdraw.polygon([(660, horizon_y), (758, horizon_y - 78), (848, horizon_y)], fill=far_tree)
-        elif primary_type in ("flying",):
-            for cx_cloud, cy_cloud, cr in [
-                (180, 122, 38), (216, 116, 48), (255, 126, 36),
-                (720, 110, 42), (758, 104, 52), (798, 114, 36),
-            ]:
-                sdraw.ellipse(
-                    (cx_cloud - cr, cy_cloud - cr // 2, cx_cloud + cr, cy_cloud + cr // 2),
-                    fill=(255, 255, 255, 52),
-                )
-        elif primary_type in ("fire",):
-            for ex in range(68, w - 68, 112):
-                ey = rng.randint(horizon_y - 36, horizon_y + 15)
-                sdraw.ellipse((ex - 15, ey - 20, ex + 15, ey + 8), fill=(255, 155, 75, 58))
-        elif primary_type in ("ground", "rock"):
-            for rx, ry, rw, rh in [
-                (142, horizon_y - 18, 54, 26),
-                (780, horizon_y - 24, 66, 32),
-                (360, horizon_y + 38, 36, 18),
-                (615, horizon_y + 50, 42, 20),
-            ]:
-                sdraw.ellipse((rx - rw, ry - rh, rx + rw, ry + rh), fill=mid_tree)
-        elif primary_type in ("ghost", "dark"):
-            sdraw.ellipse((765, 72, 830, 138), fill=(235, 240, 255, 68))
-            for tx in range(42, w, 96):
-                th = rng.randint(60, 114)
-                tw = rng.randint(28, 42)
-                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y + 8), fill=mid_tree)
-        elif primary_type in ("fairy",):
-            for spx, spy in [(172, 142), (315, 108), (645, 126), (788, 162), (248, 218), (712, 210)]:
-                sdraw.ellipse((spx - 7, spy - 7, spx + 7, spy + 7), fill=(255, 215, 240, 68))
-        else:
-            for tx in range(36, w, 90):
-                th = rng.randint(54, 105)
-                tw = rng.randint(28, 42)
-                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y + 8), fill=far_tree)
-
-        ground_top = (
-            max(0, min(255, int(c1_bot[0] * 0.52 + 8))),
-            max(0, min(255, int(c1_bot[1] * 0.68 + 20))),
-            max(0, min(255, int(c1_bot[2] * 0.60 + 14))),
-            225,
+        far_hill = (
+            max(20, min(210, int(c1_bot[0] * 0.45 + 35))),
+            max(45, min(220, int(c1_bot[1] * 0.65 + 55))),
+            max(35, min(210, int(c1_bot[2] * 0.55 + 45))),
+            235,
         )
-        ground_bot = (
-            max(0, min(255, int(c1_bot[0] * 0.32))),
-            max(0, min(255, int(c1_bot[1] * 0.45))),
-            max(0, min(255, int(c1_bot[2] * 0.38))),
+        mid_foliage = (
+            max(18, min(195, int(c1_bot[0] * 0.35 + 25))),
+            max(42, min(205, int(c1_bot[1] * 0.58 + 42))),
+            max(28, min(190, int(c1_bot[2] * 0.45 + 30))),
             245,
         )
-        sdraw.rectangle((0, horizon_y, w, h), fill=ground_top)
-        sdraw.rectangle((0, int(h * 0.84), w, h), fill=ground_bot)
+        trunk_col = (88, 58, 38, 245)
 
-        scene = scene.filter(ImageFilter.GaussianBlur(radius=5))
+        if primary_type in ("ghost", "dark", "psychic", "dragon"):
+            # Night sky with stars, crescent/full moon, and distant peaks
+            sdraw.rectangle((0, 0, w, horizon_y), fill=(18, 22, 46, 255))
+            for sx, sy, sr in [
+                (85, 65, 2), (195, 110, 3), (310, 52, 2), (430, 95, 2),
+                (565, 60, 3), (670, 120, 2), (850, 75, 2), (140, 175, 2),
+                (495, 155, 2), (725, 185, 3),
+            ]:
+                sdraw.ellipse((sx - sr, sy - sr, sx + sr, sy + sr), fill=(245, 248, 255, 220))
+            sdraw.ellipse((760, 55, 835, 130), fill=(248, 244, 215, 235))
+            sdraw.ellipse((780, 50, 845, 115), fill=(18, 22, 46, 255))
+            sdraw.polygon(
+                [(0, horizon_y), (180, horizon_y - 110), (380, horizon_y - 45), (610, horizon_y - 125), (840, horizon_y - 55), (w, horizon_y - 80), (w, horizon_y)],
+                fill=(34, 38, 68, 240),
+            )
+            for tx in range(35, w, 92):
+                th = rng.randint(75, 130)
+                sdraw.polygon([(tx - 24, horizon_y), (tx, horizon_y - th), (tx + 24, horizon_y)], fill=(22, 25, 48, 250))
+
+        elif primary_type in ("water", "ice"):
+            # Ocean / coastal horizon with waves and rocky island
+            sdraw.rectangle((0, int(horizon_y * 0.62), w, horizon_y), fill=(48, 128, 185, 245))
+            sdraw.polygon(
+                [(640, int(horizon_y * 0.65)), (735, int(horizon_y * 0.65) - 68), (835, int(horizon_y * 0.65))],
+                fill=(78, 112, 132, 230),
+            )
+            for wy in range(int(horizon_y * 0.68), h, 28):
+                sdraw.arc((0, wy - 8, w, wy + 12), start=0, end=180, fill=(210, 242, 255, 120), width=3)
+
+        elif primary_type in ("fire", "ground", "rock"):
+            # Warm horizon hills, boulders, and canyon ridges
+            sdraw.polygon(
+                [(0, horizon_y), (210, horizon_y - 95), (440, horizon_y - 35), (710, horizon_y - 110), (w, horizon_y - 45), (w, horizon_y)],
+                fill=(138, 72, 48, 235),
+            )
+            for bx, by, brx, bry in [(115, horizon_y + 18, 46, 24), (825, horizon_y + 24, 54, 28), (195, h - 55, 32, 18), (760, h - 48, 36, 18)]:
+                sdraw.ellipse((bx - brx, by - bry, bx + brx, by + bry), fill=(96, 66, 52, 240))
+
+        else:
+            # Lush nature meadow, hills, sun/clouds, and layered trees
+            sdraw.ellipse((110, 48, 175, 113), fill=(255, 236, 155, 225))
+            for cx, cy, cr in [(540, 86, 34), (572, 80, 44), (606, 88, 32), (775, 112, 30), (804, 108, 38)]:
+                sdraw.ellipse((cx - cr, cy - cr // 2, cx + cr, cy + cr // 2), fill=(255, 255, 255, 165))
+            sdraw.polygon(
+                [(0, horizon_y), (195, horizon_y - 82), (430, horizon_y - 38), (685, horizon_y - 92), (w, horizon_y - 42), (w, horizon_y)],
+                fill=far_hill,
+            )
+            for tx in range(36, w - 20, 96):
+                th = rng.randint(72, 126)
+                tw = rng.randint(30, 46)
+                sdraw.rectangle((tx - 5, horizon_y - th // 2, tx + 5, horizon_y + 6), fill=trunk_col)
+                sdraw.ellipse((tx - tw, horizon_y - th, tx + tw, horizon_y - th // 3 + 14), fill=mid_foliage)
+
+        ground_top = (
+            max(22, min(190, int(c1_bot[0] * 0.42 + 24))),
+            max(55, min(205, int(c1_bot[1] * 0.68 + 48))),
+            max(35, min(180, int(c1_bot[2] * 0.50 + 28))),
+            255,
+        )
+        ground_bot = (
+            max(16, min(150, int(c1_bot[0] * 0.28 + 12))),
+            max(38, min(165, int(c1_bot[1] * 0.48 + 26))),
+            max(24, min(145, int(c1_bot[2] * 0.34 + 16))),
+            255,
+        )
+        for y in range(horizon_y, h):
+            t = (y - horizon_y) / max(1, h - horizon_y - 1)
+            r = int(ground_top[0] * (1 - t) + ground_bot[0] * t)
+            g = int(ground_top[1] * (1 - t) + ground_bot[1] * t)
+            b = int(ground_top[2] * (1 - t) + ground_bot[2] * t)
+            sdraw.line([(0, y), (w, y)], fill=(r, g, b, 255))
+
+        for gx in range(18, w, 34):
+            gy = rng.randint(horizon_y + 14, h - 18)
+            blade_col = (
+                max(30, min(220, ground_top[0] + 18)),
+                max(70, min(235, ground_top[1] + 28)),
+                max(40, min(200, ground_top[2] + 16)),
+                210,
+            )
+            sdraw.line([(gx, gy), (gx - 6, gy - 12)], fill=blade_col, width=2)
+            sdraw.line([(gx, gy), (gx + 5, gy - 14)], fill=blade_col, width=2)
+
+        scene = scene.filter(ImageFilter.GaussianBlur(radius=1.2))
         return Image.alpha_composite(base, scene)
 
     def render_spawn_card(
@@ -1348,30 +1566,6 @@ class SceneRenderer:
         )
 
         base = Image.new("RGBA", (w, h), (20, 22, 30, 255))
-        px = base.load()
-        for y in range(h):
-            t = y / max(1, h - 1)
-            r = int(
-                (c1_top[0] * (1 - t) + c1_bot[0] * t) * 0.65
-                + (c2_top[0] * (1 - t) + c2_bot[0] * t) * 0.35
-            )
-            g = int(
-                (c1_top[1] * (1 - t) + c1_bot[1] * t) * 0.65
-                + (c2_top[1] * (1 - t) + c2_bot[1] * t) * 0.35
-            )
-            b = int(
-                (c1_top[2] * (1 - t) + c1_bot[2] * t) * 0.65
-                + (c2_top[2] * (1 - t) + c2_bot[2] * t) * 0.35
-            )
-            for x in range(w):
-                px[x, y] = (
-                    max(0, min(255, r)),
-                    max(0, min(255, g)),
-                    max(0, min(255, b)),
-                    255,
-                )
-
-        # Keep wild spawn image clean without shiny/gmax overlays during spawning
         rng = random.Random(f"{primary_type}-{secondary_type}")
         base = self._draw_nature_scene(
             base=base,
@@ -1388,14 +1582,14 @@ class SceneRenderer:
         shadow_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(shadow_layer)
         sdraw.ellipse(
-            (cx - 145, h - 114, cx + 145, h - 62),
-            fill=(0, 0, 0, 125),
+            (cx - 165, h - 126, cx + 165, h - 68),
+            fill=(0, 0, 0, 130),
         )
-        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=12))
+        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=11))
         base = Image.alpha_composite(base, shadow_layer)
 
         if sprite is not None:
-            max_side = 445 if is_gmax else 405
+            max_side = 495 if is_gmax else 455
             sp = sprite.copy()
             sp.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
 
@@ -1406,7 +1600,7 @@ class SceneRenderer:
             sp_shadow = sp_shadow.filter(ImageFilter.GaussianBlur(radius=8))
 
             px_x = (w - sp.width) // 2
-            px_y = max(12, (h - sp.height) // 2 - 10)
+            px_y = max(12, (h - sp.height) // 2 - 8)
             base.paste(sp_shadow, (px_x, px_y + 10), mask=sp_shadow)
             base.paste(sp, (px_x, px_y), mask=sp)
 
@@ -1426,14 +1620,8 @@ def build_info_embed(
     slug = str(row["slug"] or "").lower()
     is_shiny = bool(row["shiny"])
     is_gmax = bool(row["gmax"]) or slug.endswith("-gmax")
-    display_name = str(row["display_name"] or format_regional_display_name(slug))
 
-    mon = {
-        "display_name": display_name,
-        "shiny": is_shiny,
-        "gmax": is_gmax,
-    }
-    header = format_mon_header(mon)
+    title = format_info_title(row)
     level = int(row["level"] or 1)
     xp_val = int(row["xp"] or 0)
     xp_cap = xp_cap_for_level(level)
@@ -1449,7 +1637,7 @@ def build_info_embed(
     iv_pct = float(row["iv_percent"] if row["iv_percent"] is not None else calc_iv_percent(ivs))
 
     embed = discord.Embed(
-        title=f"{header} Level {level}" if (is_shiny or is_gmax) else f"Level {level} {display_name}",
+        title=title,
         color=discord.Color.from_rgb(235, 135, 175),
     )
     embed.set_thumbnail(url=user.display_avatar.url)
@@ -1472,11 +1660,20 @@ def build_info_embed(
     )
     embed.add_field(name="Stats", value=stats_text, inline=False)
 
-    artwork_url = (
-        row["shiny_artwork_url"]
-        if is_shiny and row["shiny_artwork_url"]
-        else (GMAX_SPRITE_OVERRIDES.get(slug) if is_gmax else row["artwork_url"]) or row["artwork_url"]
-    )
+    if is_gmax:
+        gmax_slug = slug if slug.endswith("-gmax") else f"{slug}-gmax"
+        gmax_art = GMAX_SPRITE_OVERRIDES.get(gmax_slug) or row["artwork_url"]
+        if is_shiny and gmax_art and "/official-artwork/" in gmax_art:
+            artwork_url = gmax_art.replace("/official-artwork/", "/official-artwork/shiny/")
+        else:
+            artwork_url = gmax_art
+    else:
+        artwork_url = (
+            row["shiny_artwork_url"]
+            if is_shiny and row["shiny_artwork_url"]
+            else row["artwork_url"]
+        )
+
     if artwork_url:
         embed.set_image(url=artwork_url)
 
@@ -1484,19 +1681,30 @@ def build_info_embed(
     return embed, artwork_url
 
 
-def _resolve_pixel_sprite_emoji(slug: str) -> str:
+def _resolve_pixel_sprite_emoji(slug: str, dex_id: Optional[int] = None) -> str:
     clean = (slug or "").strip().lower()
-    if clean in PIXEL_SPRITE_EMOJIS and PIXEL_SPRITE_EMOJIS[clean]:
-        return PIXEL_SPRITE_EMOJIS[clean]
-    base_slug = clean.split("-", 1)[0]
-    if base_slug in PIXEL_SPRITE_EMOJIS and PIXEL_SPRITE_EMOJIS[base_slug]:
-        return PIXEL_SPRITE_EMOJIS[base_slug]
+    candidates: list[str] = []
+    if clean:
+        candidates.append(clean)
+        if clean.endswith("-gmax"):
+            candidates.append(clean[:-5])
+        base_slug = clean.split("-", 1)[0]
+        if base_slug:
+            candidates.append(base_slug)
+    if dex_id is not None and int(dex_id) > 0:
+        candidates.append(str(int(dex_id)))
+        candidates.append(f"mon_{int(dex_id)}")
+
+    for key in candidates:
+        if key in PIXEL_SPRITE_EMOJIS and PIXEL_SPRITE_EMOJIS[key]:
+            return PIXEL_SPRITE_EMOJIS[key]
     return ""
 
 
 def format_pokemon_row_line(row: sqlite3.Row) -> str:
     slug = str(row["slug"] or "").lower()
-    sprite_emoji = _resolve_pixel_sprite_emoji(slug)
+    dex_id = int(row["dex_id"] or 0) if "dex_id" in row.keys() else None
+    sprite_emoji = _resolve_pixel_sprite_emoji(slug, dex_id=dex_id)
 
     badges: list[str] = []
     if sprite_emoji:
@@ -1508,14 +1716,17 @@ def format_pokemon_row_line(row: sqlite3.Row) -> str:
 
     gender_sym = format_gender_symbol(row["gender"])
     iv_pct = float(row["iv_percent"] or 0.0)
-    prefix_str = f"{'  '.join(badges)}  " if badges else "  "
-    return f"`{row['slot_num']}`{prefix_str}**{row['display_name']}**  {gender_sym}  •  Lvl. {row['level']}  •  {iv_pct:.2f}%"
+    prefix_str = f"   {'   '.join(badges)}   " if badges else "     "
+    return (
+        f"`{row['slot_num']}`{prefix_str}**{row['display_name']}**   "
+        f"{gender_sym}   •   Lvl. {row['level']}   •   {iv_pct:.2f}%"
+    )
 
 
 def build_pokemon_list_embed(
     rows: list[sqlite3.Row],
     page: int = 0,
-    per_page: int = 20,
+    per_page: int = 12,
 ) -> discord.Embed:
     total = len(rows)
     if total == 0:
@@ -1536,7 +1747,7 @@ def build_pokemon_list_embed(
     lines = [format_pokemon_row_line(r) for r in page_rows]
     embed = discord.Embed(
         title="Your pokémon",
-        description="\n".join(lines),
+        description="\n\n".join(lines),
         color=discord.Color.from_rgb(235, 135, 175),
     )
     embed.set_footer(text=f"Showing entries {start_idx + 1}–{end_idx} out of {total}.")
@@ -1591,8 +1802,56 @@ def build_profile_embed(
     return embed
 
 
+class PokemonInfoView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, rows: list[sqlite3.Row], start_index: int = 0):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.rows = rows
+        self.index = max(0, min(start_index, max(0, len(rows) - 1)))
+        self.message: Optional[discord.Message] = None
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.prev_btn.disabled = len(self.rows) <= 1 or self.index <= 0
+        self.next_btn.disabled = len(self.rows) <= 1 or self.index >= len(self.rows) - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the command author can flip through pokémon info pages.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(emoji="◀", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.index > 0:
+            self.index -= 1
+        self._sync_buttons()
+        embed, _ = build_info_embed(self.rows[self.index], self.ctx.author)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(emoji="▶", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.index < len(self.rows) - 1:
+            self.index += 1
+        self._sync_buttons()
+        embed, _ = build_info_embed(self.rows[self.index], self.ctx.author)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
 class PokemonListView(discord.ui.View):
-    def __init__(self, ctx: commands.Context, rows: list[sqlite3.Row], per_page: int = 20):
+    def __init__(self, ctx: commands.Context, rows: list[sqlite3.Row], per_page: int = 12):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.rows = rows
@@ -1720,6 +1979,16 @@ class BuyConfirmView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
+        if self.kind == "charm":
+            rem = self.db.get_shiny_charm_remaining(self.author_id)
+            if rem > 0:
+                await interaction.response.edit_message(
+                    content=f"You already have an active Shiny Charm! Time remaining: **{_format_countdown_dhm(rem)}**.",
+                    view=self,
+                )
+                self.stop()
+                return
+
         if self.currency == "pc":
             if int(user["balance"] or 0) < self.total_cost:
                 await interaction.response.edit_message(
@@ -1745,6 +2014,12 @@ class BuyConfirmView(discord.ui.View):
         elif self.kind == "redeem":
             self.db.add_redeems(self.author_id, self.quantity)
             done_msg = f"Bought **{self.quantity:,}** redeem{'s' if self.quantity != 1 else ''} for **{self.total_cost:,}** shards!"
+        elif self.kind == "rarecandy":
+            self.db.add_rare_candies(self.author_id, self.quantity)
+            done_msg = f"Bought **{self.quantity:,}** Rare Cand{'ies' if self.quantity != 1 else 'y'} for **{self.total_cost:,} pc**!"
+        elif self.kind == "charm":
+            self.db.activate_shiny_charm(self.author_id, SHINY_CHARM_DURATION_SEC)
+            done_msg = f"Bought a **Shiny Charm** for **{self.total_cost:,} shards**! Your shiny rate is boosted by **20%** for **1 week**."
         else:
             done_msg = "Purchase completed!"
 
@@ -2069,12 +2344,18 @@ async def build_shiny_hunt_embed(bot_instance: "PokeBot", user_id: int) -> disco
     user_row = bot_instance.db.ensure_user(user_id)
     hunt_slug = user_row["shiny_hunt_slug"]
     chain = int(user_row["shiny_chain"] or 0)
+    charm_rem = bot_instance.db.get_shiny_charm_remaining(user_id)
 
     if hunt_slug:
         pdata = await bot_instance.pokeapi.get_pokemon_data(hunt_slug)
         hunt_label = pdata["display_name"] if pdata else format_regional_display_name(hunt_slug)
     else:
         hunt_label = "None"
+
+    if charm_rem > 0:
+        charm_status = f"Active — **{_format_countdown_dhm(charm_rem)}** remaining (20% boost)"
+    else:
+        charm_status = f"Inactive — Buy a Shiny Charm (`{PREFIX}buy shiny charm`) for a **20%** boost!"
 
     embed = discord.Embed(
         title="Shiny Hunt ✨",
@@ -2087,6 +2368,7 @@ async def build_shiny_hunt_embed(bot_instance: "PokeBot", user_id: int) -> disco
     )
     embed.add_field(name="Currently Hunting", value=hunt_label, inline=False)
     embed.add_field(name="Chain", value=f"**{chain}**", inline=False)
+    embed.add_field(name="Shiny Charm", value=charm_status, inline=False)
     return embed
 
 
@@ -2143,6 +2425,7 @@ class PokeBot(commands.Bot):
         self.renderer = SceneRenderer()
         self.active_spawns: dict[int, dict[str, Any]] = {}
         self.channel_msg_counts: dict[int, int] = {}
+        self.user_xp_cooldowns: dict[int, float] = {}
         # channel_id -> interval_seconds for owner-activated infinite incense
         self.infinite_incense_channels: dict[int, int] = {}
         self._incense_task: Optional[asyncio.Task] = None
@@ -2269,7 +2552,8 @@ async def on_message(message: discord.Message):
     if normalized_content != message.content:
         message.content = normalized_content
 
-    if not message.content.startswith(PREFIX) and message.channel is not None:
+    is_command = message.content.startswith(PREFIX)
+    if not is_command and message.channel is not None:
         ch_id = message.channel.id
         count = bot.channel_msg_counts.get(ch_id, 0) + 1
         if count >= 12:
@@ -2277,6 +2561,19 @@ async def on_message(message: discord.Message):
             asyncio.create_task(bot.trigger_random_spawn(message.channel))
         else:
             bot.channel_msg_counts[ch_id] = count
+
+        now = time.time()
+        last_xp_ts = bot.user_xp_cooldowns.get(message.author.id, 0.0)
+        if (now - last_xp_ts) >= 1.5:
+            bot.user_xp_cooldowns[message.author.id] = now
+            xp_gain = random.randint(15, 35)
+            updated_mon, levels_gained = bot.db.grant_chat_xp(message.author.id, xp_gain)
+            if updated_mon and levels_gained:
+                new_lvl = levels_gained[-1]
+                mon_name = updated_mon["display_name"]
+                await message.channel.send(
+                    f"Congratulations {message.author.mention}! Your **{mon_name}** leveled up to **Level {new_lvl}**!"
+                )
 
     await bot.process_commands(message)
 
@@ -2420,9 +2717,20 @@ async def catch_cmd(ctx: commands.Context, *, guess: str = ""):
 
 @bot.command(name="info", aliases=["i"])
 async def info_cmd(ctx: commands.Context, slot: Optional[int] = None):
+    rows = bot.db.get_all_pokemon(ctx.author.id)
+    if not rows:
+        await ctx.send(
+            embed=make_embed(
+                "No Pokémon",
+                f"You don't have any pokémon yet! Use `{PREFIX}pick <pokémon>` to start.",
+                (186, 108, 108),
+            )
+        )
+        return
+
     if slot is not None:
-        row = bot.db.get_pokemon_by_slot(ctx.author.id, slot)
-        if not row:
+        idx = next((i for i, r in enumerate(rows) if int(r["slot_num"]) == slot), None)
+        if idx is None:
             await ctx.send(
                 embed=make_embed(
                     "Not Found",
@@ -2432,25 +2740,20 @@ async def info_cmd(ctx: commands.Context, slot: Optional[int] = None):
             )
             return
     else:
-        row = bot.db.get_selected_pokemon(ctx.author.id)
-        if not row:
-            await ctx.send(
-                embed=make_embed(
-                    "No Pokémon",
-                    f"You don't have any pokémon yet! Use `{PREFIX}pick <pokémon>` to start.",
-                    (186, 108, 108),
-                )
-            )
-            return
+        selected = bot.db.get_selected_pokemon(ctx.author.id)
+        sel_id = int(selected["id"]) if selected else int(rows[0]["id"])
+        idx = next((i for i, r in enumerate(rows) if int(r["id"]) == sel_id), 0)
 
-    embed, _ = build_info_embed(row, ctx.author)
-    await ctx.send(embed=embed)
+    embed, _ = build_info_embed(rows[idx], ctx.author)
+    view = PokemonInfoView(ctx, rows, start_index=idx)
+    msg = await ctx.send(embed=embed, view=view)
+    view.message = msg
 
 
 @bot.command(name="pokemon", aliases=["p"])
 async def pokemon_cmd(ctx: commands.Context, page: int = 1):
     rows = bot.db.get_all_pokemon(ctx.author.id)
-    per_page = 20
+    per_page = 12
     view = PokemonListView(ctx, rows, per_page=per_page)
     start_page = max(0, min(page - 1, view.total_pages - 1))
     view.page = start_page
@@ -2656,11 +2959,56 @@ async def redeemspawn_cmd(ctx: commands.Context, *, mon_name: str = ""):
     await bot.trigger_random_spawn(ctx.channel, custom_mon=mon)
 
 
+@bot.command(name="use")
+async def use_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    parts = raw_args.strip().split()
+    if not parts:
+        user = bot.db.ensure_user(ctx.author.id)
+        rc_count = int(user["rare_candies"] or 0)
+        await ctx.send(
+            content=f"You have **{rc_count}** Rare Cand{'ies' if rc_count != 1 else 'y'}. Use `{PREFIX}use rarecandy [qty]` to level up your selected pokémon."
+        )
+        return
+
+    item_key = parts[0].lower()
+    if item_key in ("rarecandy", "candy", "rc"):
+        qty = 1
+        if len(parts) >= 2 and parts[1].isdigit():
+            qty = max(1, int(parts[1]))
+
+        if not bot.db.consume_rare_candies(ctx.author.id, qty):
+            user = bot.db.ensure_user(ctx.author.id)
+            have = int(user["rare_candies"] or 0)
+            await ctx.send(
+                content=f"You don't have enough Rare Candies! You have **{have}**, needed **{qty}**."
+            )
+            return
+
+        selected = bot.db.get_selected_pokemon(ctx.author.id)
+        if not selected:
+            bot.db.add_rare_candies(ctx.author.id, qty)
+            await ctx.send(content="You don't have a selected pokémon to use Rare Candies on!")
+            return
+
+        updated = bot.db.level_up_pokemon_by(ctx.author.id, int(selected["slot_num"]), qty)
+        new_lvl = int(updated["level"]) if updated else int(selected["level"] or 1)
+        await ctx.send(
+            content=(
+                f"Used **{qty}** Rare Cand{'ies' if qty != 1 else 'y'} on **{selected['display_name']}**! "
+                f"It leveled up to **Level {new_lvl}**!"
+            )
+        )
+        return
+
+    await ctx.send(content=f"Cannot use `{parts[0]}` right now.")
+
+
 @bot.command(name="bal", aliases=["balance", "pc"])
 async def balance_cmd(ctx: commands.Context):
     user = bot.db.ensure_user(ctx.author.id)
     bal_val = int(user["balance"] or 0)
     shards_val = int(user["shards"] or 0)
+    rc_val = int(user["rare_candies"] or 0)
     embed = discord.Embed(
         title=f"{ctx.author.display_name}'s balance",
         color=discord.Color.from_rgb(235, 135, 175),
@@ -2668,6 +3016,7 @@ async def balance_cmd(ctx: commands.Context):
     embed.set_thumbnail(url=ctx.author.display_avatar.url)
     embed.add_field(name="Pokécoins", value=f"{bal_val:,}", inline=False)
     embed.add_field(name="Shards", value=f"{shards_val:,}", inline=False)
+    embed.add_field(name="Rare Candies", value=f"{rc_val:,}", inline=False)
     await ctx.send(embed=embed)
 
 
@@ -2689,7 +3038,17 @@ async def shop_cmd(ctx: commands.Context):
         inline=False,
     )
     embed.add_field(
-        name="3. Incense — Custom Duration & Interval",
+        name="3. Rare Candy — 75 pc each",
+        value=f"Levels up a pokémon by `1` level (`{PREFIX}buy rarecandy [qty]`, use with `{PREFIX}use rarecandy [qty]`).",
+        inline=False,
+    )
+    embed.add_field(
+        name="4. Shiny Charm — 150 Shards",
+        value="Increases your shiny rate by 20% for 1 week (once per week).",
+        inline=False,
+    )
+    embed.add_field(
+        name="5. Incense — Custom Duration & Interval",
         value=f"Configure and buy incense with `{PREFIX}inc buy`.",
         inline=False,
     )
@@ -2698,10 +3057,11 @@ async def shop_cmd(ctx: commands.Context):
 
 @bot.command(name="buy")
 async def buy_cmd(ctx: commands.Context, *, raw_args: str = ""):
+    raw_lower = raw_args.strip().lower()
     parts = raw_args.strip().split()
     if not parts:
         await ctx.send(
-            content=f"Available items: `redeem [qty]`, `shards <amount>`, or configure incense with `{PREFIX}inc buy`."
+            content=f"Available items: `redeem [qty]`, `shards <amount>`, `rarecandy [qty]`, `shiny charm`, or `{PREFIX}inc buy`."
         )
         return
 
@@ -2711,6 +3071,57 @@ async def buy_cmd(ctx: commands.Context, *, raw_args: str = ""):
         qty = max(1, int(parts[1]))
 
     user = bot.db.ensure_user(ctx.author.id)
+
+    if "charm" in raw_lower:
+        rem = bot.db.get_shiny_charm_remaining(ctx.author.id)
+        if rem > 0:
+            await ctx.send(
+                content=f"You can only buy a Shiny Charm once a week! Time remaining: **{_format_countdown_dhm(rem)}**."
+            )
+            return
+        if int(user["shards"] or 0) < SHINY_CHARM_PRICE_SHARDS:
+            await ctx.send(
+                content=f"You don't have enough Shards! Needed: **{SHINY_CHARM_PRICE_SHARDS:,} shards**."
+            )
+            return
+        view = BuyConfirmView(
+            author_id=ctx.author.id,
+            kind="charm",
+            quantity=1,
+            currency="shards",
+            total_cost=SHINY_CHARM_PRICE_SHARDS,
+            db=bot.db,
+        )
+        await ctx.send(
+            content=(
+                f"Are you sure you want to buy a **Shiny Charm** for **{SHINY_CHARM_PRICE_SHARDS:,}** shards? "
+                "Increases your shiny rate by 20% for 1 week (once per week)."
+            ),
+            view=view,
+        )
+        return
+
+    if key in ("rarecandy", "candy", "rc"):
+        total_pc = qty * RARE_CANDY_PRICE_PC
+        if int(user["balance"] or 0) < total_pc:
+            await ctx.send(content=f"You don't have enough Pokécoins! Needed: **{total_pc:,} pc**.")
+            return
+        view = BuyConfirmView(
+            author_id=ctx.author.id,
+            kind="rarecandy",
+            quantity=qty,
+            currency="pc",
+            total_cost=total_pc,
+            db=bot.db,
+        )
+        await ctx.send(
+            content=(
+                f"Are you sure you want to buy **{qty:,}** Rare Cand{'ies' if qty != 1 else 'y'} "
+                f"for **{total_pc:,} pc**?"
+            ),
+            view=view,
+        )
+        return
 
     if key in ("shards", "shard"):
         if len(parts) < 2 or not parts[1].isdigit():
